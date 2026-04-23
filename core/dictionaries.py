@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+PEOPLE = [
+    "Ehab",
+    "Camille",
+    "Candy",
+    "Harley",
+    "Maria",
+    "Mark",
+    "Sandy",
+    "Sophia",
+    "Tiffany",
+]
+
+RECORD_TYPES = ["Sales", "Operation"]
+PRIORITIES = ["High", "Medium", "Low"]
+
+SALES_PHASES = [
+    "Inquiry",
+    "Sourcing",
+    "Quotation",
+    "Sampling",
+    "Closing",
+    "Closed",
+]
+
+OPERATION_PHASES = [
+    "Order Open",
+    "Payment",
+    "Planning",
+    "Execution",
+    "Shipment",
+    "Closure",
+]
+
+HEALTH_STATUSES = [
+    "On Track",
+    "Waiting Client",
+    "Waiting Supplier",
+    "Waiting Internal",
+    "Blocked",
+    "Need Alignment",
+    "Need Decision",
+    "On Hold",
+    "Delayed",
+    "Due Soon",
+    "Reopened",
+    "Done",
+]
+
+SALES_RESULTS = ["No Decision Yet", "Won", "Lost"]
+OPERATION_RESULTS = ["In Progress", "Partial Shipped", "Complete Shipped", "Paid Closed", "Cancelled"]
+
+REQUEST_TYPES = ["None", "Decision", "Alignment", "Support", "Approval", "Information"]
+
+DEFAULT_SALES_PHASE = "Inquiry"
+DEFAULT_OPERATION_PHASE = "Order Open"
+DEFAULT_HEALTH = "On Track"
+DEFAULT_SALES_RESULT = "No Decision Yet"
+DEFAULT_OPERATION_RESULT = "In Progress"
+
+MEETING_POOL_HEALTH = {"Blocked", "Need Decision", "Need Alignment", "Delayed", "Due Soon"}
+
+SALES_BOARD_ACTIONS = [
+    "Quote Sent",
+    "Quote Revised",
+    "Sample Sent",
+    "Sample Feedback NG",
+    "Waiting Client",
+    "Waiting Supplier",
+    "Need Decision",
+    "Need Alignment",
+    "Close Won",
+    "Close Lost",
+    "Add to This Week Meeting",
+]
+
+OPERATION_BOARD_ACTIONS = [
+    "Prepayment Received",
+    "Production Started",
+    "Delay Confirmed",
+    "Partial Shipment",
+    "Complete Shipment",
+    "Shipment Paid",
+    "Waiting Supplier",
+    "Waiting Internal",
+    "Need Decision",
+    "Mark Blocked",
+    "Add to This Week Meeting",
+]
