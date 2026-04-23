@@ -19,6 +19,48 @@ SALES_DETAIL_FIELDS = [
     ("Days Since Review", "days_since_review"),
 ]
 
+
+
+COLUMN_LABELS_COMMON = {
+    "project_id": "Project ID",
+    "project_name": "Project Name",
+    "client_code": "Client Code",
+    "linked_order_count": "Linked Orders",
+    "linked_orders": "Linked Orders",
+    "current_owner": "Current Owner",
+    "phase": "Phase",
+    "health_status": "Health Status",
+    "quote_round": "Quote Round",
+    "sample_round": "Sample Round",
+    "main_issue": "Main Issue",
+    "next_step_owner": "Next Step Owner",
+    "target_date": "Target Date",
+    "last_event": "Last Event",
+    "days_since_status_update": "Days Since Status",
+    "days_since_review": "Days Since Review",
+    "review_this_week": "Review This Week",
+    "order_no": "Order No",
+    "linked_project_name": "Linked Project",
+    "result_status": "Result",
+    "waiting_for_text": "Waiting For What",
+    "need_from_meeting": "Need From Meeting",
+}
+
+SALES_TABLE_LABELS = dict(COLUMN_LABELS_COMMON)
+SALES_TABLE_LABELS["result_status"] = "Sales Result"
+OPERATION_TABLE_LABELS = dict(COLUMN_LABELS_COMMON)
+OPERATION_TABLE_LABELS["result_status"] = "Order Result"
+
+
+def _display_frame(frame: pd.DataFrame, present_columns: list[str], rows: list[dict]) -> pd.DataFrame:
+    display = frame[present_columns].copy()
+    if "review_this_week" in display.columns:
+        display["review_this_week"] = display["review_this_week"].map(lambda v: "Yes" if bool(v) else "No")
+    is_operation = any((r.get("entity_type") == "Operation" or r.get("order_no")) for r in rows)
+    label_map = OPERATION_TABLE_LABELS if is_operation else SALES_TABLE_LABELS
+    display = display.rename(columns={c: label_map.get(c, c.replace("_", " ").title()) for c in display.columns})
+    return display
+
 OPERATION_DETAIL_FIELDS = [
     ("Project ID", "project_id"),
     ("Linked Project", "linked_project_name"),
@@ -39,7 +81,7 @@ def open_detail_page(record_type: str, record_id: str) -> None:
     except Exception:
         st.session_state["selected_detail_type"] = record_type
         st.session_state["selected_detail_id"] = record_id
-        st.info("Selected record stored. Open Project Detail from the sidebar.")
+        st.info("Selected record stored. Open Project / Order Detail from the sidebar.")
 
 
 
@@ -62,13 +104,13 @@ def render_project_table(rows: list[dict], columns: list[str], empty_message: st
         return
     frame = pd.DataFrame(rows)
     present_columns = [col for col in columns if col in frame.columns]
-    st.dataframe(frame[present_columns], use_container_width=True, hide_index=True)
+    st.dataframe(_display_frame(frame, present_columns, rows), use_container_width=True, hide_index=True)
 
     jump_options = _jump_records(rows) if enable_jump else []
     if jump_options:
-        with st.expander("Open detail from this table"):
+        with st.expander("Open Project / Order Detail from this table"):
             labels = [label for label, _, _ in jump_options]
-            selected_label = st.selectbox("Jump to Project Detail", options=[""] + labels, key=f"table_jump_{len(rows)}_{'_'.join(present_columns[:2])}")
+            selected_label = st.selectbox("Jump to Project / Order Detail", options=[""] + labels, key=f"table_jump_{len(rows)}_{'_'.join(present_columns[:2])}")
             if selected_label:
                 record_type, record_id = next((rtype, rid) for label, rtype, rid in jump_options if label == selected_label)
                 if st.button("Open Detail", key=f"open_table_detail_{record_type}_{record_id}", type="primary"):
@@ -132,7 +174,7 @@ def render_board_cards(
         nav_col, helper_col = st.columns([1, 4])
         if nav_col.button("Open Detail", key=f"open_detail_{entity_type}_{entity_id}", type="primary"):
             open_detail_page(entity_type, entity_id)
-        helper_col.caption("Open Detail for full history, richer editing and lower-frequency actions.")
+        helper_col.caption("Open Project / Order Detail for full history, richer editing and lower-frequency actions.")
 
         render_board_action_buttons(
             entity_type=entity_type,

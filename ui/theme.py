@@ -503,6 +503,6 @@ def render_badges(phase: str | None = None, health: str | None = None, result: s
     if result:
         html.append(f"<span class='zt-badge {_result_class(result)}'>{result}</span>")
     if pattern:
-        html.append("<span class='zt-badge zt-badge-health-alert'>Pattern</span>")
+        html.append("<span class='zt-badge zt-badge-health-alert'>Repeated Issue</span>")
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)

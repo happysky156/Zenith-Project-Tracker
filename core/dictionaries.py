@@ -53,6 +53,24 @@ OPERATION_RESULTS = ["In Progress", "Partial Shipped", "Complete Shipped", "Paid
 
 REQUEST_TYPES = ["None", "Decision", "Alignment", "Support", "Approval", "Information"]
 
+REQUEST_TYPE_DISPLAY = {
+    "None": "None",
+    "Decision": "Decision needed",
+    "Alignment": "Alignment needed",
+    "Support": "Support needed",
+    "Approval": "Approval needed",
+    "Information": "Info only",
+}
+
+REQUEST_TYPE_DISPLAY_VALUES = [
+    REQUEST_TYPE_DISPLAY["Decision"],
+    REQUEST_TYPE_DISPLAY["Alignment"],
+    REQUEST_TYPE_DISPLAY["Support"],
+    REQUEST_TYPE_DISPLAY["Approval"],
+    REQUEST_TYPE_DISPLAY["Information"],
+    REQUEST_TYPE_DISPLAY["None"],
+]
+
 DEFAULT_SALES_PHASE = "Inquiry"
 DEFAULT_OPERATION_PHASE = "Order Open"
 DEFAULT_HEALTH = "On Track"

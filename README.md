@@ -6,7 +6,7 @@ A Streamlit-based internal project and weekly meeting tracker.
 - Split master-data import for **Sales** and **Operation**
 - Automatic Sales ↔ Operation linking through **Project ID**
 - High-frequency board actions
-- One shared **Project Detail** page for Sales Project / Operation Order
+- One shared **Project / Order Detail** page for Sales Project / Operation Order
 - Weekly Meeting actions and weekly snapshots
 - Quick meeting note capture during live meetings
 - SQLite for local testing, or PostgreSQL for shared cloud deployment

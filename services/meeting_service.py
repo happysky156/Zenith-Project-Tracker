@@ -94,7 +94,7 @@ def _focus_reason(row: dict[str, Any]) -> str:
     if health == "Need Alignment":
         return "Needs internal alignment before the next step."
     if row.get("pattern_flag"):
-        return "Flagged as a repeated / pattern issue."
+        return "Flagged as a repeated issue."
     if row.get("client_waiting_for") and not row.get("next_step_summary"):
         return "Client is waiting, but the next step is not yet clear."
     if bool(row.get("review_this_week")):
@@ -389,7 +389,10 @@ def _meeting_minutes_block(row: dict[str, Any]) -> str:
         f"  Client Code: {row.get('client_code') or '-'}",
         f"  Phase / Health / Result: {row.get('phase') or '-'} / {row.get('health_status') or '-'} / {row.get('result_status') or '-'}",
         f"  Focus: {row.get('meeting_focus_reason') or '-'}",
+        f"  Current Progress: {row.get('progress_summary') or '-'}",
         f"  Main Issue: {row.get('main_issue') or '-'}",
+        f"  Blocked At: {row.get('block_point') or '-'}",
+        f"  Possible Reason: {row.get('likely_reason') or '-'}",
         f"  Need From Meeting: {row.get('need_from_meeting') or '-'}",
         f"  Meeting Note: {row.get('meeting_note') or '-'}",
         f"  Next Step: {row.get('next_step_summary') or '-'}",
@@ -397,7 +400,7 @@ def _meeting_minutes_block(row: dict[str, Any]) -> str:
         f"  Target Date: {row.get('target_date') or '-'}",
     ]
     if row.get('need_decision_from'):
-        lines.append(f"  Need Decision From: {row.get('need_decision_from')}")
+        lines.append(f"  Decision By: {row.get('need_decision_from')}")
     return "\n".join(lines)
 
 
@@ -407,7 +410,7 @@ def generate_meeting_minutes_text(rows: list[dict[str, Any]], view_name: str) ->
     lines = [
         f"Meeting Minutes ({week}) — {view_name}",
         f"Total items: {metrics['total']}",
-        f"Need decision: {metrics['need_decision']} | Blocked: {metrics['blocked']} | Delayed / Due Soon: {metrics['delayed_due']} | Pattern: {metrics['pattern']}",
+        f"Need decision: {metrics['need_decision']} | Blocked: {metrics['blocked']} | Delayed / Due Soon: {metrics['delayed_due']} | Repeated issues: {metrics['pattern']}",
         "",
         "Items reviewed:",
     ]
@@ -432,13 +435,16 @@ def build_followup_export_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
                 "Phase": row.get("phase") or "-",
                 "Health": row.get("health_status") or "-",
                 "Result": row.get("result_status") or "-",
+                "Current Progress": row.get("progress_summary") or "-",
                 "Main Issue": row.get("main_issue") or "-",
+                "Blocked At": row.get("block_point") or "-",
+                "Possible Reason": row.get("likely_reason") or "-",
                 "Need From Meeting": row.get("need_from_meeting") or "-",
                 "Meeting Note": row.get("meeting_note") or "-",
                 "Next Step": row.get("next_step_summary") or "-",
                 "Next Step Owner": row.get("next_step_owner") or row.get("current_owner") or "-",
                 "Target Date": row.get("target_date") or "-",
-                "Need Decision From": row.get("need_decision_from") or "-",
+                "Decision By": row.get("need_decision_from") or "-",
                 "Last Event": row.get("last_event") or "-",
                 "Review This Week": "Yes" if row.get("review_this_week") else "No",
             }
@@ -457,7 +463,7 @@ def generate_post_meeting_summary(rows: list[dict[str, Any]], view_name: str) ->
     boss_lines = [
         f"Weekly Meeting Summary ({week}) — {view_name}",
         f"Total items reviewed: {metrics['total']}",
-        f"Need decision: {metrics['need_decision']}; Blocked: {metrics['blocked']}; Delayed / Due Soon: {metrics['delayed_due']}; Pattern issues: {metrics['pattern']}",
+        f"Need decision: {metrics['need_decision']}; Blocked: {metrics['blocked']}; Delayed / Due Soon: {metrics['delayed_due']}; Repeated issues: {metrics['pattern']}",
         "",
         "Boss priorities:",
     ]
@@ -468,7 +474,7 @@ def generate_post_meeting_summary(rows: list[dict[str, Any]], view_name: str) ->
         boss_lines.append("2. Execution / timing risks:")
         boss_lines.extend([f"- {_line_for_summary(r)}" for r in risk_rows[:10]])
     if pattern_rows:
-        boss_lines.append("3. Repeated / pattern issues:")
+        boss_lines.append("3. Repeated issues:")
         boss_lines.extend([f"- {_line_for_summary(r)}" for r in pattern_rows[:10]])
     if not (need_decision_rows or risk_rows or pattern_rows):
         boss_lines.append("- No major escalation item in the current meeting pool.")

@@ -10,23 +10,24 @@ from core.dictionaries import (
     PRIORITIES,
     RECORD_TYPES,
     REQUEST_TYPES,
+    REQUEST_TYPE_DISPLAY_VALUES,
     SALES_PHASES,
     SALES_RESULTS,
 )
 from ui.theme import apply_theme, render_page_header
 
 apply_theme()
-render_page_header("Settings / Dictionaries", "Code-based dictionaries and fixed options used across the MVP.")
+render_page_header("Settings / Options", "Simple fixed options used across the system.")
 
 sections = [
     ("People", PEOPLE),
     ("Record Types", RECORD_TYPES),
     ("Sales Phases", SALES_PHASES),
     ("Operation Phases", OPERATION_PHASES),
-    ("Health Statuses", HEALTH_STATUSES),
+    ("Health Status", HEALTH_STATUSES),
     ("Sales Results", SALES_RESULTS),
-    ("Operation Results", OPERATION_RESULTS),
-    ("Request Types", REQUEST_TYPES),
+    ("Order Results", OPERATION_RESULTS),
+    ("What is needed", REQUEST_TYPE_DISPLAY_VALUES),
     ("Priorities", PRIORITIES),
 ]
 

@@ -71,7 +71,7 @@ m1.metric("Meeting Pool", metrics["total"])
 m2.metric("Need Decision", metrics["need_decision"])
 m3.metric("Blocked", metrics["blocked"])
 m4.metric("Delayed / Due Soon", metrics["delayed_due"])
-m5.metric("Pattern", metrics["pattern"])
+m5.metric("Repeated Issue", metrics["pattern"])
 
 left, mid, right = st.columns([2, 2, 2])
 with left:
@@ -87,7 +87,7 @@ with right:
 
 if view == "Boss View":
     st.markdown(
-        "<div class='zt-soft-note'><b>Boss View logic:</b> the list is auto-sorted to put decision-needed items, blocked items, delayed / due-soon risks, and repeated pattern issues first.</div>",
+        "<div class='zt-soft-note'><b>Boss View logic:</b> the list is auto-sorted to put decision-needed items, blocked items, delayed / due-soon risks, and repeated issues first.</div>",
         unsafe_allow_html=True,
     )
 
@@ -157,14 +157,14 @@ for row in rows:
     detail_cols = st.columns(2)
     with detail_cols[0]:
         st.write(f"**Client Waiting For:** {row.get('client_waiting_for') or '-'}")
-        st.write(f"**Progress:** {row.get('progress_summary') or '-'}")
+        st.write(f"**Current Progress:** {row.get('progress_summary') or '-'}")
         st.write(f"**Main Issue:** {row.get('main_issue') or '-'}")
-        st.write(f"**Block Point:** {row.get('block_point') or '-'}")
+        st.write(f"**Blocked At:** {row.get('block_point') or '-'}")
     with detail_cols[1]:
-        st.write(f"**Likely Reason:** {row.get('likely_reason') or '-'}")
+        st.write(f"**Possible Reason:** {row.get('likely_reason') or '-'}")
         st.write(f"**Need From Meeting:** {row.get('need_from_meeting') or '-'}")
         st.write(f"**Next Step:** {row.get('next_step_summary') or '-'}")
-        st.write(f"**Need Decision From:** {row.get('need_decision_from') or '-'}")
+        st.write(f"**Decision By:** {row.get('need_decision_from') or '-'}")
 
     st.markdown(
         (
