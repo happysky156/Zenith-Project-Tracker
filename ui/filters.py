@@ -5,14 +5,19 @@ import streamlit as st
 from core.dictionaries import HEALTH_STATUSES, PEOPLE, PRIORITIES, OPERATION_PHASES, SALES_PHASES
 
 
-
 def render_common_filters(prefix: str, record_type: str) -> dict[str, object]:
     phase_options = SALES_PHASES if record_type == "Sales" else OPERATION_PHASES
     search_placeholder = "Search Project ID, project, client, issue or next step..." if record_type == "Sales" else "Search Order No, Project ID, linked project, client, issue or next step..."
 
-    st.markdown("<div class='zt-toolbar-panel'>", unsafe_allow_html=True)
-    st.markdown("<div class='zt-section-kicker'>Filter & focus</div>", unsafe_allow_html=True)
-    st.markdown("<div class='zt-subtle-text'>Narrow the list by owner, phase, health and meeting relevance. Use search to quickly find the right item.</div>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class='zt-filter-intro-card'>
+            <div class='zt-section-kicker'>Filter & focus</div>
+            <div class='zt-subtle-text'>Narrow the list by owner, phase, health and meeting relevance. Use search to quickly find the right item.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
     owner = r1c1.selectbox("Current Owner", options=[""] + PEOPLE, key=f"{prefix}_owner")
@@ -31,7 +36,6 @@ def render_common_filters(prefix: str, record_type: str) -> dict[str, object]:
     meeting_pool_only = r2c3.checkbox("Meeting pool only", value=st.session_state.get(f"{prefix}_meeting_only", False), key=f"{prefix}_meeting_only")
     high_attention_only = r2c4.checkbox("High attention only", value=st.session_state.get(f"{prefix}_high_attention_only", False), key=f"{prefix}_high_attention_only")
 
-    st.markdown("</div>", unsafe_allow_html=True)
     return {
         "owner": owner or None,
         "phase": phase or None,

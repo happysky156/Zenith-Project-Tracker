@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from database.connection import execute, get_connection, using_postgres
+from core.dictionaries import PEOPLE_EMAIL_MAP
 
 
 SALES_CORE_COLUMNS_SQL = """
@@ -44,6 +45,8 @@ SALES_CORE_COLUMNS_SQL = """
     next_step_summary TEXT,
     meeting_note TEXT,
     target_date TEXT,
+    followup_status TEXT,
+    is_archived INTEGER NOT NULL DEFAULT 0,
     review_this_week INTEGER NOT NULL DEFAULT 0,
     discussed_this_week INTEGER NOT NULL DEFAULT 0,
 
@@ -91,6 +94,8 @@ OPERATION_CORE_COLUMNS_SQL = """
     next_step_summary TEXT,
     meeting_note TEXT,
     target_date TEXT,
+    followup_status TEXT,
+    is_archived INTEGER NOT NULL DEFAULT 0,
     review_this_week INTEGER NOT NULL DEFAULT 0,
     discussed_this_week INTEGER NOT NULL DEFAULT 0,
 
@@ -168,6 +173,32 @@ IMPORT_BATCHES_SQL = """
 """
 
 
+APP_USERS_SQL = """
+    CREATE TABLE IF NOT EXISTS app_users (
+        email TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'editor',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        last_login_at TEXT
+    )
+"""
+
+
+APP_USER_SESSIONS_SQL = """
+    CREATE TABLE IF NOT EXISTS app_user_sessions (
+        session_token_hash TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'editor',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        last_seen_at TEXT,
+        revoked INTEGER NOT NULL DEFAULT 0
+    )
+"""
+
+
 INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_sales_phase ON sales_projects(phase)",
     "CREATE INDEX IF NOT EXISTS idx_sales_health ON sales_projects(health_status)",
@@ -183,6 +214,9 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_event_logs_time ON event_logs_v2(event_time)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_week ON meeting_snapshots_v2(meeting_week)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_entity ON meeting_snapshots_v2(entity_type, entity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users(email)",
+    "CREATE INDEX IF NOT EXISTS idx_app_user_sessions_email ON app_user_sessions(email)",
+    "CREATE INDEX IF NOT EXISTS idx_app_user_sessions_expires ON app_user_sessions(expires_at)",
 ]
 
 
@@ -223,6 +257,25 @@ def _ensure_column(cur, table_name: str, column_name: str, column_sql: str) -> N
 
 
 
+
+def _seed_default_app_users(cur) -> None:
+    """Create phase-1 user records from the PEOPLE list without overwriting manual edits."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    for display_name, email in PEOPLE_EMAIL_MAP.items():
+        execute(cur, "SELECT 1 FROM app_users WHERE lower(email) = lower(?)", (email,))
+        if cur.fetchone() is not None:
+            continue
+        execute(
+            cur,
+            """
+            INSERT INTO app_users (email, display_name, role, active, created_at)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (email.lower(), display_name, "editor", now),
+        )
+
 def init_db() -> None:
     conn = get_connection()
     cur = conn.cursor()
@@ -232,12 +285,24 @@ def init_db() -> None:
     execute(cur, EVENT_LOGS_SQL)
     execute(cur, MEETING_SNAPSHOTS_SQL)
     execute(cur, IMPORT_BATCHES_SQL)
+    execute(cur, APP_USERS_SQL)
+    execute(cur, APP_USER_SESSIONS_SQL)
 
     # Safe additive migrations for already-created databases.
+    _ensure_column(cur, "sales_projects", "support_from", "TEXT")
+    _ensure_column(cur, "operation_orders", "support_from", "TEXT")
+    _ensure_column(cur, "sales_projects", "next_step_support", "TEXT")
+    _ensure_column(cur, "operation_orders", "next_step_support", "TEXT")
     _ensure_column(cur, "sales_projects", "meeting_note", "TEXT")
     _ensure_column(cur, "operation_orders", "meeting_note", "TEXT")
+    _ensure_column(cur, "sales_projects", "followup_status", "TEXT")
+    _ensure_column(cur, "operation_orders", "followup_status", "TEXT")
+    _ensure_column(cur, "sales_projects", "is_archived", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(cur, "operation_orders", "is_archived", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(cur, "meeting_snapshots_v2", "meeting_note", "TEXT")
     _ensure_column(cur, "import_batches", "import_type", "TEXT")
+
+    _seed_default_app_users(cur)
 
     for sql in INDEX_SQL:
         execute(cur, sql)

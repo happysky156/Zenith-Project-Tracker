@@ -169,11 +169,25 @@ def build_preview(mapped_df: pd.DataFrame, import_type: str, ignored_blank_rows:
 
 def import_preview_rows(preview_df: pd.DataFrame, import_type: str, imported_by: str | None = None) -> dict[str, int]:
     new_count = 0
-    update_count = 0
+    duplicate_skipped_count = 0
+    total_input_records = int(len(preview_df))
     if preview_df.empty:
-        return {"new_count": 0, "update_count": 0}
+        return {
+            "new_count": 0,
+            "update_count": 0,
+            "duplicate_skipped_count": 0,
+            "total_input_records": 0,
+        }
 
     for _, row in preview_df.iterrows():
+        # Existing database records are treated as duplicates during import.
+        # They are counted and skipped here so the import does not overwrite
+        # status, owner, meeting or other working fields that the team may
+        # have already updated in the system.
+        if bool(row.get("_exists")):
+            duplicate_skipped_count += 1
+            continue
+
         if import_type == "Sales":
             project_id = normalize_value(row.get("project_id"))
             project_name = normalize_value(row.get("project_name"))
@@ -220,14 +234,15 @@ def import_preview_rows(preview_df: pd.DataFrame, import_type: str, imported_by:
         if action == "inserted":
             new_count += 1
         else:
-            update_count += 1
+            duplicate_skipped_count += 1
 
     logger.info(
-        "Import batch: source=%s | type=%s | new=%s | updated=%s | operator=%s",
+        "Import batch: source=%s | type=%s | added=%s | duplicates_skipped=%s | total_input=%s | operator=%s",
         str(preview_df["source_file"].iloc[0]) if len(preview_df) else "unknown",
         import_type,
         new_count,
-        update_count,
+        duplicate_skipped_count,
+        total_input_records,
         imported_by,
     )
 
@@ -239,9 +254,16 @@ def import_preview_rows(preview_df: pd.DataFrame, import_type: str, imported_by:
             "imported_by": imported_by,
             "import_type": import_type,
             "new_count": new_count,
-            "update_count": update_count,
+            # Keep the existing database column for compatibility.
+            # In the current UI this value means "duplicates skipped".
+            "update_count": duplicate_skipped_count,
             "failed_count": 0,
-            "notes": f"{import_type} import",
+            "notes": f"{import_type} import | duplicates skipped",
         }
     )
-    return {"new_count": new_count, "update_count": update_count}
+    return {
+        "new_count": new_count,
+        "update_count": duplicate_skipped_count,
+        "duplicate_skipped_count": duplicate_skipped_count,
+        "total_input_records": total_input_records,
+    }

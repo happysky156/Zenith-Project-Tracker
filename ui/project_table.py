@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import escape
+
 import pandas as pd
 import streamlit as st
 
@@ -20,12 +22,11 @@ SALES_DETAIL_FIELDS = [
 ]
 
 
-
 COLUMN_LABELS_COMMON = {
     "project_id": "Project ID",
     "project_name": "Project Name",
     "client_code": "Client Code",
-    "linked_order_count": "Linked Orders",
+    "linked_order_count": "Linked Order Count",
     "linked_orders": "Linked Orders",
     "current_owner": "Current Owner",
     "phase": "Phase",
@@ -52,6 +53,18 @@ OPERATION_TABLE_LABELS = dict(COLUMN_LABELS_COMMON)
 OPERATION_TABLE_LABELS["result_status"] = "Order Result"
 
 
+OPERATION_DETAIL_FIELDS = [
+    ("Waiting For What", "waiting_for_text"),
+    ("Main Issue", "main_issue"),
+    ("Need From Meeting", "need_from_meeting"),
+    ("Next Step", "next_step_summary"),
+    ("Next Step Owner", "next_step_owner"),
+    ("Target Date", "target_date"),
+    ("Days Since Status", "days_since_status_update"),
+    ("Days Since Review", "days_since_review"),
+]
+
+
 def _display_frame(frame: pd.DataFrame, present_columns: list[str], rows: list[dict]) -> pd.DataFrame:
     display = frame[present_columns].copy()
     if "review_this_week" in display.columns:
@@ -61,17 +74,103 @@ def _display_frame(frame: pd.DataFrame, present_columns: list[str], rows: list[d
     display = display.rename(columns={c: label_map.get(c, c.replace("_", " ").title()) for c in display.columns})
     return display
 
-OPERATION_DETAIL_FIELDS = [
-    ("Project ID", "project_id"),
-    ("Linked Project", "linked_project_name"),
-    ("Main Issue", "main_issue"),
-    ("Need From Meeting", "need_from_meeting"),
-    ("Next Step", "next_step_summary"),
-    ("Next Step Owner", "next_step_owner"),
-    ("Days Since Status", "days_since_status_update"),
-    ("Days Since Review", "days_since_review"),
-]
 
+def _clean(value: object) -> str:
+    text = str(value or "-").strip() or "-"
+    return escape(text).replace("\n", "<br>")
+
+
+def _attention_class(health: str | None, pattern_flag: bool) -> str:
+    health = health or ""
+    if pattern_flag:
+        return "Repeated Issue"
+    if health in {"Need Decision", "Blocked", "Delayed", "Need Alignment", "Due Soon"}:
+        return health
+    if health in {"Waiting Client", "Waiting Supplier", "Waiting Internal"}:
+        return health
+    return "Normal Follow-up"
+
+
+def _card_html(row: dict, entity_type: str, title: str, entity_id: str) -> str:
+    is_sales = entity_type == "Sales"
+    client = row.get("client_code") or "-"
+    owner = row.get("current_owner") or "-"
+    phase = row.get("phase") or "-"
+    health = row.get("health_status") or "-"
+    result = row.get("result_status") or "-"
+    linked_orders = row.get("linked_orders") or "-"
+    order_no = row.get("order_no") or entity_id or "-"
+
+    if is_sales:
+        identity_items = [
+            ("Client", client),
+            ("Owner", owner),
+            ("Phase", phase),
+            ("Health", health),
+            ("Result", result),
+            ("Linked Orders", linked_orders),
+        ]
+    else:
+        identity_items = [
+            ("Order No", order_no),
+            ("Project ID", row.get("project_id") or "-"),
+            ("Client", client),
+            ("Owner", owner),
+            ("Phase", phase),
+            ("Health", health),
+            ("Result", result),
+        ]
+
+    identity_html = "".join(
+        f"<div class='zt-card-meta-item'><span>{escape(label)}</span><strong>{_clean(value)}</strong></div>"
+        for label, value in identity_items
+    )
+
+    snapshot_items = [
+        ("Next Step Owner", row.get("next_step_owner") or "-"),
+        ("Last Event", row.get("last_event") or "-"),
+        ("Days Since Status", row.get("days_since_status_update") if row.get("days_since_status_update") is not None else "-"),
+        ("Days Since Review", row.get("days_since_review") if row.get("days_since_review") is not None else "-"),
+    ]
+    snapshot_html = "".join(
+        f"<div class='zt-snapshot-card'><div class='zt-snapshot-label'>{escape(label)}</div><div class='zt-snapshot-value'>{_clean(value)}</div></div>"
+        for label, value in snapshot_items
+    )
+
+    detail_fields = SALES_DETAIL_FIELDS if is_sales else OPERATION_DETAIL_FIELDS
+    detail_html = "".join(
+        f"<div class='zt-detail-item'><div class='zt-detail-label'>{escape(label)}</div><div class='zt-detail-value'>{_clean(row.get(key))}</div></div>"
+        for label, key in detail_fields
+    )
+
+    attention_label = _attention_class(row.get("health_status"), bool(row.get("pattern_flag")))
+    attention_html = ""
+    if attention_label != "Normal Follow-up":
+        attention_html = (
+            "<div class='zt-attention-strip'>"
+            f"<b>Attention:</b> {escape(attention_label)}. Please check the next step, owner and timing before the weekly meeting."
+            "</div>"
+        )
+
+    card_label = "Sales project card" if is_sales else "Operation order card"
+    display_id_label = escape(entity_id or "-")
+    title_sep = " — " if is_sales else " · Linked project: "
+
+    return f"""
+    <div class='zt-project-card-head zt-{entity_type.lower()}-card-head'>
+        <div class='zt-project-card-topline'>
+            <div>
+                <div class='zt-project-eyebrow'>{escape(card_label)}</div>
+                <div class='zt-project-title'><span>{display_id_label}</span>{title_sep}{_clean(title)}</div>
+            </div>
+            <div class='zt-project-focus-pill'>{escape(attention_label)}</div>
+        </div>
+        <div class='zt-card-meta-grid'>{identity_html}</div>
+        <div class='zt-snapshot-grid'>{snapshot_html}</div>
+        <div class='zt-detail-grid'>{detail_html}</div>
+        {attention_html}
+    </div>
+    """
 
 
 def open_detail_page(record_type: str, record_id: str) -> None:
@@ -84,7 +183,6 @@ def open_detail_page(record_type: str, record_id: str) -> None:
         st.info("Selected record stored. Open Project / Order Detail from the sidebar.")
 
 
-
 def _jump_records(rows: list[dict]) -> list[tuple[str, str, str]]:
     options: list[tuple[str, str, str]] = []
     for row in rows:
@@ -95,7 +193,6 @@ def _jump_records(rows: list[dict]) -> list[tuple[str, str, str]]:
         label_title = row.get("display_title") or row.get("project_name") or row.get("linked_project_name") or "-"
         options.append((f"{entity_type} | {entity_id} — {label_title}", entity_type, entity_id))
     return options
-
 
 
 def render_project_table(rows: list[dict], columns: list[str], empty_message: str = "No records", enable_jump: bool = True) -> None:
@@ -117,7 +214,6 @@ def render_project_table(rows: list[dict], columns: list[str], empty_message: st
                     open_detail_page(record_type, record_id)
 
 
-
 def render_board_cards(
     rows: list[dict],
     entity_type: str,
@@ -129,58 +225,32 @@ def render_board_cards(
         st.info(empty_message)
         return
 
-    detail_fields = SALES_DETAIL_FIELDS if entity_type == "Sales" else OPERATION_DETAIL_FIELDS
     for row in rows:
         entity_id = row.get("entity_id") or row.get("display_id")
         title = row.get("display_title") or row.get("project_name") or row.get("linked_project_name") or "-"
-        subtitle_left = f"Client Code: {row.get('client_code') or '-'}"
-        subtitle_right = f"Current Owner: {row.get('current_owner') or '-'}"
 
-        st.markdown("<div class='zt-card'>", unsafe_allow_html=True)
-        st.markdown(
-            f"<div class='zt-card-title'>{entity_id} — {title}</div>"
-            f"<div class='zt-card-subtitle'>{subtitle_left} | {subtitle_right}</div>",
-            unsafe_allow_html=True,
-        )
-        render_badges(
-            phase=row.get("phase"),
-            health=row.get("health_status"),
-            result=row.get("result_status"),
-            pattern=bool(row.get("pattern_flag")),
-        )
-
-        st.markdown("<div class='zt-section-kicker'>Current card snapshot</div>", unsafe_allow_html=True)
-        top_cols = st.columns(4)
-        top_cols[0].metric("Next Step Owner", row.get("next_step_owner") or "-")
-        top_cols[1].metric("Last Event", row.get("last_event") or "-")
-        top_cols[2].metric("Days Since Status", row.get("days_since_status_update") if row.get("days_since_status_update") is not None else "-")
-        top_cols[3].metric("Days Since Review", row.get("days_since_review") if row.get("days_since_review") is not None else "-")
-
-        detail_cols = st.columns(2)
-        left_fields = detail_fields[:4]
-        right_fields = detail_fields[4:]
-        for label, key in left_fields:
-            detail_cols[0].write(f"**{label}:** {row.get(key) or '-'}")
-        for label, key in right_fields:
-            detail_cols[1].write(f"**{label}:** {row.get(key) or '-'}")
-
-        if row.get("health_status") in {"Need Decision", "Blocked", "Delayed", "Need Alignment"}:
-            st.markdown(
-                f"<div class='zt-soft-note'><b>Attention:</b> This item is currently marked as <b>{row.get('health_status')}</b>.</div>",
-                unsafe_allow_html=True,
+        with st.container(border=True):
+            st.markdown(_card_html(row, entity_type, str(title), str(entity_id or "-")), unsafe_allow_html=True)
+            render_badges(
+                phase=row.get("phase"),
+                health=row.get("health_status"),
+                result=row.get("result_status"),
+                pattern=bool(row.get("pattern_flag")),
             )
 
-        st.markdown("<div class='zt-action-zone'>", unsafe_allow_html=True)
-        nav_col, helper_col = st.columns([1, 4])
-        if nav_col.button("Open Detail", key=f"open_detail_{entity_type}_{entity_id}", type="primary"):
-            open_detail_page(entity_type, entity_id)
-        helper_col.caption("Open Project / Order Detail for full history, richer editing and lower-frequency actions.")
+            st.markdown(
+                "<div class='zt-action-header'><div class='zt-action-header-title'>Quick actions</div>"
+                "<div class='zt-action-header-note'>Use the buttons below to update this item without opening the full detail page.</div></div>",
+                unsafe_allow_html=True,
+            )
+            nav_col, helper_col = st.columns([1, 4])
+            if nav_col.button("Open Detail", key=f"open_detail_{entity_type}_{entity_id}", type="primary"):
+                open_detail_page(entity_type, entity_id)
+            helper_col.caption("Open Project / Order Detail for full history, richer editing and lower-frequency actions.")
 
-        render_board_action_buttons(
-            entity_type=entity_type,
-            entity_id=entity_id,
-            operator=operator,
-            source_page=source_page,
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+            render_board_action_buttons(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                operator=operator,
+                source_page=source_page,
+            )

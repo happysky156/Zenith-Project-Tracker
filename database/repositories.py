@@ -6,6 +6,24 @@ from typing import Any
 from database.connection import execute, get_connection
 
 
+_SCHEMA_READY = False
+
+
+def _ensure_schema_ready() -> None:
+    """Run additive database migrations before repository queries.
+
+    This keeps older local SQLite databases compatible when new optional
+    columns such as is_archived or followup_status are added.
+    """
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
+    from database.schema import init_db
+
+    init_db()
+    _SCHEMA_READY = True
+
+
 SALES_SNAPSHOT_FIELDS = [
     "snapshot_id",
     "meeting_week",
@@ -111,21 +129,26 @@ def _fetchone_dict(cur) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def _active_where(include_archived: bool) -> str:
+    return "" if include_archived else "WHERE COALESCE(is_archived, 0) = 0"
 
-def _sales_name_map() -> dict[str, str]:
+
+def _sales_name_map(include_archived: bool = False) -> dict[str, str]:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, "SELECT project_id, project_name FROM sales_projects")
+    execute(cur, f"SELECT project_id, project_name FROM sales_projects {_active_where(include_archived)}")
     mapping = {row["project_id"]: row["project_name"] for row in cur.fetchall()}
     conn.close()
     return mapping
 
 
 
-def _linked_orders_map() -> dict[str, list[str]]:
+def _linked_orders_map(include_archived: bool = False) -> dict[str, list[str]]:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, "SELECT project_id, order_no FROM operation_orders ORDER BY order_no")
+    execute(cur, f"SELECT project_id, order_no FROM operation_orders {_active_where(include_archived)} ORDER BY order_no")
     mapping: dict[str, list[str]] = defaultdict(list)
     for row in cur.fetchall():
         if row["project_id"]:
@@ -136,6 +159,7 @@ def _linked_orders_map() -> dict[str, list[str]]:
 
 # ---------- existence ----------
 def sales_project_exists(project_id: str) -> bool:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
     execute(cur, "SELECT 1 FROM sales_projects WHERE project_id = ?", (project_id,))
@@ -146,6 +170,7 @@ def sales_project_exists(project_id: str) -> bool:
 
 
 def operation_order_exists(order_no: str) -> bool:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
     execute(cur, "SELECT 1 FROM operation_orders WHERE order_no = ?", (order_no,))
@@ -155,14 +180,15 @@ def operation_order_exists(order_no: str) -> bool:
 
 
 # ---------- list / get ----------
-def list_sales_projects() -> list[dict[str, Any]]:
+def list_sales_projects(include_archived: bool = False) -> list[dict[str, Any]]:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, "SELECT * FROM sales_projects ORDER BY created_at DESC, project_id ASC")
+    execute(cur, f"SELECT * FROM sales_projects {_active_where(include_archived)} ORDER BY created_at DESC, project_id ASC")
     rows = _fetchall_dicts(cur)
     conn.close()
 
-    linked_map = _linked_orders_map()
+    linked_map = _linked_orders_map(include_archived=include_archived)
     for row in rows:
         linked_orders = linked_map.get(row["project_id"], [])
         row["linked_order_count"] = len(linked_orders)
@@ -171,34 +197,37 @@ def list_sales_projects() -> list[dict[str, Any]]:
 
 
 
-def list_operation_orders() -> list[dict[str, Any]]:
+def list_operation_orders(include_archived: bool = False) -> list[dict[str, Any]]:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, "SELECT * FROM operation_orders ORDER BY created_at DESC, order_no ASC")
+    execute(cur, f"SELECT * FROM operation_orders {_active_where(include_archived)} ORDER BY created_at DESC, order_no ASC")
     rows = _fetchall_dicts(cur)
     conn.close()
 
-    name_map = _sales_name_map()
+    name_map = _sales_name_map(include_archived=True)
     for row in rows:
         row["linked_project_name"] = name_map.get(row.get("project_id") or "")
     return rows
 
 
 
-def list_sales_project_ids() -> list[str]:
+def list_sales_project_ids(include_archived: bool = False) -> list[str]:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, "SELECT project_id FROM sales_projects ORDER BY project_id")
+    execute(cur, f"SELECT project_id FROM sales_projects {_active_where(include_archived)} ORDER BY project_id")
     rows = [row["project_id"] for row in cur.fetchall()]
     conn.close()
     return rows
 
 
 
-def list_operation_order_ids() -> list[str]:
+def list_operation_order_ids(include_archived: bool = False) -> list[str]:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, "SELECT order_no FROM operation_orders ORDER BY order_no")
+    execute(cur, f"SELECT order_no FROM operation_orders {_active_where(include_archived)} ORDER BY order_no")
     rows = [row["order_no"] for row in cur.fetchall()]
     conn.close()
     return rows
@@ -206,6 +235,7 @@ def list_operation_order_ids() -> list[str]:
 
 
 def get_sales_project(project_id: str) -> dict[str, Any] | None:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
     execute(cur, "SELECT * FROM sales_projects WHERE project_id = ?", (project_id,))
@@ -222,6 +252,7 @@ def get_sales_project(project_id: str) -> dict[str, Any] | None:
 
 
 def get_operation_order(order_no: str) -> dict[str, Any] | None:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
     execute(cur, "SELECT * FROM operation_orders WHERE order_no = ?", (order_no,))
@@ -239,15 +270,18 @@ def get_operation_order(order_no: str) -> dict[str, Any] | None:
 
 
 
-def get_linked_orders_for_project(project_id: str) -> list[dict[str, Any]]:
+def get_linked_orders_for_project(project_id: str, include_archived: bool = False) -> list[dict[str, Any]]:
+    _ensure_schema_ready()
     conn = get_connection()
     cur = conn.cursor()
+    archived_filter = "" if include_archived else "AND COALESCE(is_archived, 0) = 0"
     execute(
         cur,
-        """
+        f"""
         SELECT order_no, project_id, client_code, phase, health_status, result_status, last_event, target_date, review_this_week
         FROM operation_orders
         WHERE project_id = ?
+          {archived_filter}
         ORDER BY created_at DESC, order_no ASC
         """,
         (project_id,),
@@ -307,6 +341,7 @@ def upsert_operation_base_fields(record: dict[str, Any]) -> str:
 
 # ---------- generic update ----------
 def update_sales_project_fields(project_id: str, updates: dict[str, Any]) -> None:
+    _ensure_schema_ready()
     if not updates:
         return
     conn = get_connection()
@@ -321,6 +356,7 @@ def update_sales_project_fields(project_id: str, updates: dict[str, Any]) -> Non
 
 
 def update_operation_order_fields(order_no: str, updates: dict[str, Any]) -> None:
+    _ensure_schema_ready()
     if not updates:
         return
     conn = get_connection()

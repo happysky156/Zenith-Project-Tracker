@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -24,6 +25,7 @@ logger = get_logger("meeting_service")
 MEETING_ACTIONS = [
     "Reviewed No Change",
     "Discussed / Follow up",
+    "Mark Follow-up Done",
     "Review Next Meeting",
     "Decision Made / Close",
     "High-Risk Follow-up",
@@ -34,6 +36,18 @@ MEETING_ACTIONS = [
 class MeetingActionError(Exception):
     pass
 
+
+
+def _normalize_multi_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(part).strip() for part in value if str(part).strip()]
+    else:
+        parts = [str(value).strip()] if str(value).strip() else []
+    return ", ".join(parts) or None
 
 
 def _record_as_dict(entity_type: str, entity_id: str) -> dict[str, Any]:
@@ -80,6 +94,11 @@ def _boss_priority_tuple(row: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _focus_reason(row: dict[str, Any]) -> str:
+    reason_tags = row.get("meeting_reason_tags") or []
+    if "Due / Follow-up" in reason_tags:
+        return "Follow-up is due and needs checking."
+    if "Manual" in reason_tags and len(reason_tags) == 1:
+        return "Marked for this week's meeting review."
     health = row.get("health_status")
     request_type = row.get("request_type")
     if health == "Need Decision" or request_type == "Decision":
@@ -139,7 +158,14 @@ def _build_meeting_updates(record: dict[str, Any], action_name: str) -> tuple[di
         event_note = "Reviewed in meeting with no business-status change."
     elif action_name == "Discussed / Follow up":
         updates["discussed_this_week"] = 1
+        if record.get("next_step_summary"):
+            updates["followup_status"] = record.get("followup_status") or "Open"
         discussed_flag = True
+    elif action_name == "Mark Follow-up Done":
+        updates["discussed_this_week"] = 1
+        updates["followup_status"] = "Done"
+        discussed_flag = True
+        event_note = "Follow-up marked as done."
     elif action_name == "Review Next Meeting":
         updates["discussed_this_week"] = 1
         updates["review_this_week"] = 1
@@ -157,6 +183,7 @@ def _build_meeting_updates(record: dict[str, Any], action_name: str) -> tuple[di
     elif action_name == "High-Risk Follow-up":
         updates["discussed_this_week"] = 1
         updates["review_this_week"] = 1
+        updates["followup_status"] = "Blocked"
         updates["request_type"] = "Decision"
         updates["need_decision_from"] = record.get("need_decision_from") or "Ehab"
         updates["health_status"] = "Need Decision"
@@ -261,8 +288,9 @@ def save_meeting_followup(
     meeting_note: str | None,
     next_step_summary: str | None,
     next_step_owner: str | None,
-    target_date: str | None,
-    operator: str,
+    next_step_support: Any | None = None,
+    target_date: str | None = None,
+    operator: str = "",
     source_page: str = "Meeting Mode",
 ) -> dict[str, Any]:
     record = _record_as_dict(entity_type, entity_id)
@@ -270,13 +298,16 @@ def save_meeting_followup(
     normalized_note = (meeting_note or "").strip() or None
     normalized_next_step = (next_step_summary or "").strip() or None
     normalized_owner = (next_step_owner or "").strip() or None
+    normalized_support = _normalize_multi_value(next_step_support)
     normalized_target = (target_date or "").strip() or None
 
     candidate_updates = {
         "meeting_note": normalized_note,
         "next_step_summary": normalized_next_step,
         "next_step_owner": normalized_owner,
+        "next_step_support": normalized_support,
         "target_date": normalized_target,
+        "followup_status": "Open" if normalized_next_step else None,
     }
 
     changed_fields = [
@@ -308,8 +339,9 @@ def save_meeting_followup(
         note_parts.append(f"note: {normalized_note}")
     if normalized_next_step:
         owner_part = normalized_owner or record_after.get("current_owner") or "-"
+        support_part = f" | support {normalized_support}" if normalized_support else ""
         due_part = f" | due {normalized_target}" if normalized_target else ""
-        note_parts.append(f"next: {normalized_next_step} [{owner_part}]{due_part}")
+        note_parts.append(f"next: {normalized_next_step} [{owner_part}]{support_part}{due_part}")
 
     insert_event_log(
         {
@@ -352,18 +384,61 @@ def generate_weekly_snapshot(rows: list[dict[str, Any]]) -> int:
 
 
 
+
+def _summary_has_value(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and text.lower() not in {"-", "nan", "none", "null"}
+
+
+def _summary_parse_date(value: Any) -> date | None:
+    if not _summary_has_value(value):
+        return None
+    try:
+        return date.fromisoformat(str(value).strip())
+    except Exception:
+        return None
+
+
+def _summary_need_decision(row: dict[str, Any]) -> bool:
+    health = str(row.get("health_status") or "").strip()
+    request_type = str(row.get("request_type") or "").strip()
+    return (
+        health in {"Need Decision", "Need Alignment"}
+        or request_type in {"Decision", "Approval", "Alignment"}
+        or _summary_has_value(row.get("need_decision_from"))
+        or _summary_has_value(row.get("need_from_meeting"))
+    )
+
+
+def _summary_blocked(row: dict[str, Any]) -> bool:
+    return str(row.get("health_status") or "").strip() == "Blocked" or _summary_has_value(row.get("block_point"))
+
+
+def _summary_due_followup(row: dict[str, Any]) -> bool:
+    if str(row.get("followup_status") or "").strip().lower() == "done":
+        return False
+    if not _summary_has_value(row.get("next_step_summary")):
+        return False
+    if not _summary_has_value(row.get("next_step_owner")):
+        return False
+    target = _summary_parse_date(row.get("target_date"))
+    return bool(target and target <= date.today())
+
+
+def _summary_repeated(row: dict[str, Any]) -> bool:
+    repeated = str(row.get("repeated_issue") or "").strip().lower()
+    return bool(row.get("pattern_flag")) or repeated in {"yes", "true", "1", "y"}
+
+
 def get_meeting_summary_metrics(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "total": len(rows),
-        "need_decision": sum(1 for r in rows if r.get("health_status") == "Need Decision" or r.get("request_type") == "Decision"),
-        "blocked": sum(1 for r in rows if r.get("health_status") == "Blocked"),
-        "delayed_due": sum(1 for r in rows if r.get("health_status") in {"Delayed", "Due Soon"}),
-        "pattern": sum(1 for r in rows if bool(r.get("pattern_flag"))),
+        "need_decision": sum(1 for r in rows if _summary_need_decision(r)),
+        "blocked": sum(1 for r in rows if _summary_blocked(r)),
+        "delayed_due": sum(1 for r in rows if _summary_due_followup(r)),
+        "pattern": sum(1 for r in rows if _summary_repeated(r)),
         "review": sum(1 for r in rows if bool(r.get("review_this_week"))),
     }
-
-
-
 def _line_for_summary(row: dict[str, Any]) -> str:
     head = f"{row.get('display_id')} ({row.get('display_title') or '-'})"
     parts = [head]
@@ -410,7 +485,7 @@ def generate_meeting_minutes_text(rows: list[dict[str, Any]], view_name: str) ->
     lines = [
         f"Meeting Minutes ({week}) — {view_name}",
         f"Total items: {metrics['total']}",
-        f"Need decision: {metrics['need_decision']} | Blocked: {metrics['blocked']} | Delayed / Due Soon: {metrics['delayed_due']} | Repeated issues: {metrics['pattern']}",
+        f"Need decision: {metrics['need_decision']} | Blocked: {metrics['blocked']} | Due / Follow-up: {metrics['delayed_due']} | Repeated issues: {metrics['pattern']}",
         "",
         "Items reviewed:",
     ]
@@ -444,6 +519,8 @@ def build_followup_export_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
                 "Next Step": row.get("next_step_summary") or "-",
                 "Next Step Owner": row.get("next_step_owner") or row.get("current_owner") or "-",
                 "Target Date": row.get("target_date") or "-",
+                "Follow-up Status": row.get("followup_status") or "Open",
+                "Meeting Reason": row.get("meeting_pool_reason_text") or ", ".join(row.get("meeting_reason_tags") or []) or "-",
                 "Decision By": row.get("need_decision_from") or "-",
                 "Last Event": row.get("last_event") or "-",
                 "Review This Week": "Yes" if row.get("review_this_week") else "No",
@@ -455,15 +532,15 @@ def build_followup_export_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
 def generate_post_meeting_summary(rows: list[dict[str, Any]], view_name: str) -> dict[str, str]:
     week = current_meeting_week()
     metrics = get_meeting_summary_metrics(rows)
-    need_decision_rows = [r for r in rows if r.get("health_status") == "Need Decision" or r.get("request_type") == "Decision"]
-    risk_rows = [r for r in rows if r.get("health_status") in {"Blocked", "Delayed", "Due Soon"}]
-    pattern_rows = [r for r in rows if bool(r.get("pattern_flag"))]
-    follow_up_rows = [r for r in rows if r.get("next_step_summary") or r.get("meeting_note")]
+    need_decision_rows = [r for r in rows if _summary_need_decision(r)]
+    risk_rows = [r for r in rows if _summary_blocked(r) or _summary_due_followup(r)]
+    pattern_rows = [r for r in rows if _summary_repeated(r)]
+    follow_up_rows = [r for r in rows if _summary_has_value(r.get("next_step_summary")) or _summary_has_value(r.get("meeting_note"))]
 
     boss_lines = [
         f"Weekly Meeting Summary ({week}) — {view_name}",
         f"Total items reviewed: {metrics['total']}",
-        f"Need decision: {metrics['need_decision']}; Blocked: {metrics['blocked']}; Delayed / Due Soon: {metrics['delayed_due']}; Repeated issues: {metrics['pattern']}",
+        f"Need decision: {metrics['need_decision']}; Blocked: {metrics['blocked']}; Due / Follow-up: {metrics['delayed_due']}; Repeated issues: {metrics['pattern']}",
         "",
         "Boss priorities:",
     ]

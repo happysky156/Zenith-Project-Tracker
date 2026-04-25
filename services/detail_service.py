@@ -174,3 +174,15 @@ def update_meeting_fields(entity_type: str, entity_id: str, updates: dict[str, A
         source_page="Project Detail",
         event_type="Meeting Fields Updated",
     )
+
+
+def set_record_archive_status(entity_type: str, entity_id: str, archived: bool, operator: str) -> dict[str, Any]:
+    """Archive or restore a record without physically deleting it."""
+    return _apply_update(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        updates={"is_archived": int(bool(archived))},
+        operator=operator,
+        source_page="Project Detail",
+        event_type="Record Archived" if archived else "Record Restored",
+    )

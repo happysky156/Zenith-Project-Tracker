@@ -12,6 +12,14 @@ PEOPLE = [
     "Tiffany",
 ]
 
+COMPANY_EMAIL_DOMAIN = "zenith-ecs.com"
+
+PEOPLE_EMAIL_MAP = {
+    person: f"{person.lower()}@{COMPANY_EMAIL_DOMAIN}" for person in PEOPLE
+}
+
+EMAIL_TO_PERSON = {email.lower(): person for person, email in PEOPLE_EMAIL_MAP.items()}
+
 RECORD_TYPES = ["Sales", "Operation"]
 PRIORITIES = ["High", "Medium", "Low"]
 
