@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import html
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,19 +15,19 @@ from core.dictionaries import COMPANY_EMAIL_DOMAIN, PEOPLE_EMAIL_MAP
 from database.connection import execute, get_connection
 from database.schema import init_db
 
-try:
-    import requests
-except Exception:  # pragma: no cover - handled in UI
-    requests = None  # type: ignore
-
-
 SESSION_COOKIE_DAYS = 30
-OTP_RESEND_SECONDS = 70
 SESSION_STORAGE_KEY = "zenith_project_tracker_session_token"
 SESSION_COOKIE_NAME = "zenith_project_tracker_session"
 QUERY_SESSION_KEY = "zt_session"
 AUTH_USER_STATE_KEY = "auth_user"
 AUTH_TOKEN_STATE_KEY = "auth_session_token"
+USER_ACCESS_CODES_SECTION = "USER_ACCESS_CODES"
+# Optional legacy fallback. Only used when USER_ACCESS_CODES is not configured.
+ACCESS_CODE_SECRET_NAMES = (
+    "INTERNAL_ACCESS_CODE",
+    "ZENITH_ACCESS_CODE",
+    "APP_ACCESS_CODE",
+)
 
 
 @dataclass(frozen=True)
@@ -63,24 +65,6 @@ def _normalize_email(email: str | None) -> str:
     return str(email or "").strip().lower()
 
 
-def _otp_last_sent_key(email: str) -> str:
-    return f"auth_otp_last_sent_at::{_normalize_email(email)}"
-
-
-def _seconds_until_resend_allowed(email: str) -> int:
-    value = st.session_state.get(_otp_last_sent_key(email))
-    sent_at = _parse_iso(str(value)) if value else None
-    if not sent_at:
-        return 0
-    elapsed = (_utc_now() - sent_at).total_seconds()
-    remaining = OTP_RESEND_SECONDS - int(elapsed)
-    return max(0, remaining)
-
-
-def _mark_otp_sent(email: str) -> None:
-    st.session_state[_otp_last_sent_key(email)] = _to_iso(_utc_now())
-
-
 def _is_company_email(email: str) -> bool:
     return email.endswith(f"@{COMPANY_EMAIL_DOMAIN.lower()}")
 
@@ -90,8 +74,11 @@ def _token_hash(token: str) -> str:
 
 
 def _get_secret(*names: str) -> str | None:
+    """Read a secret from Streamlit Cloud/local secrets, then environment variables."""
     for name in names:
-        value = None
+        value = os.getenv(name) or os.getenv(name.lower())
+        if value:
+            return str(value).strip()
         try:
             value = st.secrets.get(name)  # type: ignore[attr-defined]
         except Exception:
@@ -101,32 +88,79 @@ def _get_secret(*names: str) -> str | None:
     return None
 
 
-def _supabase_settings() -> tuple[str | None, str | None]:
-    url = _get_secret("SUPABASE_URL", "supabase_url")
-    key = _get_secret("SUPABASE_ANON_KEY", "supabase_anon_key")
-    if url:
-        url = url.rstrip("/")
-    return url, key
+def _get_secret_section(section_name: str) -> dict[str, str]:
+    """Read a TOML section from Streamlit Secrets.
+
+    Streamlit Cloud secrets can contain sections such as:
+
+    [USER_ACCESS_CODES]
+    "harley@zenith-ecs.com" = "code-for-harley"
+
+    This helper converts the section to a normal dict and strips empty values.
+    """
+    try:
+        raw_section = st.secrets.get(section_name)  # type: ignore[attr-defined]
+    except Exception:
+        raw_section = None
+    if not raw_section:
+        return {}
+
+    try:
+        items = dict(raw_section).items()
+    except Exception:
+        return {}
+
+    cleaned: dict[str, str] = {}
+    for key, value in items:
+        email = _normalize_email(str(key))
+        code = str(value or "").strip()
+        if email and code:
+            cleaned[email] = code
+    return cleaned
 
 
-def _supabase_headers(anon_key: str) -> dict[str, str]:
-    return {
-        "apikey": anon_key,
-        "Authorization": f"Bearer {anon_key}",
-        "Content-Type": "application/json",
-    }
+def _get_personal_access_codes() -> dict[str, str]:
+    return _get_secret_section(USER_ACCESS_CODES_SECTION)
 
 
-def _check_supabase_ready() -> tuple[bool, str | None, str | None, str | None]:
-    if requests is None:
-        return False, None, None, "The 'requests' package is not installed. Please run: pip install -r requirements.txt"
-    url, key = _supabase_settings()
-    if not url or not key:
-        return False, url, key, (
-            "Supabase login is not configured yet. Please add SUPABASE_URL and "
-            "SUPABASE_ANON_KEY in .streamlit/secrets.toml."
-        )
-    return True, url, key, None
+def _get_internal_access_code() -> str | None:
+    """Legacy shared-code fallback for older deployments.
+
+    v17.6 expects per-user codes in [USER_ACCESS_CODES]. The shared code is
+    only kept as a fallback so the app can still start during migration.
+    """
+    return _get_secret(*ACCESS_CODE_SECRET_NAMES)
+
+
+def _is_access_code_configured() -> bool:
+    return bool(_get_personal_access_codes() or _get_internal_access_code())
+
+
+def _get_expected_access_code_for_email(email: str) -> tuple[str | None, str]:
+    normalized = _normalize_email(email)
+    personal_codes = _get_personal_access_codes()
+    if personal_codes:
+        return personal_codes.get(normalized), "personal"
+    return _get_internal_access_code(), "shared"
+
+
+def _verify_internal_access_code(email: str, input_code: str | None) -> tuple[bool, str]:
+    expected, mode = _get_expected_access_code_for_email(email)
+    provided = str(input_code or "").strip()
+    if not provided:
+        return False, "Please enter your personal internal access code."
+    if mode == "personal" and not expected:
+        return False, "No personal access code is configured for this email in USER_ACCESS_CODES."
+    if not expected:
+        return False, "Access code is not configured in Streamlit Secrets."
+    if not hmac.compare_digest(provided, expected):
+        return False, "Access code is incorrect for this email. Please check your personal code."
+    return True, ""
+
+
+def _code_config_status_by_email() -> dict[str, bool]:
+    codes = _get_personal_access_codes()
+    return {email.lower(): email.lower() in codes for email in PEOPLE_EMAIL_MAP.values()}
 
 
 def get_app_user(email: str) -> AuthUser | None:
@@ -172,119 +206,42 @@ def is_allowed_login_email(email: str) -> tuple[bool, str]:
     return True, ""
 
 
-def send_login_otp(email: str) -> tuple[bool, str]:
-    """Send Supabase email OTP after local company-domain and app-user checks.
+def login_with_internal_code(email: str, access_code: str) -> tuple[bool, str, dict[str, str] | None]:
+    """Meeting-friendly login: company email + personal internal access code.
 
-    Supabase limits OTP sends to the same email, normally one request per
-    60 seconds. We add a small local cooldown so users do not repeatedly click
-    the button and hit the remote rate limit during meetings.
+    Each colleague has an individual code in Streamlit Secrets under
+    [USER_ACCESS_CODES]. The email identifies the user; the matching personal
+    code verifies that this user may log in. After success, the app creates a
+    random 30-day device session, so users do not need to enter the code again
+    in the same browser unless they log out or clear browser data.
     """
     normalized = _normalize_email(email)
-    allowed, message = is_allowed_login_email(normalized)
-    if not allowed:
-        return False, message
 
-    wait_seconds = _seconds_until_resend_allowed(normalized)
-    if wait_seconds > 0:
-        return False, f"A code was already sent. Please wait {wait_seconds} seconds before requesting a new one."
-
-    ready, url, anon_key, error = _check_supabase_ready()
-    if not ready:
-        return False, error or "Supabase is not configured."
-
-    try:
-        response = requests.post(  # type: ignore[union-attr]
-            f"{url}/auth/v1/otp",
-            headers=_supabase_headers(str(anon_key)),
-            json={"email": normalized, "create_user": True},
-            timeout=20,
-        )
-    except Exception as exc:
-        return False, f"Failed to contact Supabase Auth: {exc}"
-
-    if response.status_code >= 400:
-        detail = ""
-        try:
-            payload = response.json()
-            detail = payload.get("msg") or payload.get("message") or str(payload)
-        except Exception:
-            detail = response.text
-        if "rate limit" in str(detail).lower():
-            return False, (
-                "Supabase email rate limit was reached. Please wait about 60 seconds, "
-                "then request a new code. Do not repeatedly click the send button."
-            )
-        return False, f"Failed to send verification code: {detail}"
-
-    st.session_state["pending_login_email"] = normalized
-    _mark_otp_sent(normalized)
-    return True, "Verification code sent. Please check your company email."
-
-
-def _verify_supabase_otp(url: str, anon_key: str, email: str, code: str, verify_type: str):
-    """Call Supabase OTP verification endpoint with one verification type."""
-    return requests.post(  # type: ignore[union-attr]
-        f"{url}/auth/v1/verify",
-        headers=_supabase_headers(str(anon_key)),
-        json={"email": email, "token": code, "type": verify_type},
-        timeout=20,
-    )
-
-
-def _extract_supabase_error(response) -> str:
-    try:
-        payload = response.json()
-        return str(payload.get("msg") or payload.get("message") or payload)
-    except Exception:
-        return str(getattr(response, "text", "") or "Unknown Supabase Auth error")
-
-
-def verify_login_otp(email: str, token: str) -> tuple[bool, str, dict[str, str] | None]:
-    normalized = _normalize_email(email)
-    code = str(token or "").strip().replace(" ", "")
-    if not code:
-        return False, "Please enter the verification code.", None
+    if not _is_access_code_configured():
+        return False, (
+            "Personal access codes are not configured. Please add [USER_ACCESS_CODES] "
+            "in Streamlit Cloud Secrets."
+        ), None
 
     allowed, message = is_allowed_login_email(normalized)
     if not allowed:
         return False, message, None
 
+    ok_code, code_message = _verify_internal_access_code(normalized, access_code)
+    if not ok_code:
+        return False, code_message, None
+
     app_user = get_app_user(normalized)
     if not app_user:
         return False, "This user is not active.", None
 
-    ready, url, anon_key, error = _check_supabase_ready()
-    if not ready:
-        return False, error or "Supabase is not configured.", None
-
-    # Supabase may send a code through different email templates depending on
-    # whether the Auth user already exists. Existing users normally verify with
-    # type="email". A first-time user can receive the Confirm signup template,
-    # which verifies with type="signup". We try the intended fast path first,
-    # then fallback once to avoid the false "expired" message seen in testing.
-    verify_types = ["email", "signup", "magiclink"]
-    last_detail = ""
-    try:
-        for verify_type in verify_types:
-            response = _verify_supabase_otp(str(url), str(anon_key), normalized, code, verify_type)
-            if response.status_code < 400:
-                local_session_token = create_device_session(app_user)
-                user_dict = app_user.as_dict()
-                st.session_state[AUTH_USER_STATE_KEY] = user_dict
-                st.session_state[AUTH_TOKEN_STATE_KEY] = local_session_token
-                _update_last_login(app_user.email)
-                return True, "Login successful.", user_dict
-            last_detail = _extract_supabase_error(response)
-    except Exception as exc:
-        return False, f"Failed to verify the code with Supabase Auth: {exc}", None
-
-    friendly = str(last_detail or "").lower()
-    if "expired" in friendly or "invalid" in friendly:
-        return False, (
-            "Verification failed: the code is invalid or expired. Please request a new code, "
-            "then enter the newest code only. If you just requested a code, wait 60 seconds before requesting another one."
-        ), None
-    return False, f"Verification failed: {last_detail}", None
+    local_session_token = create_device_session(app_user)
+    user_dict = app_user.as_dict()
+    st.session_state[AUTH_USER_STATE_KEY] = user_dict
+    st.session_state[AUTH_TOKEN_STATE_KEY] = local_session_token
+    st.session_state["last_login_email"] = normalized
+    _update_last_login(app_user.email)
+    return True, "Login successful. This browser will be remembered for 30 days.", user_dict
 
 
 def _update_last_login(email: str) -> None:
@@ -344,8 +301,7 @@ def verify_device_session(token: str | None) -> AuthUser | None:
         conn.close()
         return None
 
-    # Do not update last_seen_at on every page load. A database write during
-    # every login-state check makes page switching slow on Streamlit Cloud.
+    # Avoid last_seen_at writes on each page switch; this keeps meetings fast.
     conn.close()
     return AuthUser(email=str(row["email"]).lower(), display_name=str(row["display_name"]), role=str(row["role"] or "editor"))
 
@@ -363,7 +319,7 @@ def revoke_current_session() -> None:
             pass
     st.session_state.pop(AUTH_USER_STATE_KEY, None)
     st.session_state.pop(AUTH_TOKEN_STATE_KEY, None)
-    st.session_state.pop("pending_login_email", None)
+    st.session_state.pop("last_login_email", None)
 
 
 def get_current_user() -> dict[str, str] | None:
@@ -458,6 +414,7 @@ def _render_browser_token_loader() -> None:
         width=0,
     )
 
+
 def _render_store_browser_token(token: str) -> None:
     safe_token = html.escape(token)
     storage_key = html.escape(SESSION_STORAGE_KEY)
@@ -531,6 +488,7 @@ def _render_clear_browser_token(reload: bool = True) -> None:
         width=0,
     )
 
+
 def render_current_user_sidebar() -> None:
     user = get_current_user()
     if not user:
@@ -579,39 +537,26 @@ def render_login_page() -> None:
             <div class="zl-kicker">Zenith Project Tracker</div>
             <div class="zl-title">Company login required</div>
             <div class="zl-text">
-                Please use your <span class="zl-rule">@{COMPANY_EMAIL_DOMAIN}</span> company email.
-                After the first successful login, this browser will be remembered for {SESSION_COOKIE_DAYS} days unless you log out or clear browser data.
+                Please use your <span class="zl-rule">@{COMPANY_EMAIL_DOMAIN}</span> company email
+                and your personal internal access code. After successful login, this browser will be remembered
+                for {SESSION_COOKIE_DAYS} days unless you log out or clear browser data.
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    with st.form("auth_send_code_form"):
-        default_email = st.session_state.get("pending_login_email", "")
+    if not _is_access_code_configured():
+        st.warning("USER_ACCESS_CODES is not configured in Streamlit Secrets yet.")
+
+    with st.form("auth_internal_code_form"):
+        default_email = st.session_state.get("last_login_email", "")
         email = st.text_input("Company email", value=default_email, placeholder=f"harley@{COMPANY_EMAIL_DOMAIN}")
-        send_submitted = st.form_submit_button("Send verification code", type="primary")
+        access_code = st.text_input("Personal internal access code", type="password", placeholder="Your personal internal access code")
+        submitted = st.form_submit_button("Login", type="primary")
 
-    if st.session_state.get("pending_login_email"):
-        wait_seconds = _seconds_until_resend_allowed(str(st.session_state.get("pending_login_email")))
-        if wait_seconds > 0:
-            st.caption(f"Code already sent. You can request another code in about {wait_seconds} seconds.")
-
-    if send_submitted:
-        ok, message = send_login_otp(email)
-        if ok:
-            st.success(message)
-        else:
-            st.error(message)
-
-    pending_email = st.session_state.get("pending_login_email")
-    with st.form("auth_verify_code_form"):
-        verify_email = st.text_input("Email for verification", value=pending_email or "", placeholder=f"harley@{COMPANY_EMAIL_DOMAIN}")
-        code = st.text_input("Verification code", placeholder="6-digit code from email")
-        verify_submitted = st.form_submit_button("Login")
-
-    if verify_submitted:
-        ok, message, user = verify_login_otp(verify_email, code)
+    if submitted:
+        ok, message, user = login_with_internal_code(email, access_code)
         if ok:
             st.success(message)
             token = st.session_state.get(AUTH_TOKEN_STATE_KEY)
@@ -621,8 +566,16 @@ def render_login_page() -> None:
         else:
             st.error(message)
 
-    with st.expander("Allowed company users in phase 1", expanded=False):
-        allowed = [f"{name} — {email}" for name, email in PEOPLE_EMAIL_MAP.items()]
+    with st.expander("Allowed company users in this version", expanded=False):
+        code_status = _code_config_status_by_email()
+        personal_mode = bool(_get_personal_access_codes())
+        allowed = []
+        for name, email in PEOPLE_EMAIL_MAP.items():
+            if personal_mode:
+                status = "code configured" if code_status.get(email.lower()) else "code missing"
+                allowed.append(f"{name} — {email} — {status}")
+            else:
+                allowed.append(f"{name} — {email}")
         st.write("\n".join(allowed))
 
 
