@@ -22,6 +22,20 @@ from database.repositories import (
 )
 from utils.dates import days_since_text
 
+try:
+    import streamlit as st
+except Exception:  # pragma: no cover - non-Streamlit tests
+    st = None  # type: ignore
+
+
+def _cache_data(ttl: int = 300):
+    """Cache expensive read-only database views for meeting-speed use."""
+    if st is None:
+        def decorator(func):
+            return func
+        return decorator
+    return st.cache_data(ttl=ttl, show_spinner=False)
+
 HIGH_ATTENTION_HEALTH = {"Need Decision", "Need Alignment", "Blocked", "Delayed", "Due Soon"}
 SALES_CLOSED_RESULTS = {"Won", "Lost"}
 OPERATION_CLOSED_RESULTS = {"Paid Closed", "Cancelled"}
@@ -179,6 +193,7 @@ def _attention_review_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
+@_cache_data(ttl=300)
 def get_dashboard_metrics() -> dict[str, Any]:
     sales = [_decorate_common(r, "Sales") for r in list_sales_projects()]
     operations = [_decorate_common(r, "Operation") for r in list_operation_orders()]
@@ -228,6 +243,7 @@ def get_dashboard_metrics() -> dict[str, Any]:
     }
 
 
+@_cache_data(ttl=300)
 def list_board_projects(record_type: str, include_archived: bool = False) -> list[dict[str, Any]]:
     if record_type == "Sales":
         return [_decorate_common(r, "Sales") for r in list_sales_projects(include_archived=include_archived)]
@@ -285,10 +301,12 @@ def apply_board_filters(rows: list[dict[str, Any]], filters: dict[str, object], 
     return filtered
 
 
+@_cache_data(ttl=300)
 def list_detail_ids(record_type: str, include_archived: bool = False) -> list[str]:
     return list_sales_project_ids(include_archived=include_archived) if record_type == "Sales" else list_operation_order_ids(include_archived=include_archived)
 
 
+@_cache_data(ttl=300)
 def get_record_detail(record_type: str, record_id: str) -> dict[str, Any] | None:
     row = get_sales_project(record_id) if record_type == "Sales" else get_operation_order(record_id)
     if row is None:
@@ -299,10 +317,12 @@ def get_record_detail(record_type: str, record_id: str) -> dict[str, Any] | None
     return detail
 
 
+@_cache_data(ttl=300)
 def get_record_timeline(record_type: str, record_id: str) -> list[dict[str, Any]]:
     return list_event_logs(record_type, record_id)
 
 
+@_cache_data(ttl=300)
 def get_record_snapshots(record_type: str, record_id: str) -> list[dict[str, Any]]:
     return list_meeting_snapshots(record_type, record_id)
 
@@ -389,6 +409,7 @@ def _meeting_reason_tags(row: dict[str, Any]) -> list[str]:
     return reasons
 
 
+@_cache_data(ttl=300)
 def get_meeting_pool() -> list[dict[str, Any]]:
     rows = list_board_projects("Sales") + list_board_projects("Operation")
     meeting_rows: list[dict[str, Any]] = []

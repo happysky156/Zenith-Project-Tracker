@@ -4,6 +4,9 @@ from database.connection import execute, get_connection, using_postgres
 from core.dictionaries import PEOPLE_EMAIL_MAP
 
 
+_INIT_DONE = False
+
+
 SALES_CORE_COLUMNS_SQL = """
     project_id TEXT PRIMARY KEY,
     project_name TEXT NOT NULL,
@@ -276,7 +279,16 @@ def _seed_default_app_users(cur) -> None:
             (email.lower(), display_name, "editor", now),
         )
 
-def init_db() -> None:
+def init_db(force: bool = False) -> None:
+    """Initialise or migrate the database schema once per Streamlit process.
+
+    This avoids remote Supabase schema checks on every Streamlit rerun/page
+    switch while keeping a force option for future manual maintenance.
+    """
+    global _INIT_DONE
+    if _INIT_DONE and not force:
+        return
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -309,3 +321,4 @@ def init_db() -> None:
 
     conn.commit()
     conn.close()
+    _INIT_DONE = True

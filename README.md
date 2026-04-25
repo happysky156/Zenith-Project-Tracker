@@ -125,3 +125,17 @@ This package intentionally excludes:
 - Python cache files
 - local log files
 - virtual environment folders
+
+## v17.3 meeting-speed login optimisation
+
+This package includes the meeting-speed login fix:
+
+- Login state is remembered in the browser for 30 days using a secure random device token saved in `app_user_sessions`.
+- Page switches first use `st.session_state`, so authenticated users do not re-check Supabase on every page.
+- Browser remember-me uses a cookie plus a localStorage fallback bridge.
+- Database schema initialisation is guarded so it runs once per Streamlit process instead of on every rerun.
+- Dashboard, board, detail and meeting read models use short Streamlit data caching.
+- Any database write clears cached read data so meeting updates appear immediately.
+- PostgreSQL connections use a small psycopg pool when `psycopg-pool` is installed.
+
+After deployment, please use **Manage app → Reboot app** once after updating Secrets or requirements.

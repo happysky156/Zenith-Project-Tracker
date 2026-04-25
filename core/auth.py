@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - handled in UI
 
 SESSION_COOKIE_DAYS = 30
 SESSION_STORAGE_KEY = "zenith_project_tracker_session_token"
+SESSION_COOKIE_NAME = "zenith_project_tracker_session"
 QUERY_SESSION_KEY = "zt_session"
 AUTH_USER_STATE_KEY = "auth_user"
 AUTH_TOKEN_STATE_KEY = "auth_session_token"
@@ -288,8 +289,8 @@ def verify_device_session(token: str | None) -> AuthUser | None:
         conn.close()
         return None
 
-    execute(cur, "UPDATE app_user_sessions SET last_seen_at = ? WHERE session_token_hash = ?", (_to_iso(_utc_now()), _token_hash(str(token))))
-    conn.commit()
+    # Do not update last_seen_at on every page load. A database write during
+    # every login-state check makes page switching slow on Streamlit Cloud.
     conn.close()
     return AuthUser(email=str(row["email"]).lower(), display_name=str(row["display_name"]), role=str(row["role"] or "editor"))
 
@@ -339,21 +340,62 @@ def _clear_query_params() -> None:
         pass
 
 
+def _get_cookie_token() -> str | None:
+    """Read the remembered-login cookie when Streamlit exposes request cookies."""
+    try:
+        context = getattr(st, "context", None)
+        cookies = getattr(context, "cookies", None)
+        if cookies is not None:
+            token = cookies.get(SESSION_COOKIE_NAME)
+            if token:
+                return str(token)
+    except Exception:
+        pass
+    return None
+
+
 def _render_browser_token_loader() -> None:
     storage_key = html.escape(SESSION_STORAGE_KEY)
+    cookie_name = html.escape(SESSION_COOKIE_NAME)
     query_key = html.escape(QUERY_SESSION_KEY)
     components.html(
         f"""
         <script>
         (function() {{
             const storageKey = "{storage_key}";
+            const cookieName = "{cookie_name}";
             const queryKey = "{query_key}";
-            const token = window.localStorage.getItem(storageKey);
-            const url = new URL(window.location.href);
-            if (token && !url.searchParams.get(queryKey)) {{
-                url.searchParams.set(queryKey, token);
-                window.location.replace(url.toString());
+
+            function rootWindow() {{
+                try {{ return window.parent || window; }} catch (e) {{ return window; }}
             }}
+            function readCookie(doc, name) {{
+                try {{
+                    const prefix = name + "=";
+                    const parts = (doc.cookie || "").split(";");
+                    for (let i = 0; i < parts.length; i++) {{
+                        const part = parts[i].trim();
+                        if (part.indexOf(prefix) === 0) {{
+                            return decodeURIComponent(part.substring(prefix.length));
+                        }}
+                    }}
+                }} catch (e) {{}}
+                return null;
+            }}
+
+            const root = rootWindow();
+            let token = null;
+            try {{ token = root.localStorage.getItem(storageKey); }} catch (e) {{}}
+            if (!token) {{ token = readCookie(root.document || document, cookieName); }}
+            if (!token) {{ return; }}
+
+            try {{
+                const url = new URL(root.location.href);
+                if (!url.searchParams.get(queryKey)) {{
+                    url.searchParams.set(queryKey, token);
+                    root.location.replace(url.toString());
+                }}
+            }} catch (e) {{}}
         }})();
         </script>
         """,
@@ -361,22 +403,40 @@ def _render_browser_token_loader() -> None:
         width=0,
     )
 
-
 def _render_store_browser_token(token: str) -> None:
     safe_token = html.escape(token)
     storage_key = html.escape(SESSION_STORAGE_KEY)
+    cookie_name = html.escape(SESSION_COOKIE_NAME)
     query_key = html.escape(QUERY_SESSION_KEY)
+    max_age = SESSION_COOKIE_DAYS * 24 * 60 * 60
     components.html(
         f"""
         <script>
         (function() {{
+            const token = "{safe_token}";
             const storageKey = "{storage_key}";
+            const cookieName = "{cookie_name}";
             const queryKey = "{query_key}";
-            window.localStorage.setItem(storageKey, "{safe_token}");
-            const url = new URL(window.location.href);
-            url.searchParams.delete(queryKey);
-            window.history.replaceState(null, "", url.toString());
-            setTimeout(function() {{ window.location.reload(); }}, 500);
+            const maxAge = {max_age};
+
+            function rootWindow() {{
+                try {{ return window.parent || window; }} catch (e) {{ return window; }}
+            }}
+            const root = rootWindow();
+
+            try {{ root.localStorage.setItem(storageKey, token); }} catch (e) {{}}
+            try {{
+                const cookie = cookieName + "=" + encodeURIComponent(token)
+                    + "; Max-Age=" + maxAge + "; Path=/; SameSite=Lax; Secure";
+                (root.document || document).cookie = cookie;
+            }} catch (e) {{}}
+
+            try {{
+                const url = new URL(root.location.href);
+                url.searchParams.delete(queryKey);
+                root.history.replaceState(null, "", url.toString());
+            }} catch (e) {{}}
+            setTimeout(function() {{ try {{ root.location.reload(); }} catch(e) {{}} }}, 350);
         }})();
         </script>
         """,
@@ -387,18 +447,27 @@ def _render_store_browser_token(token: str) -> None:
 
 def _render_clear_browser_token(reload: bool = True) -> None:
     storage_key = html.escape(SESSION_STORAGE_KEY)
+    cookie_name = html.escape(SESSION_COOKIE_NAME)
     query_key = html.escape(QUERY_SESSION_KEY)
-    reload_js = "setTimeout(function() { window.location.reload(); }, 350);" if reload else ""
+    reload_js = "setTimeout(function() { try { root.location.reload(); } catch(e) {} }, 350);" if reload else ""
     components.html(
         f"""
         <script>
         (function() {{
             const storageKey = "{storage_key}";
+            const cookieName = "{cookie_name}";
             const queryKey = "{query_key}";
-            window.localStorage.removeItem(storageKey);
-            const url = new URL(window.location.href);
-            url.searchParams.delete(queryKey);
-            window.history.replaceState(null, "", url.toString());
+            function rootWindow() {{
+                try {{ return window.parent || window; }} catch (e) {{ return window; }}
+            }}
+            const root = rootWindow();
+            try {{ root.localStorage.removeItem(storageKey); }} catch (e) {{}}
+            try {{ (root.document || document).cookie = cookieName + "=; Max-Age=0; Path=/; SameSite=Lax; Secure"; }} catch (e) {{}}
+            try {{
+                const url = new URL(root.location.href);
+                url.searchParams.delete(queryKey);
+                root.history.replaceState(null, "", url.toString());
+            }} catch (e) {{}}
             {reload_js}
         }})();
         </script>
@@ -406,7 +475,6 @@ def _render_clear_browser_token(reload: bool = True) -> None:
         height=0,
         width=0,
     )
-
 
 def render_current_user_sidebar() -> None:
     user = get_current_user()
@@ -499,20 +567,23 @@ def render_login_page() -> None:
 
 
 def require_login() -> dict[str, str]:
-    """Block every page until a company email user is authenticated."""
-    init_db()
+    """Block every page until a company email user is authenticated.
 
+    Fast path: page switches use only st.session_state and do not touch the
+    remote database. Browser remember-me tokens are checked only when the
+    current Streamlit session has no authenticated user.
+    """
     current = get_current_user()
     if current:
         render_current_user_sidebar()
         return current
 
-    query_token = _get_query_value(QUERY_SESSION_KEY)
-    if query_token:
-        user = verify_device_session(query_token)
+    browser_token = _get_cookie_token() or _get_query_value(QUERY_SESSION_KEY)
+    if browser_token:
+        user = verify_device_session(browser_token)
         if user:
             st.session_state[AUTH_USER_STATE_KEY] = user.as_dict()
-            st.session_state[AUTH_TOKEN_STATE_KEY] = query_token
+            st.session_state[AUTH_TOKEN_STATE_KEY] = browser_token
             _clear_query_params()
             st.rerun()
         else:

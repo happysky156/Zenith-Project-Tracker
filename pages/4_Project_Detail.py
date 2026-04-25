@@ -8,7 +8,6 @@ from typing import Any
 import streamlit as st
 
 from core.auth import require_login
-from database.schema import init_db
 from core.dictionaries import (
     HEALTH_STATUSES,
     MEETING_POOL_HEALTH,
@@ -39,7 +38,6 @@ from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_badges_html, render_page_header
 
 
-init_db()
 current_user = require_login()
 acting_user = current_user["display_name"]
 

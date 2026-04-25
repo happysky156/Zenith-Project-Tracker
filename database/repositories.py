@@ -129,6 +129,15 @@ def _fetchone_dict(cur) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def _clear_data_cache() -> None:
+    """Clear cached read models after writes."""
+    try:
+        import streamlit as st
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
 def _active_where(include_archived: bool) -> str:
     return "" if include_archived else "WHERE COALESCE(is_archived, 0) = 0"
 
@@ -312,6 +321,7 @@ def upsert_sales_base_fields(record: dict[str, Any]) -> str:
         action = "inserted"
     conn.commit()
     conn.close()
+    _clear_data_cache()
     return action
 
 
@@ -336,6 +346,7 @@ def upsert_operation_base_fields(record: dict[str, Any]) -> str:
         action = "inserted"
     conn.commit()
     conn.close()
+    _clear_data_cache()
     return action
 
 
@@ -352,6 +363,7 @@ def update_sales_project_fields(project_id: str, updates: dict[str, Any]) -> Non
     execute(cur, f"UPDATE sales_projects SET {assignments} WHERE project_id = ?", values)
     conn.commit()
     conn.close()
+    _clear_data_cache()
 
 
 
@@ -367,6 +379,7 @@ def update_operation_order_fields(order_no: str, updates: dict[str, Any]) -> Non
     execute(cur, f"UPDATE operation_orders SET {assignments} WHERE order_no = ?", values)
     conn.commit()
     conn.close()
+    _clear_data_cache()
 
 
 # ---------- event logs ----------
@@ -401,6 +414,7 @@ def insert_event_log(event: dict[str, Any]) -> None:
     )
     conn.commit()
     conn.close()
+    _clear_data_cache()
 
 
 
@@ -429,6 +443,7 @@ def insert_meeting_snapshot(snapshot: dict[str, Any]) -> None:
     )
     conn.commit()
     conn.close()
+    _clear_data_cache()
 
 
 
@@ -468,3 +483,4 @@ def write_import_batch(record: dict[str, Any]) -> None:
     )
     conn.commit()
     conn.close()
+    _clear_data_cache()

@@ -7,7 +7,6 @@ from textwrap import dedent
 import streamlit as st
 
 from core.auth import require_login
-from database.schema import init_db
 from core.dictionaries import PEOPLE
 from services.detail_service import parse_multi_value
 from services.meeting_service import (
@@ -322,7 +321,6 @@ ACTION_HELP = {
 }
 
 
-init_db()
 current_user = require_login()
 acting_user = current_user["display_name"]
 apply_theme()

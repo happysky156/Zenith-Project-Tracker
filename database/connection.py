@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = BASE_DIR / "project_tracker.db"
@@ -20,6 +20,12 @@ except Exception:  # pragma: no cover - optional dependency until postgres is us
     psycopg = None  # type: ignore
     dict_row = None  # type: ignore
 
+try:
+    from psycopg_pool import ConnectionPool
+except Exception:  # pragma: no cover - optional performance dependency
+    ConnectionPool = None  # type: ignore
+
+_POSTGRES_POOL_FALLBACK = None
 
 
 def _read_database_url() -> str | None:
@@ -42,41 +48,42 @@ def _read_database_url() -> str | None:
     return None
 
 
-DATABASE_URL = _read_database_url()
+def get_database_url() -> str | None:
+    """Read DATABASE_URL at runtime instead of freezing an old value on import."""
+    return _read_database_url()
 
+
+# Backward compatibility for older imports. New logic calls get_database_url().
+DATABASE_URL = get_database_url()
 
 
 def using_postgres() -> bool:
-    return bool(DATABASE_URL) and str(DATABASE_URL).startswith(("postgres://", "postgresql://"))
-
+    url = get_database_url()
+    return bool(url) and str(url).startswith(("postgres://", "postgresql://"))
 
 
 def using_sqlite() -> bool:
     return not using_postgres()
 
 
-
 def get_db_path() -> Path:
     return DB_PATH
-
 
 
 def get_database_backend() -> str:
     return "PostgreSQL" if using_postgres() else "SQLite"
 
 
-
 def get_database_display_name() -> str:
     if using_sqlite():
         return str(DB_PATH)
 
-    parsed = urlparse(str(DATABASE_URL))
+    parsed = urlparse(str(get_database_url()))
     host = parsed.hostname or "unknown-host"
     port = f":{parsed.port}" if parsed.port else ""
     db_name = parsed.path.lstrip("/") or "postgres"
     user = parsed.username or "user"
     return f"postgresql://{user}:***@{host}{port}/{db_name}"
-
 
 
 def adapt_sql(sql: str) -> str:
@@ -85,11 +92,79 @@ def adapt_sql(sql: str) -> str:
     return sql
 
 
-
 def execute(cur, sql: str, params: tuple | list | None = None):
     params = tuple(params or ())
     return cur.execute(adapt_sql(sql), params)
 
+
+class _PooledPostgresConnection:
+    """Wrapper so existing conn.close() returns a pooled connection to the pool."""
+
+    def __init__(self, pool, conn):
+        self._pool = pool
+        self._conn = conn
+        self._returned = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def cursor(self, *args, **kwargs):
+        return self._conn.cursor(*args, **kwargs)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        if self._returned:
+            return
+        self._returned = True
+        try:
+            self._pool.putconn(self._conn)
+        except Exception:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            try:
+                self.rollback()
+            except Exception:
+                pass
+        self.close()
+        return False
+
+
+def _create_pool(conninfo: str):
+    if ConnectionPool is None:
+        return None
+    return ConnectionPool(
+        conninfo=conninfo,
+        min_size=0,
+        max_size=5,
+        open=True,
+        kwargs={"row_factory": dict_row},
+        timeout=20,
+    )
+
+
+if st is not None:
+    @st.cache_resource(show_spinner=False)
+    def _get_postgres_pool_cached(conninfo: str):
+        return _create_pool(conninfo)
+else:  # pragma: no cover
+    def _get_postgres_pool_cached(conninfo: str):
+        global _POSTGRES_POOL_FALLBACK
+        if _POSTGRES_POOL_FALLBACK is None:
+            _POSTGRES_POOL_FALLBACK = _create_pool(conninfo)
+        return _POSTGRES_POOL_FALLBACK
 
 
 def get_connection():
@@ -99,7 +174,11 @@ def get_connection():
                 "PostgreSQL is configured, but psycopg is not installed. "
                 "Please add 'psycopg[binary]' to your environment before running the app."
             )
-        return psycopg.connect(str(DATABASE_URL), row_factory=dict_row)
+        conninfo = str(get_database_url())
+        pool = _get_postgres_pool_cached(conninfo)
+        if pool is not None:
+            return _PooledPostgresConnection(pool, pool.getconn())
+        return psycopg.connect(conninfo, row_factory=dict_row)
 
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row

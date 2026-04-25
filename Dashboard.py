@@ -7,7 +7,6 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from database.schema import init_db
 from core.state import init_session_state
 from core.auth import require_login
 from services.project_service import get_dashboard_metrics
@@ -37,7 +36,6 @@ st.set_page_config(
     layout="wide",
 )
 
-init_db()
 init_session_state()
 apply_theme()
 current_user = require_login()
