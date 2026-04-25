@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - handled in UI
 
 
 SESSION_COOKIE_DAYS = 30
+OTP_RESEND_SECONDS = 70
 SESSION_STORAGE_KEY = "zenith_project_tracker_session_token"
 SESSION_COOKIE_NAME = "zenith_project_tracker_session"
 QUERY_SESSION_KEY = "zt_session"
@@ -60,6 +61,24 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 def _normalize_email(email: str | None) -> str:
     return str(email or "").strip().lower()
+
+
+def _otp_last_sent_key(email: str) -> str:
+    return f"auth_otp_last_sent_at::{_normalize_email(email)}"
+
+
+def _seconds_until_resend_allowed(email: str) -> int:
+    value = st.session_state.get(_otp_last_sent_key(email))
+    sent_at = _parse_iso(str(value)) if value else None
+    if not sent_at:
+        return 0
+    elapsed = (_utc_now() - sent_at).total_seconds()
+    remaining = OTP_RESEND_SECONDS - int(elapsed)
+    return max(0, remaining)
+
+
+def _mark_otp_sent(email: str) -> None:
+    st.session_state[_otp_last_sent_key(email)] = _to_iso(_utc_now())
 
 
 def _is_company_email(email: str) -> bool:
@@ -154,11 +173,20 @@ def is_allowed_login_email(email: str) -> tuple[bool, str]:
 
 
 def send_login_otp(email: str) -> tuple[bool, str]:
-    """Send Supabase email OTP after local company-domain and app-user checks."""
+    """Send Supabase email OTP after local company-domain and app-user checks.
+
+    Supabase limits OTP sends to the same email, normally one request per
+    60 seconds. We add a small local cooldown so users do not repeatedly click
+    the button and hit the remote rate limit during meetings.
+    """
     normalized = _normalize_email(email)
     allowed, message = is_allowed_login_email(normalized)
     if not allowed:
         return False, message
+
+    wait_seconds = _seconds_until_resend_allowed(normalized)
+    if wait_seconds > 0:
+        return False, f"A code was already sent. Please wait {wait_seconds} seconds before requesting a new one."
 
     ready, url, anon_key, error = _check_supabase_ready()
     if not ready:
@@ -181,10 +209,34 @@ def send_login_otp(email: str) -> tuple[bool, str]:
             detail = payload.get("msg") or payload.get("message") or str(payload)
         except Exception:
             detail = response.text
+        if "rate limit" in str(detail).lower():
+            return False, (
+                "Supabase email rate limit was reached. Please wait about 60 seconds, "
+                "then request a new code. Do not repeatedly click the send button."
+            )
         return False, f"Failed to send verification code: {detail}"
 
     st.session_state["pending_login_email"] = normalized
+    _mark_otp_sent(normalized)
     return True, "Verification code sent. Please check your company email."
+
+
+def _verify_supabase_otp(url: str, anon_key: str, email: str, code: str, verify_type: str):
+    """Call Supabase OTP verification endpoint with one verification type."""
+    return requests.post(  # type: ignore[union-attr]
+        f"{url}/auth/v1/verify",
+        headers=_supabase_headers(str(anon_key)),
+        json={"email": email, "token": code, "type": verify_type},
+        timeout=20,
+    )
+
+
+def _extract_supabase_error(response) -> str:
+    try:
+        payload = response.json()
+        return str(payload.get("msg") or payload.get("message") or payload)
+    except Exception:
+        return str(getattr(response, "text", "") or "Unknown Supabase Auth error")
 
 
 def verify_login_otp(email: str, token: str) -> tuple[bool, str, dict[str, str] | None]:
@@ -205,31 +257,34 @@ def verify_login_otp(email: str, token: str) -> tuple[bool, str, dict[str, str] 
     if not ready:
         return False, error or "Supabase is not configured.", None
 
+    # Supabase may send a code through different email templates depending on
+    # whether the Auth user already exists. Existing users normally verify with
+    # type="email". A first-time user can receive the Confirm signup template,
+    # which verifies with type="signup". We try the intended fast path first,
+    # then fallback once to avoid the false "expired" message seen in testing.
+    verify_types = ["email", "signup", "magiclink"]
+    last_detail = ""
     try:
-        response = requests.post(  # type: ignore[union-attr]
-            f"{url}/auth/v1/verify",
-            headers=_supabase_headers(str(anon_key)),
-            json={"email": normalized, "token": code, "type": "email"},
-            timeout=20,
-        )
+        for verify_type in verify_types:
+            response = _verify_supabase_otp(str(url), str(anon_key), normalized, code, verify_type)
+            if response.status_code < 400:
+                local_session_token = create_device_session(app_user)
+                user_dict = app_user.as_dict()
+                st.session_state[AUTH_USER_STATE_KEY] = user_dict
+                st.session_state[AUTH_TOKEN_STATE_KEY] = local_session_token
+                _update_last_login(app_user.email)
+                return True, "Login successful.", user_dict
+            last_detail = _extract_supabase_error(response)
     except Exception as exc:
         return False, f"Failed to verify the code with Supabase Auth: {exc}", None
 
-    if response.status_code >= 400:
-        detail = ""
-        try:
-            payload = response.json()
-            detail = payload.get("msg") or payload.get("message") or str(payload)
-        except Exception:
-            detail = response.text
-        return False, f"Verification failed: {detail}", None
-
-    local_session_token = create_device_session(app_user)
-    user_dict = app_user.as_dict()
-    st.session_state[AUTH_USER_STATE_KEY] = user_dict
-    st.session_state[AUTH_TOKEN_STATE_KEY] = local_session_token
-    _update_last_login(app_user.email)
-    return True, "Login successful.", user_dict
+    friendly = str(last_detail or "").lower()
+    if "expired" in friendly or "invalid" in friendly:
+        return False, (
+            "Verification failed: the code is invalid or expired. Please request a new code, "
+            "then enter the newest code only. If you just requested a code, wait 60 seconds before requesting another one."
+        ), None
+    return False, f"Verification failed: {last_detail}", None
 
 
 def _update_last_login(email: str) -> None:
@@ -536,6 +591,11 @@ def render_login_page() -> None:
         default_email = st.session_state.get("pending_login_email", "")
         email = st.text_input("Company email", value=default_email, placeholder=f"harley@{COMPANY_EMAIL_DOMAIN}")
         send_submitted = st.form_submit_button("Send verification code", type="primary")
+
+    if st.session_state.get("pending_login_email"):
+        wait_seconds = _seconds_until_resend_allowed(str(st.session_state.get("pending_login_email")))
+        if wait_seconds > 0:
+            st.caption(f"Code already sent. You can request another code in about {wait_seconds} seconds.")
 
     if send_submitted:
         ok, message = send_login_otp(email)
