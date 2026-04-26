@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from html import escape
+from io import BytesIO
 from textwrap import dedent
 from typing import Any
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -10,6 +12,7 @@ import streamlit as st
 from core.state import init_session_state
 from core.auth import require_login
 from services.project_service import get_dashboard_metrics
+from database.repositories import list_operation_orders, list_sales_projects
 from ui.theme import apply_theme, render_page_header
 from utils.logger import get_logger
 
@@ -550,14 +553,214 @@ def _render_attention_table(rows: list[dict[str, Any]]) -> None:
     st.dataframe(frame[present_columns], use_container_width=True, hide_index=True)
 
 
+EXPORT_COLUMNS = {
+    "Sales Project Status": [
+        "project_id",
+        "project_name",
+        "client_code",
+        "current_owner",
+        "phase",
+        "health_status",
+        "result_status",
+        "review_this_week",
+        "linked_order_count",
+        "linked_orders",
+        "next_step_summary",
+        "next_step_owner",
+        "target_date",
+        "last_event",
+    ],
+    "Operation Order Status": [
+        "order_no",
+        "project_id",
+        "linked_project_name",
+        "client_code",
+        "current_owner",
+        "phase",
+        "health_status",
+        "result_status",
+        "review_this_week",
+        "waiting_for_text",
+        "next_step_summary",
+        "next_step_owner",
+        "target_date",
+        "last_event",
+    ],
+    "Projects with Orders": [
+        "project_id",
+        "project_name",
+        "client_code",
+        "current_owner",
+        "result_status",
+        "linked_order_count",
+        "linked_orders",
+    ],
+    "Projects without Orders": [
+        "project_id",
+        "project_name",
+        "client_code",
+        "current_owner",
+        "phase",
+        "health_status",
+        "result_status",
+        "next_step_summary",
+        "next_step_owner",
+        "target_date",
+    ],
+    "Unlinked Operation Orders": [
+        "order_no",
+        "project_id",
+        "linked_project_name",
+        "client_code",
+        "current_owner",
+        "phase",
+        "health_status",
+        "result_status",
+        "waiting_for_text",
+        "next_step_summary",
+        "next_step_owner",
+        "target_date",
+    ],
+}
+
+EXPORT_LABELS = {
+    "project_id": "Project ID",
+    "project_name": "Project Name",
+    "linked_project_name": "Project Name",
+    "client_code": "Client Code",
+    "current_owner": "Owner",
+    "phase": "Phase",
+    "health_status": "Health Status",
+    "result_status": "Result Status",
+    "review_this_week": "Review This Week",
+    "linked_order_count": "Linked Order Count",
+    "linked_orders": "Linked Orders",
+    "next_step_summary": "Next Step",
+    "next_step_owner": "Next Step Owner",
+    "target_date": "Target Date",
+    "last_event": "Last Event",
+    "order_no": "Order No",
+    "waiting_for_text": "Waiting For What",
+}
+
+
+def _export_frame(rows: list[dict[str, Any]], columns: list[str]) -> pd.DataFrame:
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        frame = pd.DataFrame(columns=columns)
+    present_columns = [col for col in columns if col in frame.columns]
+    missing_columns = [col for col in columns if col not in frame.columns]
+    display = frame[present_columns].copy()
+    for col in missing_columns:
+        display[col] = ""
+    display = display[columns]
+    if "review_this_week" in display.columns:
+        display["review_this_week"] = display["review_this_week"].map(lambda v: "Yes" if bool(v) else "No")
+    display = display.rename(columns={col: EXPORT_LABELS.get(col, col.replace("_", " ").title()) for col in display.columns})
+    return display
+
+
+def _dashboard_summary_frame(metrics: dict[str, Any]) -> pd.DataFrame:
+    sales_progress = metrics.get("sales_progress", {}) or {}
+    operation_progress = metrics.get("operation_progress", {}) or {}
+    rows = [
+        ("Summary", "Total Sales", _n(metrics.get("total_sales")), "All Sales projects in the system"),
+        ("Summary", "Active Sales", _n(metrics.get("active_sales")), "Not Won / Lost; Hold included"),
+        ("Summary", "Total Operation", _n(metrics.get("total_operations")), "All Operation orders in the system"),
+        ("Summary", "Active Operation", _n(metrics.get("active_operations")), "Not Paid Closed / Cancelled; Hold included"),
+        ("Summary", "All Items", _n(metrics.get("all_items")), "Sales projects + Operation orders"),
+        ("Summary", "High Attention", _n(metrics.get("high_attention_total")), "Blocked, Delayed, Due Soon, Decision or Alignment"),
+        ("Summary", "Waiting Items", _n(metrics.get("waiting_total")), "Waiting Client / Supplier / Internal"),
+        ("Sales Progress", "On Progress", _n(sales_progress.get("On Progress")), "Sales projects still being followed up"),
+        ("Sales Progress", "Hold", _n(sales_progress.get("Hold")), "Sales projects currently on hold"),
+        ("Sales Progress", "Won", _n(sales_progress.get("Won")), "Sales projects won"),
+        ("Sales Progress", "Lost", _n(sales_progress.get("Lost")), "Sales projects lost"),
+        ("Sales Progress", "Projects with Orders", _n(sales_progress.get("Projects with Orders")), "Sales projects linked to at least one Operation order"),
+        ("Sales Progress", "Projects without Orders", _n(sales_progress.get("Projects without Orders")), "Sales projects without linked Operation orders"),
+        ("Operation Progress", "On Progress", _n(operation_progress.get("On Progress")), "Operation orders still in progress"),
+        ("Operation Progress", "Hold", _n(operation_progress.get("Hold")), "Operation orders currently on hold"),
+        ("Operation Progress", "Partial Shipped", _n(operation_progress.get("Partial Shipped")), "Operation orders partially shipped"),
+        ("Operation Progress", "Complete Shipped", _n(operation_progress.get("Complete Shipped")), "Operation orders completely shipped"),
+        ("Operation Progress", "Paid Closed", _n(operation_progress.get("Paid Closed")), "Operation orders paid and closed"),
+        ("Operation Progress", "Cancelled", _n(operation_progress.get("Cancelled")), "Operation orders cancelled"),
+    ]
+    return pd.DataFrame(rows, columns=["Section", "Metric", "Count", "Notes"])
+
+
+def _build_dashboard_export_bytes(metrics: dict[str, Any]) -> bytes:
+    sales_rows = list_sales_projects()
+    operation_rows = list_operation_orders()
+
+    sales_project_ids = {str(row.get("project_id") or "").strip() for row in sales_rows if str(row.get("project_id") or "").strip()}
+    operation_project_ids = {
+        str(row.get("project_id") or "").strip()
+        for row in operation_rows
+        if str(row.get("project_id") or "").strip()
+    }
+    with_order_ids = sales_project_ids & operation_project_ids
+    without_order_ids = sales_project_ids - operation_project_ids
+
+    projects_with_orders = [
+        row for row in sales_rows
+        if str(row.get("project_id") or "").strip() in with_order_ids
+    ]
+    projects_without_orders = [
+        row for row in sales_rows
+        if str(row.get("project_id") or "").strip() in without_order_ids
+    ]
+    unlinked_operation_orders = [
+        row for row in operation_rows
+        if str(row.get("project_id") or "").strip() and str(row.get("project_id") or "").strip() not in sales_project_ids
+    ]
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sheets = {
+            "Dashboard Summary": _dashboard_summary_frame(metrics),
+            "Sales Project Status": _export_frame(sales_rows, EXPORT_COLUMNS["Sales Project Status"]),
+            "Operation Order Status": _export_frame(operation_rows, EXPORT_COLUMNS["Operation Order Status"]),
+            "Projects with Orders": _export_frame(projects_with_orders, EXPORT_COLUMNS["Projects with Orders"]),
+            "Projects without Orders": _export_frame(projects_without_orders, EXPORT_COLUMNS["Projects without Orders"]),
+            "Unlinked Operation Orders": _export_frame(unlinked_operation_orders, EXPORT_COLUMNS["Unlinked Operation Orders"]),
+        }
+        for sheet_name, frame in sheets.items():
+            frame.to_excel(writer, index=False, sheet_name=sheet_name)
+            worksheet = writer.sheets[sheet_name]
+            worksheet.freeze_panes = "A2"
+            for column_cells in worksheet.columns:
+                max_length = 0
+                column_letter = column_cells[0].column_letter
+                for cell in column_cells:
+                    value = "" if cell.value is None else str(cell.value)
+                    max_length = max(max_length, min(len(value), 60))
+                worksheet.column_dimensions[column_letter].width = max(12, min(max_length + 2, 42))
+    output.seek(0)
+    return output.getvalue()
+
+
+def _render_dashboard_header(metrics: dict[str, Any]) -> None:
+    header_col, export_col = st.columns([5.5, 1.2], vertical_alignment="center")
+    with header_col:
+        render_page_header(
+            "Zenith Project Tracker",
+            "Company project dashboard for Sales pipeline, Operation execution and risk visibility.",
+        )
+    with export_col:
+        st.markdown("<div style='height: 4.2rem'></div>", unsafe_allow_html=True)
+        st.download_button(
+            "Export Meeting Pack",
+            data=_build_dashboard_export_bytes(metrics),
+            file_name=f"dashboard_meeting_pack_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            help="Download the 6-sheet dashboard export pack for weekly meeting review.",
+        )
+
+
 _render_dashboard_css()
 
-render_page_header(
-    "Zenith Project Tracker",
-    "Company project dashboard for Sales pipeline, Operation execution and risk visibility.",
-)
-
 metrics = get_dashboard_metrics()
+_render_dashboard_header(metrics)
 total_sales = _n(metrics.get("total_sales"))
 active_sales = _n(metrics.get("active_sales"))
 total_operations = _n(metrics.get("total_operations"))
