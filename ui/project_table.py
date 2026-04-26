@@ -41,7 +41,7 @@ COLUMN_LABELS_COMMON = {
     "days_since_review": "Days Since Review",
     "review_this_week": "Review This Week",
     "order_no": "Order No",
-    "linked_project_name": "Linked Project",
+    "linked_project_name": "Project Name",
     "result_status": "Result",
     "waiting_for_text": "Waiting For What",
     "need_from_meeting": "Need From Meeting",
@@ -49,6 +49,7 @@ COLUMN_LABELS_COMMON = {
 
 SALES_TABLE_LABELS = dict(COLUMN_LABELS_COMMON)
 SALES_TABLE_LABELS["result_status"] = "Sales Result"
+
 OPERATION_TABLE_LABELS = dict(COLUMN_LABELS_COMMON)
 OPERATION_TABLE_LABELS["result_status"] = "Order Result"
 
@@ -69,6 +70,7 @@ def _display_frame(frame: pd.DataFrame, present_columns: list[str], rows: list[d
     display = frame[present_columns].copy()
     if "review_this_week" in display.columns:
         display["review_this_week"] = display["review_this_week"].map(lambda v: "Yes" if bool(v) else "No")
+
     is_operation = any((r.get("entity_type") == "Operation" or r.get("order_no")) for r in rows)
     label_map = OPERATION_TABLE_LABELS if is_operation else SALES_TABLE_LABELS
     display = display.rename(columns={c: label_map.get(c, c.replace("_", " ").title()) for c in display.columns})
@@ -78,6 +80,23 @@ def _display_frame(frame: pd.DataFrame, present_columns: list[str], rows: list[d
 def _clean(value: object) -> str:
     text = str(value or "-").strip() or "-"
     return escape(text).replace("\n", "<br>")
+
+
+def _first_non_empty(*values: object) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text and text.lower() not in {"-", "nan", "none", "null"}:
+            return text
+    return "-"
+
+
+def _operation_project_name(row: dict) -> str:
+    """Return the best available project name for an Operation order card."""
+    return _first_non_empty(
+        row.get("linked_project_name"),
+        row.get("project_name"),
+        row.get("display_title"),
+    )
 
 
 def _attention_class(health: str | None, pattern_flag: bool) -> str:
@@ -100,6 +119,7 @@ def _card_html(row: dict, entity_type: str, title: str, entity_id: str) -> str:
     result = row.get("result_status") or "-"
     linked_orders = row.get("linked_orders") or "-"
     order_no = row.get("order_no") or entity_id or "-"
+    project_name = _operation_project_name(row)
 
     if is_sales:
         identity_items = [
@@ -113,6 +133,7 @@ def _card_html(row: dict, entity_type: str, title: str, entity_id: str) -> str:
     else:
         identity_items = [
             ("Order No", order_no),
+            ("Project Name", project_name),
             ("Project ID", row.get("project_id") or "-"),
             ("Client", client),
             ("Owner", owner),
@@ -154,7 +175,7 @@ def _card_html(row: dict, entity_type: str, title: str, entity_id: str) -> str:
 
     card_label = "Sales project card" if is_sales else "Operation order card"
     display_id_label = escape(entity_id or "-")
-    title_sep = " — " if is_sales else " · Linked project: "
+    title_sep = " — " if is_sales else " · Project: "
 
     return f"""
     <div class='zt-project-card-head zt-{entity_type.lower()}-card-head'>
@@ -190,7 +211,12 @@ def _jump_records(rows: list[dict]) -> list[tuple[str, str, str]]:
         entity_id = row.get("entity_id") or row.get("order_no") or row.get("project_id")
         if not entity_id:
             continue
-        label_title = row.get("display_title") or row.get("project_name") or row.get("linked_project_name") or "-"
+
+        if entity_type == "Operation":
+            label_title = _operation_project_name(row)
+        else:
+            label_title = _first_non_empty(row.get("display_title"), row.get("project_name"), row.get("linked_project_name"))
+
         options.append((f"{entity_type} | {entity_id} — {label_title}", entity_type, entity_id))
     return options
 
@@ -199,6 +225,7 @@ def render_project_table(rows: list[dict], columns: list[str], empty_message: st
     if not rows:
         st.info(empty_message)
         return
+
     frame = pd.DataFrame(rows)
     present_columns = [col for col in columns if col in frame.columns]
     st.dataframe(_display_frame(frame, present_columns, rows), use_container_width=True, hide_index=True)
@@ -207,7 +234,11 @@ def render_project_table(rows: list[dict], columns: list[str], empty_message: st
     if jump_options:
         with st.expander("Open Project / Order Detail from this table"):
             labels = [label for label, _, _ in jump_options]
-            selected_label = st.selectbox("Jump to Project / Order Detail", options=[""] + labels, key=f"table_jump_{len(rows)}_{'_'.join(present_columns[:2])}")
+            selected_label = st.selectbox(
+                "Jump to Project / Order Detail",
+                options=[""] + labels,
+                key=f"table_jump_{len(rows)}_{'_'.join(present_columns[:2])}",
+            )
             if selected_label:
                 record_type, record_id = next((rtype, rid) for label, rtype, rid in jump_options if label == selected_label)
                 if st.button("Open Detail", key=f"open_table_detail_{record_type}_{record_id}", type="primary"):
@@ -227,7 +258,15 @@ def render_board_cards(
 
     for row in rows:
         entity_id = row.get("entity_id") or row.get("display_id")
-        title = row.get("display_title") or row.get("project_name") or row.get("linked_project_name") or "-"
+
+        if entity_type == "Operation":
+            title = _operation_project_name(row)
+        else:
+            title = _first_non_empty(
+                row.get("display_title"),
+                row.get("project_name"),
+                row.get("linked_project_name"),
+            )
 
         with st.container(border=True):
             st.markdown(_card_html(row, entity_type, str(title), str(entity_id or "-")), unsafe_allow_html=True)
