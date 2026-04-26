@@ -10,7 +10,6 @@ import streamlit as st
 from core.state import init_session_state
 from core.auth import require_login
 from services.project_service import get_dashboard_metrics
-from services.diagnostic_service import render_database_diagnostics
 from ui.theme import apply_theme, render_page_header
 from utils.logger import get_logger
 
@@ -559,8 +558,6 @@ render_page_header(
 )
 
 metrics = get_dashboard_metrics()
-render_database_diagnostics(metrics)
-
 total_sales = _n(metrics.get("total_sales"))
 active_sales = _n(metrics.get("active_sales"))
 total_operations = _n(metrics.get("total_operations"))
@@ -628,7 +625,7 @@ st.markdown(
                 max(total_sales, 1),
                 active_sales,
                 sales_colours,
-                False,
+                True,
             )}
             {_progress_dashboard_panel(
                 'Operation Progress',

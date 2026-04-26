@@ -39,7 +39,7 @@ def _cache_data(ttl: int = 300):
 HIGH_ATTENTION_HEALTH = {"Need Decision", "Need Alignment", "Blocked", "Delayed", "Due Soon"}
 SALES_CLOSED_RESULTS = {"Won", "Lost"}
 OPERATION_CLOSED_RESULTS = {"Paid Closed", "Cancelled"}
-SALES_PROGRESS_ORDER = ["On Progress", "Hold", "Won", "Lost"]
+SALES_PROGRESS_ORDER = ["On Progress", "Hold", "Won", "Lost", "Projects with Orders", "Projects without Orders"]
 OPERATION_PROGRESS_ORDER = [
     "On Progress",
     "Hold",
@@ -211,6 +211,19 @@ def get_dashboard_metrics() -> dict[str, Any]:
     active_sales = [r for r in sales if _is_active_sales(r)]
     active_operations = [r for r in operations if _is_active_operation(r)]
 
+    sales_project_ids = {str(r.get("project_id") or "").strip() for r in sales if str(r.get("project_id") or "").strip()}
+    operation_project_ids = {
+        str(r.get("project_id") or "").strip()
+        for r in operations
+        if str(r.get("project_id") or "").strip()
+    }
+    projects_with_orders = len(sales_project_ids & operation_project_ids)
+    projects_without_orders = max(len(sales_project_ids) - projects_with_orders, 0)
+
+    sales_progress = _ordered_counts([_sales_progress_label(r) for r in sales], SALES_PROGRESS_ORDER)
+    sales_progress["Projects with Orders"] = projects_with_orders
+    sales_progress["Projects without Orders"] = projects_without_orders
+
     attention_summary = _field_counts(all_rows, "health_status", ATTENTION_ORDER)
 
     return {
@@ -225,7 +238,7 @@ def get_dashboard_metrics() -> dict[str, Any]:
         # New dashboard keys.
         "total_sales": len(sales),
         "total_operations": len(operations),
-        "sales_progress": _ordered_counts([_sales_progress_label(r) for r in sales], SALES_PROGRESS_ORDER),
+        "sales_progress": sales_progress,
         "operation_progress": _ordered_counts(
             [_operation_progress_label(r) for r in operations], OPERATION_PROGRESS_ORDER
         ),
