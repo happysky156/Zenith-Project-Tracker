@@ -19,6 +19,10 @@ SESSION_COOKIE_DAYS = 30
 SESSION_STORAGE_KEY = "zenith_project_tracker_session_token"
 SESSION_COOKIE_NAME = "zenith_project_tracker_session"
 QUERY_SESSION_KEY = "zt_session"
+# Streamlit Cloud sometimes blocks iframe JavaScript cookie/localStorage writes.
+# Keep the random 30-day session token in the URL as a reliable fallback.
+# Do not share a logged-in URL containing zt_session.
+KEEP_QUERY_SESSION_FALLBACK = True
 AUTH_USER_STATE_KEY = "auth_user"
 AUTH_TOKEN_STATE_KEY = "auth_session_token"
 USER_ACCESS_CODES_SECTION = "USER_ACCESS_CODES"
@@ -419,7 +423,6 @@ def _render_store_browser_token(token: str) -> None:
     safe_token = html.escape(token)
     storage_key = html.escape(SESSION_STORAGE_KEY)
     cookie_name = html.escape(SESSION_COOKIE_NAME)
-    query_key = html.escape(QUERY_SESSION_KEY)
     max_age = SESSION_COOKIE_DAYS * 24 * 60 * 60
     components.html(
         f"""
@@ -428,7 +431,6 @@ def _render_store_browser_token(token: str) -> None:
             const token = "{safe_token}";
             const storageKey = "{storage_key}";
             const cookieName = "{cookie_name}";
-            const queryKey = "{query_key}";
             const maxAge = {max_age};
 
             function rootWindow() {{
@@ -436,19 +438,15 @@ def _render_store_browser_token(token: str) -> None:
             }}
             const root = rootWindow();
 
+            // Best effort only. Some Streamlit Cloud/component iframe contexts block
+            // parent-window cookie/localStorage writes, so the Python code also keeps
+            // a query-parameter fallback. Do not force a browser reload here.
             try {{ root.localStorage.setItem(storageKey, token); }} catch (e) {{}}
             try {{
                 const cookie = cookieName + "=" + encodeURIComponent(token)
                     + "; Max-Age=" + maxAge + "; Path=/; SameSite=Lax; Secure";
                 (root.document || document).cookie = cookie;
             }} catch (e) {{}}
-
-            try {{
-                const url = new URL(root.location.href);
-                url.searchParams.delete(queryKey);
-                root.history.replaceState(null, "", url.toString());
-            }} catch (e) {{}}
-            setTimeout(function() {{ try {{ root.location.reload(); }} catch(e) {{}} }}, 350);
         }})();
         </script>
         """,
@@ -558,11 +556,19 @@ def render_login_page() -> None:
     if submitted:
         ok, message, user = login_with_internal_code(email, access_code)
         if ok:
-            st.success(message)
             token = st.session_state.get(AUTH_TOKEN_STATE_KEY)
             if token:
+                # Robust Streamlit Cloud fallback: set the 30-day session token
+                # in the current URL first, then also try browser storage.
+                # This fixes the loop where login appears to succeed but the
+                # browser reload returns to the login page.
+                try:
+                    st.query_params[QUERY_SESSION_KEY] = str(token)
+                except Exception:
+                    pass
                 _render_store_browser_token(str(token))
-            st.stop()
+            st.success(message)
+            st.rerun()
         else:
             st.error(message)
 
@@ -591,13 +597,18 @@ def require_login() -> dict[str, str]:
         render_current_user_sidebar()
         return current
 
-    browser_token = _get_cookie_token() or _get_query_value(QUERY_SESSION_KEY)
+    cookie_token = _get_cookie_token()
+    query_token = _get_query_value(QUERY_SESSION_KEY)
+    browser_token = cookie_token or query_token
     if browser_token:
         user = verify_device_session(browser_token)
         if user:
             st.session_state[AUTH_USER_STATE_KEY] = user.as_dict()
             st.session_state[AUTH_TOKEN_STATE_KEY] = browser_token
-            _clear_query_params()
+            # Keep query token as a reliable remember-me fallback on Streamlit Cloud.
+            # It is a random session token stored hashed in the database, not a password.
+            if not KEEP_QUERY_SESSION_FALLBACK and query_token:
+                _clear_query_params()
             st.rerun()
         else:
             _render_clear_browser_token(reload=False)
