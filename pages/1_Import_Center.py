@@ -8,10 +8,13 @@ import streamlit as st
 from core.auth import require_login
 from services.import_service import (
     ALL_IMPORT_FIELDS,
+    archive_uploaded_import_file,
+    get_archived_import_file,
     IMPORT_FIELDS,
     apply_mapping,
     build_preview,
     import_preview_rows,
+    list_archived_import_files,
     read_uploaded_excel,
 )
 from services.validation_service import require_required_columns
@@ -263,7 +266,58 @@ def _validation_grid(preview) -> str:
     )
 
 
+
+def _render_import_file_archive() -> None:
+    """Show previously uploaded source Excel files stored in the database."""
+    with st.expander("Uploaded source file archive", expanded=False):
+        st.caption(
+            "Source Excel files uploaded through Import Center are saved in the database, "
+            "so they remain available after Streamlit Cloud restarts."
+        )
+        try:
+            archived_files = list_archived_import_files(limit=20)
+        except Exception as exc:
+            st.warning(f"Could not load file archive yet: {exc}")
+            return
+
+        if not archived_files:
+            st.info("No archived source files yet.")
+            return
+
+        for idx, item in enumerate(archived_files, start=1):
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            with col1:
+                st.markdown(f"**{escape(str(item.get('source_file') or 'uploaded file'))}**")
+                st.caption(
+                    f"{item.get('import_time') or ''} · {item.get('uploaded_by') or 'Unknown'} · "
+                    f"{item.get('import_type') or ''} · {int(item.get('file_size') or 0):,} bytes"
+                )
+            with col2:
+                st.caption("SHA-256")
+                st.code(str(item.get("file_sha256") or "")[:12], language=None)
+            with col3:
+                file_id = str(item.get("file_id") or "")
+                if st.button("Load", key=f"load_archived_import_file_{file_id}_{idx}"):
+                    st.session_state["selected_import_archive_file_id"] = file_id
+            with col4:
+                if st.session_state.get("selected_import_archive_file_id") == str(item.get("file_id") or ""):
+                    try:
+                        full_file = get_archived_import_file(str(item.get("file_id")))
+                        if full_file:
+                            file_bytes = full_file.get("file_bytes") or b""
+                            if isinstance(file_bytes, memoryview):
+                                file_bytes = file_bytes.tobytes()
+                            st.download_button(
+                                "Download",
+                                data=bytes(file_bytes),
+                                file_name=str(full_file.get("source_file") or "import_source.xlsx"),
+                                mime=str(full_file.get("content_type") or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                                key=f"download_archived_import_file_{item.get('file_id')}_{idx}",
+                            )
+                    except Exception as exc:
+                        st.warning(f"Could not prepare download: {exc}")
 _render_import_css()
+_render_import_file_archive()
 
 meta_col1, meta_col2, meta_col3 = st.columns([1, 1, 1])
 with meta_col1:
@@ -356,6 +410,11 @@ if not preview.ready:
 _section_head("Confirm import", "Click once after validation is ready.")
 if st.button("Confirm Import", type="primary"):
     result = import_preview_rows(preview.dataframe, import_type=import_type, imported_by=imported_by)
+    try:
+        archive_info = archive_uploaded_import_file(uploaded_file, import_type=import_type, uploaded_by=imported_by)
+        result["archived_file_id"] = archive_info.get("file_id")
+    except Exception as exc:
+        st.warning(f"Import data saved, but the source file could not be archived: {exc}")
     added = int(result.get("new_count", 0))
     skipped = int(result.get("duplicate_skipped_count", result.get("update_count", 0)))
     total_input = int(result.get("total_input_records", len(preview.dataframe)))

@@ -558,17 +558,21 @@ def render_login_page() -> None:
         if ok:
             token = st.session_state.get(AUTH_TOKEN_STATE_KEY)
             if token:
-                # Robust Streamlit Cloud fallback: set the 30-day session token
-                # in the current URL first, then also try browser storage.
-                # This fixes the loop where login appears to succeed but the
-                # browser reload returns to the login page.
+                # Set the URL fallback immediately and render the browser-storage
+                # script without forcing an immediate rerun. On Streamlit Cloud,
+                # forcing rerun too quickly can prevent the iframe JavaScript from
+                # writing localStorage/cookie, which causes users to log in again
+                # after closing the browser or restarting the computer.
                 try:
                     st.query_params[QUERY_SESSION_KEY] = str(token)
                 except Exception:
                     pass
                 _render_store_browser_token(str(token))
             st.success(message)
-            st.rerun()
+            st.info("Login saved. Click Continue to enter the tracker. This gives the browser time to save the 30-day login token.")
+            if st.button("Continue to tracker", type="primary", key="auth_continue_after_login"):
+                st.rerun()
+            st.stop()
         else:
             st.error(message)
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any
+import hashlib
+import uuid
 
 import pandas as pd
 
@@ -13,11 +16,14 @@ from core.dictionaries import (
     DEFAULT_SALES_RESULT,
 )
 from database.repositories import (
+    get_import_file_archive,
+    list_import_file_archive,
     sales_project_exists,
     operation_order_exists,
     upsert_operation_base_fields,
     upsert_sales_base_fields,
     write_import_batch,
+    write_import_file_archive,
 )
 from utils.dates import now_iso
 from utils.ids import new_batch_id
@@ -58,8 +64,36 @@ class ImportPreview:
 
 
 def read_uploaded_excel(uploaded_file) -> dict[str, pd.DataFrame]:
-    xls = pd.ExcelFile(uploaded_file)
-    return {sheet: pd.read_excel(uploaded_file, sheet_name=sheet) for sheet in xls.sheet_names}
+    # Read from bytes so the same UploadedFile can later be archived.
+    file_bytes = uploaded_file.getvalue()
+    xls = pd.ExcelFile(BytesIO(file_bytes))
+    return {sheet: pd.read_excel(BytesIO(file_bytes), sheet_name=sheet) for sheet in xls.sheet_names}
+
+
+def archive_uploaded_import_file(uploaded_file, import_type: str, uploaded_by: str | None = None) -> dict[str, Any]:
+    file_bytes = uploaded_file.getvalue()
+    file_id = f"if_{uuid.uuid4().hex}"
+    record = {
+        "file_id": file_id,
+        "source_file": str(getattr(uploaded_file, "name", "uploaded_file.xlsx")),
+        "import_time": now_iso(),
+        "uploaded_by": uploaded_by,
+        "import_type": import_type,
+        "file_size": len(file_bytes),
+        "file_sha256": hashlib.sha256(file_bytes).hexdigest(),
+        "content_type": str(getattr(uploaded_file, "type", "application/octet-stream") or "application/octet-stream"),
+        "file_bytes": file_bytes,
+    }
+    write_import_file_archive(record)
+    return {key: value for key, value in record.items() if key != "file_bytes"}
+
+
+def list_archived_import_files(limit: int = 20) -> list[dict[str, Any]]:
+    return list_import_file_archive(limit=limit)
+
+
+def get_archived_import_file(file_id: str) -> dict[str, Any] | None:
+    return get_import_file_archive(file_id)
 
 
 

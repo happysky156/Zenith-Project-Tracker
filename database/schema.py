@@ -176,6 +176,21 @@ IMPORT_BATCHES_SQL = """
 """
 
 
+IMPORT_FILE_ARCHIVE_SQL = """
+    CREATE TABLE IF NOT EXISTS import_file_archive (
+        file_id TEXT PRIMARY KEY,
+        source_file TEXT NOT NULL,
+        import_time TEXT NOT NULL,
+        uploaded_by TEXT,
+        import_type TEXT,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        file_sha256 TEXT,
+        content_type TEXT,
+        file_bytes BYTEA NOT NULL
+    )
+"""
+
+
 APP_USERS_SQL = """
     CREATE TABLE IF NOT EXISTS app_users (
         email TEXT PRIMARY KEY,
@@ -217,6 +232,8 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_event_logs_time ON event_logs_v2(event_time)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_week ON meeting_snapshots_v2(meeting_week)",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_entity ON meeting_snapshots_v2(entity_type, entity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_import_file_archive_time ON import_file_archive(import_time)",
+    "CREATE INDEX IF NOT EXISTS idx_import_file_archive_uploaded_by ON import_file_archive(uploaded_by)",
     "CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users(email)",
     "CREATE INDEX IF NOT EXISTS idx_app_user_sessions_email ON app_user_sessions(email)",
     "CREATE INDEX IF NOT EXISTS idx_app_user_sessions_expires ON app_user_sessions(expires_at)",
@@ -297,6 +314,7 @@ def init_db(force: bool = False) -> None:
     execute(cur, EVENT_LOGS_SQL)
     execute(cur, MEETING_SNAPSHOTS_SQL)
     execute(cur, IMPORT_BATCHES_SQL)
+    execute(cur, IMPORT_FILE_ARCHIVE_SQL)
     execute(cur, APP_USERS_SQL)
     execute(cur, APP_USER_SESSIONS_SQL)
 
@@ -313,6 +331,7 @@ def init_db(force: bool = False) -> None:
     _ensure_column(cur, "operation_orders", "is_archived", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(cur, "meeting_snapshots_v2", "meeting_note", "TEXT")
     _ensure_column(cur, "import_batches", "import_type", "TEXT")
+    _ensure_column(cur, "import_file_archive", "content_type", "TEXT")
 
     _seed_default_app_users(cur)
 

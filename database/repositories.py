@@ -484,3 +484,64 @@ def write_import_batch(record: dict[str, Any]) -> None:
     conn.commit()
     conn.close()
     _clear_data_cache()
+
+
+# ---------- import source file archive ----------
+def write_import_file_archive(record: dict[str, Any]) -> None:
+    """Persist the original uploaded Excel file in the database.
+
+    Streamlit Cloud's local filesystem is temporary, so source files must be
+    stored in PostgreSQL/Supabase if they should survive app restarts.
+    """
+    _ensure_schema_ready()
+    conn = get_connection()
+    cur = conn.cursor()
+    fields = [
+        "file_id",
+        "source_file",
+        "import_time",
+        "uploaded_by",
+        "import_type",
+        "file_size",
+        "file_sha256",
+        "content_type",
+        "file_bytes",
+    ]
+    placeholders = ", ".join(["?"] * len(fields))
+    execute(
+        cur,
+        f"INSERT INTO import_file_archive ({', '.join(fields)}) VALUES ({placeholders})",
+        [_normalize_db_value(record.get(field)) for field in fields],
+    )
+    conn.commit()
+    conn.close()
+    _clear_data_cache()
+
+
+def list_import_file_archive(limit: int = 20) -> list[dict[str, Any]]:
+    _ensure_schema_ready()
+    conn = get_connection()
+    cur = conn.cursor()
+    execute(
+        cur,
+        """
+        SELECT file_id, source_file, import_time, uploaded_by, import_type, file_size, file_sha256, content_type
+        FROM import_file_archive
+        ORDER BY import_time DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    rows = _fetchall_dicts(cur)
+    conn.close()
+    return rows
+
+
+def get_import_file_archive(file_id: str) -> dict[str, Any] | None:
+    _ensure_schema_ready()
+    conn = get_connection()
+    cur = conn.cursor()
+    execute(cur, "SELECT * FROM import_file_archive WHERE file_id = ?", (file_id,))
+    row = _fetchone_dict(cur)
+    conn.close()
+    return row
