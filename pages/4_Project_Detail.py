@@ -610,11 +610,10 @@ for key in [basic_open_key, request_open_key, meeting_open_key]:
 _render_selected_header(detail, selected_type, selected_record_id)
 _render_sticky_summary(detail, selected_type, selected_record_id)
 
-overview_tab, detail_tab, request_tab, meeting_tab, timeline_tab = st.tabs(
+overview_tab, detail_tab, meeting_tab, timeline_tab = st.tabs(
     [
         "Overview",
         "Basic Info",
-        "Support / Decision",
         "Meeting Prep",
         "History",
     ]
@@ -723,66 +722,6 @@ with detail_tab:
                     result = update_detail_fields(selected_type, selected_record_id, updates, operator=acting_user)
                     if result.get("updated"):
                         st.session_state[basic_open_key] = False
-                        st.success(result["message"])
-                        st.rerun()
-                    else:
-                        st.info(result["message"])
-
-with request_tab:
-    with st.container(border=True):
-        st.markdown(
-            _overview_section(
-                "Support / Decision Summary",
-                [
-                    ("What is needed", REQUEST_TYPE_DISPLAY.get(detail.get("request_type") or "None", detail.get("request_type") or "-")),
-                    ("Request Summary", detail.get("request_note")),
-                    ("Decision By", detail.get("need_decision_from")),
-                    ("Align With", _show_multi(detail.get("need_alignment_with"))),
-                    ("Waiting For", _show_multi(detail.get("waiting_for_person"))),
-                    ("Repeated Issue", _bool_to_yes_no(detail.get("pattern_flag"))),
-                    ("Repeated Issue Note", detail.get("pattern_note")),
-                ],
-            ),
-            unsafe_allow_html=True,
-        )
-
-        toggle_label = "Hide Support / Decision Editor" if st.session_state[request_open_key] else "Edit Support / Decision"
-        st.button(toggle_label, key=f"toggle_{request_open_key}", on_click=_toggle_editor, args=(request_open_key,))
-
-        if st.session_state[request_open_key]:
-            with st.form(f"request_edit_form_{selected_type}_{selected_record_id}"):
-                col1, col2 = st.columns(2)
-                request_display_options = [REQUEST_TYPE_DISPLAY[item] for item in REQUEST_TYPES]
-                current_request_display = REQUEST_TYPE_DISPLAY.get(detail.get("request_type") or "None", "None")
-                with col1:
-                    request_type_display = st.selectbox("What is needed", options=request_display_options, index=_select_index(request_display_options, current_request_display))
-                    request_note = st.text_area("Request Summary", value=detail.get("request_note") or "", height=120)
-                    people_options = [""] + PEOPLE
-                    need_decision_from = st.selectbox("Decision By", options=people_options, index=_select_index(people_options, detail.get("need_decision_from")))
-                with col2:
-                    need_alignment_with = st.multiselect("Align With", options=PEOPLE, default=parse_multi_value(detail.get("need_alignment_with")))
-                    waiting_for_person = st.multiselect("Waiting For", options=PEOPLE, default=parse_multi_value(detail.get("waiting_for_person")))
-                    pattern_flag = st.checkbox("Repeated Issue", value=bool(detail.get("pattern_flag")))
-                    pattern_note = st.text_area("Repeated Issue Note", value=detail.get("pattern_note") or "", height=120)
-
-                submitted = st.form_submit_button("Save Support / Decision", type="primary")
-                if submitted:
-                    result = update_request_layer_fields(
-                        selected_type,
-                        selected_record_id,
-                        {
-                            "request_type": DISPLAY_TO_REQUEST_TYPE.get(request_type_display, "None"),
-                            "request_note": request_note.strip(),
-                            "need_decision_from": need_decision_from or None,
-                            "need_alignment_with": need_alignment_with,
-                            "waiting_for_person": waiting_for_person,
-                            "pattern_flag": pattern_flag,
-                            "pattern_note": pattern_note.strip(),
-                        },
-                        operator=acting_user,
-                    )
-                    if result.get("updated"):
-                        st.session_state[request_open_key] = False
                         st.success(result["message"])
                         st.rerun()
                     else:
