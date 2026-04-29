@@ -158,3 +158,23 @@ This package replaces the shared internal access code with per-user personal acc
 - PostgreSQL connections use a small psycopg pool when `psycopg-pool` is installed.
 
 After deployment, please use **Manage app → Reboot app** once after updating Secrets or requirements.
+
+
+## AI Meeting Assistant setup
+
+This build adds a first-version AI Meeting Assistant page. The page lets colleagues search by Project ID, Project Name, Order No, or Client Code; select and confirm one project/order; paste weekly meeting notes; ask DeepSeek to structure the notes into Meeting Prep fields; compare existing records with AI-suggested updates; and save the result into the `ai_update_drafts` table.
+
+The first version does **not** directly overwrite the core Sales or Operation tables. This protects the permanent project database. Confirmed AI output is saved as a draft for later review or future connection to the existing Project / Order Detail update logic.
+
+Add these values to Streamlit Cloud Secrets or local `.streamlit/secrets.toml`:
+
+```toml
+[AI]
+DEEPSEEK_API_KEY = "sk-your-deepseek-api-key"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-chat"
+AI_TIMEOUT_SECONDS = 45
+AI_MAX_TOKENS = 1200
+```
+
+After updating requirements or Secrets, reboot the Streamlit app.

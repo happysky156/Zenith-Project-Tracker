@@ -5,3 +5,4 @@ psycopg[binary]>=3.2
 requests>=2.31
 
 psycopg-pool>=3.2
+openai>=1.40.0
