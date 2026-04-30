@@ -8,6 +8,8 @@ from database.repositories import list_operation_orders, list_sales_projects
 from services.ai_client import call_deepseek_json
 
 
+# AI Meeting Prep fields only. Meeting Note is intentionally excluded because it is
+# a human meeting-record field used during the actual meeting.
 MEETING_FIELDS = [
     "current_progress",
     "main_issue",
@@ -18,7 +20,6 @@ MEETING_FIELDS = [
     "next_step_owner",
     "target_date",
     "review_this_week",
-    "meeting_note",
 ]
 
 FIELD_LABELS = {
@@ -31,10 +32,9 @@ FIELD_LABELS = {
     "next_step_owner": "Next Step Owner",
     "target_date": "Target Date",
     "review_this_week": "Review This Week",
-    "meeting_note": "Meeting Note",
 }
 
-# Mapping for the existing database field names.  The AI draft uses clear UI names;
+# Mapping for the existing database field names. The AI draft uses clear UI names;
 # the production tables currently use the historical field names below.
 UI_TO_DB_FIELD_MAP = {
     "current_progress": "progress_summary",
@@ -100,6 +100,7 @@ def _normalise_sales_row(row: dict[str, Any]) -> dict[str, Any]:
         "next_step": clean_text(row.get("next_step_summary")),
         "next_step_owner": clean_text(row.get("next_step_owner")),
         "target_date": clean_text(row.get("target_date")),
+        # Kept for display/context elsewhere, but not used as an AI output field.
         "meeting_note": clean_text(row.get("meeting_note")),
         "last_event": clean_text(row.get("last_event")),
         "raw": row,
@@ -127,6 +128,7 @@ def _normalise_operation_row(row: dict[str, Any]) -> dict[str, Any]:
         "next_step": clean_text(row.get("next_step_summary")),
         "next_step_owner": clean_text(row.get("next_step_owner")),
         "target_date": clean_text(row.get("target_date")),
+        # Kept for display/context elsewhere, but not used as an AI output field.
         "meeting_note": clean_text(row.get("meeting_note")),
         "last_event": clean_text(row.get("last_event")),
         "raw": row,
@@ -221,6 +223,10 @@ def search_project_candidates(
 
 
 def build_existing_field_snapshot(project: dict[str, Any]) -> dict[str, str]:
+    """Return only AI-updatable Meeting Prep fields.
+
+    Meeting Note is intentionally excluded because it is for live human meeting notes.
+    """
     return {
         "current_progress": clean_text(project.get("current_progress")),
         "main_issue": clean_text(project.get("main_issue")),
@@ -231,7 +237,6 @@ def build_existing_field_snapshot(project: dict[str, Any]) -> dict[str, str]:
         "next_step_owner": clean_text(project.get("next_step_owner")),
         "target_date": clean_text(project.get("target_date")),
         "review_this_week": _bool_to_yes_no(project.get("review_this_week")),
-        "meeting_note": clean_text(project.get("meeting_note")),
     }
 
 
@@ -245,15 +250,17 @@ def extract_meeting_fields_with_ai(
     today = date.today().isoformat()
 
     system_prompt = """
-You are an internal project meeting assistant for Zenith E.C.S.
+You are the AI Meeting Prep Assistant for Zenith E.C.S.
 
 Your job:
-- Convert messy weekly meeting notes into structured project follow-up fields.
-- Do not invent facts.
+- Convert messy weekly meeting input into structured Meeting Prep / follow-up fields.
+- Act like a meeting secretary: separate facts, issues, waiting points, support needed, and next actions.
+- Do not merely copy the original input unless it is already clear and field-ready.
+- Do not invent facts, owners, dates, supplier answers, customer decisions, or test results.
 - Do not convert uncertain information into confirmed information.
 - If information is unclear, use "Not confirmed".
 - If no information is provided for a field, use an empty string.
-- Keep the output concise and business-friendly.
+- Keep each field concise and business-friendly.
 - Output JSON only.
 
 Important rules:
@@ -262,15 +269,33 @@ Important rules:
 - Never create a new project.
 - Never say the database has been updated.
 - Do not update the database directly.
+- Meeting Note is a human meeting-record field used during the actual meeting.
+- You must NOT generate or update Meeting Note.
+- If a short overall summary is useful, put it only in ai_summary_for_review.
 """
 
     user_prompt = f"""
-Please extract the following meeting fields as JSON.
+Please extract the following Meeting Prep fields as JSON.
 
 Today date: {today}
 Target date rule: return target_date as YYYY-MM-DD only if it can be clearly inferred from the notes and today date. If it is unclear, leave target_date empty.
 
 Output language: {output_language}
+Language rule:
+- If Output language is English, translate Chinese input into clear business English. Do not leave Chinese in field values except product names, client names, person names, model numbers, standards, or other proper nouns.
+- If Output language is Chinese, use concise business Chinese.
+- If Output language is Bilingual Chinese and English, include both Chinese and English in the same field only when helpful.
+
+Field rules:
+- current_progress = what is happening now / latest factual progress.
+- main_issue = the main problem or decision point.
+- blocked_at = where the project/order is blocked.
+- waiting_for_what = what answer/material/result/confirmation is still missing.
+- need_from_meeting = what needs alignment, decision, support, or escalation in the meeting.
+- next_step = one clear action sentence.
+- next_step_owner = person/team responsible, only if clearly mentioned or strongly implied from existing owner.
+- target_date = YYYY-MM-DD only when clearly inferable; otherwise empty.
+- review_this_week = Yes if the item needs weekly meeting review, management attention, open decision, blocked status, or follow-up; otherwise No.
 
 Confirmed project:
 - Record Type: {selected_project.get("record_type")}
@@ -282,10 +307,10 @@ Confirmed project:
 - Current Owner: {selected_project.get("current_owner")}
 - Phase: {selected_project.get("phase")}
 
-Existing system fields:
+Existing Meeting Prep fields:
 {existing_snapshot}
 
-New meeting notes:
+New meeting input:
 {meeting_notes}
 
 Required JSON schema:
@@ -299,7 +324,7 @@ Required JSON schema:
   "next_step_owner": "",
   "target_date": "",
   "review_this_week": "Yes or No",
-  "meeting_note": "",
+  "ai_summary_for_review": "",
   "difference_summary": "",
   "confidence": "High / Medium / Low",
   "needs_human_attention": "Yes or No"
@@ -316,6 +341,7 @@ Required JSON schema:
     for field in MEETING_FIELDS:
         cleaned[field] = clean_text(result.get(field))
 
+    cleaned["ai_summary_for_review"] = clean_text(result.get("ai_summary_for_review"))
     cleaned["difference_summary"] = clean_text(result.get("difference_summary"))
     cleaned["confidence"] = clean_text(result.get("confidence") or "Medium")
     cleaned["needs_human_attention"] = clean_text(result.get("needs_human_attention") or "No")

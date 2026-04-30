@@ -16,7 +16,6 @@ AI_DRAFT_TO_DB_FIELD_MAP = {
     "next_step": "next_step_summary",
     "next_step_owner": "next_step_owner",
     "target_date": "target_date",
-    "meeting_note": "meeting_note",
 }
 
 EMPTY_MARKERS = {"", "-", "n/a", "na", "none", "null"}
@@ -118,7 +117,7 @@ def apply_ai_meeting_draft(
         updates,
         operator=operator,
         source_page="AI Meeting Assistant",
-        event_type="AI Meeting Draft Applied",
+        event_type="AI Meeting Prep Applied",
     )
     result["entity_type"] = entity_type
     result["entity_id"] = entity_id

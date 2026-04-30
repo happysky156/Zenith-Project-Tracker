@@ -16,6 +16,7 @@ from services.ai_meeting_service import (
     FIELD_LABELS,
     MEETING_FIELDS,
     build_existing_field_snapshot,
+    clean_text,
     extract_meeting_fields_with_ai,
     search_project_candidates,
 )
@@ -102,6 +103,15 @@ def _render_css() -> None:
                 font-size: 0.9rem;
                 margin-bottom: 0.8rem;
             }
+            .zai-note {
+                border: 1px solid #dfe3e8;
+                background: #fafafa;
+                color: #333333;
+                border-radius: 16px;
+                padding: 0.85rem 1rem;
+                font-size: 0.9rem;
+                margin-bottom: 0.8rem;
+            }
             .zai-success {
                 border: 1px solid #b7e4c7;
                 background: #f3fff6;
@@ -154,6 +164,7 @@ def _candidate_card(candidate: dict[str, Any], index: int) -> None:
         st.session_state["ai_selected_project"] = candidate
         st.session_state.pop("ai_generated_draft", None)
         st.session_state.pop("ai_saved_draft_id", None)
+        st.session_state.pop("ai_apply_result", None)
         st.rerun()
 
 
@@ -179,26 +190,92 @@ def _render_selected_project(project: dict[str, Any]) -> None:
     )
 
 
-def _render_diff_table(project: dict[str, Any], draft: dict[str, Any]) -> None:
+def _default_apply(field: str, existing_value: str, ai_value: str) -> bool:
+    existing = clean_text(existing_value)
+    ai = clean_text(ai_value)
+    if not ai:
+        return False
+    if field == "review_this_week":
+        return ai.lower() == "yes" and existing.lower() != "yes"
+    if not existing:
+        return True
+    if existing == ai:
+        return False
+    # Existing value should not be overwritten by default. User must choose it.
+    return False
+
+
+def _build_review_dataframe(project: dict[str, Any], draft: dict[str, Any]) -> pd.DataFrame:
     existing = build_existing_field_snapshot(project)
     rows = []
     for field in MEETING_FIELDS:
+        existing_value = existing.get(field, "")
+        ai_value = clean_text(draft.get(field))
         rows.append(
             {
+                "Apply": _default_apply(field, existing_value, ai_value),
+                "Field Key": field,
                 "Field": FIELD_LABELS.get(field, field),
-                "Existing Record": existing.get(field, ""),
-                "AI Suggested Update": draft.get(field, ""),
+                "Existing Record": existing_value,
+                "AI Suggested Update": ai_value,
             }
         )
+    return pd.DataFrame(rows)
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+def _draft_from_review_table(review_frame: pd.DataFrame, original_draft: dict[str, Any]) -> dict[str, Any]:
+    selected: dict[str, Any] = {}
+    applied_fields: list[str] = []
+
+    for _, row in review_frame.iterrows():
+        field_key = clean_text(row.get("Field Key"))
+        if field_key not in MEETING_FIELDS:
+            continue
+        value = clean_text(row.get("AI Suggested Update"))
+        apply_flag = bool(row.get("Apply"))
+        if apply_flag and value:
+            selected[field_key] = value
+            applied_fields.append(field_key)
+        else:
+            selected[field_key] = ""
+
+    selected["ai_summary_for_review"] = clean_text(original_draft.get("ai_summary_for_review"))
+    selected["difference_summary"] = clean_text(original_draft.get("difference_summary"))
+    selected["confidence"] = clean_text(original_draft.get("confidence"))
+    selected["needs_human_attention"] = clean_text(original_draft.get("needs_human_attention"))
+    selected["applied_fields"] = applied_fields
+    selected["raw_ai_draft"] = original_draft
+    return selected
+
+
+def _render_review_editor(project: dict[str, Any], draft: dict[str, Any]) -> pd.DataFrame:
+    review_frame = _build_review_dataframe(project, draft)
+    st.caption(
+        "Only selected fields will be written into the core Sales / Operation Meeting Prep fields. "
+        "Meeting Note is not included because it is reserved for live human meeting notes."
+    )
+    return st.data_editor(
+        review_frame,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=["Field Key", "Field", "Existing Record"],
+        column_config={
+            "Apply": st.column_config.CheckboxColumn("Apply", help="Tick only the fields you want to write into the system."),
+            "Field Key": st.column_config.TextColumn("Field Key", width="small"),
+            "Field": st.column_config.TextColumn("Field", width="medium"),
+            "Existing Record": st.column_config.TextColumn("Existing Record", width="large"),
+            "AI Suggested Update": st.column_config.TextColumn("AI Suggested Update", width="large"),
+        },
+        key="ai_meeting_prep_review_editor",
+    )
 
 
 _render_css()
 
 render_page_header(
     "AI Meeting Assistant",
-    "Find project first, confirm Project ID, then let AI structure weekly meeting notes.",
+    "Find project first, confirm Project ID, then let AI structure weekly meeting prep fields.",
 )
 
 st.markdown(
@@ -207,6 +284,9 @@ st.markdown(
         <div class="zai-warning">
         Rule: colleagues can search by Project Name, Order No, Client Code, or Project ID.
         But no AI draft can be saved until one Project ID is confirmed.
+        </div>
+        <div class="zai-note">
+        Meeting Note is reserved for live human notes during the actual meeting. This AI assistant only prepares structured Meeting Prep / follow-up fields.
         </div>
         """
     ),
@@ -269,10 +349,11 @@ with right_col:
         st.session_state.pop("ai_selected_project", None)
         st.session_state.pop("ai_generated_draft", None)
         st.session_state.pop("ai_saved_draft_id", None)
+        st.session_state.pop("ai_apply_result", None)
         st.rerun()
 
     st.divider()
-    st.subheader("Step 3 · Paste Meeting Notes")
+    st.subheader("Step 3 · Paste Meeting Prep Input")
 
     output_language = st.selectbox(
         "AI output language",
@@ -282,7 +363,7 @@ with right_col:
     )
 
     meeting_notes = st.text_area(
-        "Meeting notes / colleague input",
+        "Colleague input / pre-meeting information",
         height=180,
         placeholder=(
             "Example: 客户还在等盐雾测试结果，供应商说下周三可以给新样板。"
@@ -294,13 +375,13 @@ with right_col:
     generate_disabled = not bool(selected_project.get("project_id")) or not meeting_notes.strip()
 
     if st.button(
-        "Generate AI Field Draft",
+        "Generate AI Meeting Prep Draft",
         disabled=generate_disabled,
         type="primary",
         use_container_width=True,
     ):
         try:
-            with st.spinner("AI is extracting meeting fields..."):
+            with st.spinner("AI is preparing Meeting Prep fields..."):
                 draft = extract_meeting_fields_with_ai(
                     selected_project=selected_project,
                     meeting_notes=meeting_notes,
@@ -308,6 +389,7 @@ with right_col:
                 )
             st.session_state["ai_generated_draft"] = draft
             st.session_state.pop("ai_saved_draft_id", None)
+            st.session_state.pop("ai_apply_result", None)
             st.rerun()
         except (AIConfigError, AIResponseError) as exc:
             st.error(str(exc))
@@ -318,14 +400,15 @@ with right_col:
 
     if draft:
         st.divider()
-        st.subheader("Step 4 · Review AI Draft")
+        st.subheader("Step 4 · Review AI Meeting Prep Draft")
 
         st.markdown(
             _html(
                 f"""
                 <div class="zai-card">
-                    <div class="zai-kicker">AI Summary</div>
+                    <div class="zai-kicker">AI Review Summary</div>
                     <div class="zai-meta">
+                        AI Summary for Review: <b>{_safe(draft.get("ai_summary_for_review"))}</b><br>
                         Difference Summary: <b>{_safe(draft.get("difference_summary"))}</b><br>
                         Confidence: <b>{_safe(draft.get("confidence"))}</b><br>
                         Needs Human Attention: <b>{_safe(draft.get("needs_human_attention"))}</b>
@@ -336,13 +419,18 @@ with right_col:
             unsafe_allow_html=True,
         )
 
-        _render_diff_table(selected_project, draft)
+        edited_review_frame = _render_review_editor(selected_project, draft)
 
         st.warning(
-            "Confirm will now save the AI draft and apply the non-empty AI fields into the core "
-            "Sales / Operation Meeting Prep fields. Empty AI fields will not clear existing data. "
-            "AI Review This Week = Yes will add the item to this week's review; AI No will not remove it."
+            "Confirm will save the AI draft and apply only the selected fields into the core "
+            "Sales / Operation Meeting Prep fields. Empty fields will not clear existing data. "
+            "AI Review This Week = Yes can add the item to this week's review; AI No will not remove it. "
+            "Meeting Note will not be changed by this assistant."
         )
+
+        selected_draft = _draft_from_review_table(edited_review_frame, draft)
+        selected_count = len(selected_draft.get("applied_fields") or [])
+        st.caption(f"Selected fields to apply: {selected_count}")
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -350,7 +438,7 @@ with right_col:
                 draft_id = save_ai_update_draft(
                     selected_project=selected_project,
                     meeting_notes=meeting_notes,
-                    draft_json=draft,
+                    draft_json={"raw_ai_draft": draft, "review_table": edited_review_frame.to_dict("records")},
                     current_user=current_user,
                     status="pending",
                 )
@@ -359,18 +447,23 @@ with right_col:
                 st.success(f"AI draft saved. Draft ID: {draft_id}")
 
         with col_b:
-            if st.button("Confirm AI Draft + Update System", type="primary", use_container_width=True):
+            if st.button(
+                "Confirm Selected Fields + Update System",
+                type="primary",
+                use_container_width=True,
+                disabled=selected_count == 0,
+            ):
                 draft_id = save_ai_update_draft(
                     selected_project=selected_project,
                     meeting_notes=meeting_notes,
-                    draft_json=draft,
+                    draft_json=selected_draft,
                     current_user=current_user,
                     status="confirmed",
                 )
                 try:
                     apply_result = apply_ai_meeting_draft(
                         selected_project=selected_project,
-                        draft=draft,
+                        draft=selected_draft,
                         operator=acting_user,
                     )
                     final_status = "confirmed_applied" if apply_result.get("updated") else "confirmed_no_change"
@@ -383,7 +476,7 @@ with right_col:
                     st.session_state["ai_apply_result"] = apply_result
                     if apply_result.get("updated"):
                         st.success(
-                            f"AI draft confirmed and applied. Draft ID: {draft_id}. "
+                            f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}. "
                             f"{apply_result.get('message')}"
                         )
                     else:
@@ -427,6 +520,7 @@ with right_col:
                     Applied Record: <b>{_safe(entity_label)}</b><br>
                     Result: <b>{_safe(apply_message)}</b><br>
                     Changed Fields: <b>{_safe(changed_fields)}</b><br>
+                    Meeting Note was not changed by this AI assistant.<br>
                     Dashboard / Meeting Mode should show the latest values after refresh because cached read data is cleared after writes.
                     </div>
                     """

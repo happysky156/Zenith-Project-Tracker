@@ -206,3 +206,14 @@ Safety rules:
 - Confirmed applied drafts are marked as `confirmed_applied` in `ai_update_drafts`.
 - If no core field changes are detected, the draft is marked as `confirmed_no_change`.
 - If the draft is saved but applying fails, the draft is marked as `confirmed_apply_failed`.
+
+## v17.18 AI Meeting Prep Assistant update
+
+This version refines the AI assistant logic:
+
+- The page works as an AI Meeting Prep Assistant.
+- `Meeting Note` is treated as a live human meeting-record field and is no longer generated or updated by AI.
+- AI output is limited to structured Meeting Prep / follow-up fields.
+- Users must review an editable field-level table before applying changes.
+- Existing non-empty fields are not selected for overwrite by default.
+- Confirm applies only selected fields through the existing detail update/event log pathway.
