@@ -165,14 +165,21 @@ def update_request_layer_fields(entity_type: str, entity_id: str, updates: dict[
 
 
 
-def update_meeting_fields(entity_type: str, entity_id: str, updates: dict[str, Any], operator: str) -> dict[str, Any]:
+def update_meeting_fields(
+    entity_type: str,
+    entity_id: str,
+    updates: dict[str, Any],
+    operator: str,
+    source_page: str = "Project Detail",
+    event_type: str = "Meeting Fields Updated",
+) -> dict[str, Any]:
     return _apply_update(
         entity_type=entity_type,
         entity_id=entity_id,
         updates=updates,
         operator=operator,
-        source_page="Project Detail",
-        event_type="Meeting Fields Updated",
+        source_page=source_page,
+        event_type=event_type,
     )
 
 

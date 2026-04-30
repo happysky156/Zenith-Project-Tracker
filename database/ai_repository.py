@@ -66,8 +66,8 @@ def save_ai_update_draft(
     user_email, user_name = _normalise_user(current_user)
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-    confirmed_at = now if status == "confirmed" else None
-    confirmed_by = user_name or user_email if status == "confirmed" else None
+    confirmed_at = now if status in {"confirmed", "confirmed_applied", "confirmed_no_change"} else None
+    confirmed_by = user_name or user_email if confirmed_at else None
 
     conn = get_connection()
     cur = conn.cursor()
@@ -117,6 +117,19 @@ def save_ai_update_draft(
 
 
 def mark_ai_draft_confirmed(*, draft_id: str, current_user: Any) -> None:
+    mark_ai_draft_status(draft_id=draft_id, status="confirmed", current_user=current_user)
+
+
+def mark_ai_draft_status(*, draft_id: str, status: str, current_user: Any) -> None:
+    """Update the lifecycle status of an AI draft.
+
+    Typical statuses:
+    - pending
+    - confirmed
+    - confirmed_applied
+    - confirmed_no_change
+    - confirmed_apply_failed
+    """
     ensure_ai_tables()
     user_email, user_name = _normalise_user(current_user)
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -128,10 +141,10 @@ def mark_ai_draft_confirmed(*, draft_id: str, current_user: Any) -> None:
         cur,
         """
         UPDATE ai_update_drafts
-        SET status = ?, confirmed_at = ?, confirmed_by = ?
+        SET status = ?, confirmed_at = COALESCE(confirmed_at, ?), confirmed_by = COALESCE(confirmed_by, ?)
         WHERE id = ?
         """,
-        ("confirmed", now, confirmed_by, draft_id),
+        (status, now, confirmed_by, draft_id),
     )
     conn.commit()
     conn.close()

@@ -9,7 +9,8 @@ import streamlit as st
 
 from core.auth import require_login
 from core.state import init_session_state
-from database.ai_repository import save_ai_update_draft
+from database.ai_repository import mark_ai_draft_status, save_ai_update_draft
+from services.ai_apply_service import AIMeetingApplyError, apply_ai_meeting_draft
 from services.ai_client import AIConfigError, AIResponseError
 from services.ai_meeting_service import (
     FIELD_LABELS,
@@ -30,6 +31,7 @@ st.set_page_config(
 init_session_state()
 apply_theme()
 current_user = require_login()
+acting_user = str(current_user.get("display_name") or current_user.get("email") or "AI User") if isinstance(current_user, dict) else str(current_user)
 
 
 def _html(markup: str) -> str:
@@ -337,8 +339,9 @@ with right_col:
         _render_diff_table(selected_project, draft)
 
         st.warning(
-            "This first version saves the AI result into ai_update_drafts only. "
-            "It does not directly overwrite the core Sales / Operation table."
+            "Confirm will now save the AI draft and apply the non-empty AI fields into the core "
+            "Sales / Operation Meeting Prep fields. Empty AI fields will not clear existing data. "
+            "AI Review This Week = Yes will add the item to this week's review; AI No will not remove it."
         )
 
         col_a, col_b = st.columns(2)
@@ -352,10 +355,11 @@ with right_col:
                     status="pending",
                 )
                 st.session_state["ai_saved_draft_id"] = draft_id
+                st.session_state["ai_apply_result"] = None
                 st.success(f"AI draft saved. Draft ID: {draft_id}")
 
         with col_b:
-            if st.button("Confirm AI Draft", type="primary", use_container_width=True):
+            if st.button("Confirm AI Draft + Update System", type="primary", use_container_width=True):
                 draft_id = save_ai_update_draft(
                     selected_project=selected_project,
                     meeting_notes=meeting_notes,
@@ -363,17 +367,67 @@ with right_col:
                     current_user=current_user,
                     status="confirmed",
                 )
-                st.session_state["ai_saved_draft_id"] = draft_id
-                st.success(f"AI draft confirmed and saved. Draft ID: {draft_id}")
+                try:
+                    apply_result = apply_ai_meeting_draft(
+                        selected_project=selected_project,
+                        draft=draft,
+                        operator=acting_user,
+                    )
+                    final_status = "confirmed_applied" if apply_result.get("updated") else "confirmed_no_change"
+                    mark_ai_draft_status(
+                        draft_id=draft_id,
+                        status=final_status,
+                        current_user=current_user,
+                    )
+                    st.session_state["ai_saved_draft_id"] = draft_id
+                    st.session_state["ai_apply_result"] = apply_result
+                    if apply_result.get("updated"):
+                        st.success(
+                            f"AI draft confirmed and applied. Draft ID: {draft_id}. "
+                            f"{apply_result.get('message')}"
+                        )
+                    else:
+                        st.info(
+                            f"AI draft confirmed and saved. Draft ID: {draft_id}. "
+                            f"{apply_result.get('message')}"
+                        )
+                except AIMeetingApplyError as exc:
+                    mark_ai_draft_status(
+                        draft_id=draft_id,
+                        status="confirmed_apply_failed",
+                        current_user=current_user,
+                    )
+                    st.session_state["ai_saved_draft_id"] = draft_id
+                    st.session_state["ai_apply_result"] = None
+                    st.error(f"Draft saved, but applying to the system failed: {exc}")
+                except Exception as exc:
+                    mark_ai_draft_status(
+                        draft_id=draft_id,
+                        status="confirmed_apply_failed",
+                        current_user=current_user,
+                    )
+                    st.session_state["ai_saved_draft_id"] = draft_id
+                    st.session_state["ai_apply_result"] = None
+                    st.error(f"Draft saved, but applying to the system failed: {exc}")
 
         saved_draft_id = st.session_state.get("ai_saved_draft_id")
+        apply_result = st.session_state.get("ai_apply_result")
         if saved_draft_id:
+            changed_fields = ", ".join(apply_result.get("changed_fields") or []) if apply_result else "-"
+            apply_message = apply_result.get("message") if apply_result else "Saved as pending AI draft."
+            entity_label = (
+                f"{apply_result.get('entity_type')} / {apply_result.get('entity_id')}"
+                if apply_result else "Not applied yet"
+            )
             st.markdown(
                 _html(
                     f"""
                     <div class="zai-success">
                     Saved Draft ID: <b>{_safe(saved_draft_id)}</b><br>
-                    Next step: connect confirmed draft to the existing Project / Order Detail update function after review.
+                    Applied Record: <b>{_safe(entity_label)}</b><br>
+                    Result: <b>{_safe(apply_message)}</b><br>
+                    Changed Fields: <b>{_safe(changed_fields)}</b><br>
+                    Dashboard / Meeting Mode should show the latest values after refresh because cached read data is cleared after writes.
                     </div>
                     """
                 ),

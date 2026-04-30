@@ -1,48 +1,35 @@
-# AI Meeting Assistant - First Runnable Version
+# AI Meeting Assistant Notes
 
-This package adds a first-version AI Meeting Assistant to Zenith Project Tracker.
+## v17.17 behaviour
 
-## Added files
+The AI Meeting Assistant now supports the full first workflow:
+
+1. Search by Project Name / Order No / Client Code / Project ID.
+2. Search Sales + Operation records.
+3. Show candidate projects/orders.
+4. User must select one record.
+5. System confirms Project ID and Entity ID.
+6. User pastes weekly meeting notes.
+7. DeepSeek extracts Meeting Prep fields.
+8. Page shows Existing Record vs AI Suggested Update.
+9. User can save a pending AI draft, or confirm and apply.
+10. Confirm and apply saves the AI draft into `ai_update_drafts`, then updates the core Sales / Operation Meeting Prep fields through the existing detail update logic.
+
+## Safety rules
+
+- Empty AI fields do not clear existing database values.
+- `review_this_week = Yes` adds the record to this week's review.
+- `review_this_week = No` does not remove an existing review flag.
+- The update uses the existing Project Detail update path, so event logs and Streamlit cache clearing remain consistent.
+- Applied AI updates are written to the event timeline as `AI Meeting Draft Applied` with source page `AI Meeting Assistant`.
+
+## Files added or changed
 
 - `pages/7_AI_Meeting_Assistant.py`
 - `services/ai_client.py`
 - `services/ai_meeting_service.py`
+- `services/ai_apply_service.py`
 - `database/ai_repository.py`
-
-## Updated files
-
-- `requirements.txt` adds `openai>=1.40.0`
-- `.streamlit/secrets.example.toml` adds `[AI]` DeepSeek API settings
-- `README.md` adds AI setup notes
-
-## What this version does
-
-1. Colleague enters Project Name / Order No / Client Code / Project ID.
-2. System searches Sales + Operation data.
-3. System shows candidate records.
-4. Colleague must select one project/order.
-5. System confirms Project ID before AI processing.
-6. Colleague pastes meeting notes.
-7. DeepSeek structures the notes into Meeting Prep fields.
-8. Page shows Existing Record vs AI Suggested Update.
-9. Colleague clicks Save / Confirm.
-10. Result is saved into `ai_update_drafts`.
-
-## Important safety design
-
-This first version does not directly overwrite the core `sales_projects` or `operation_orders` tables. It only saves AI output into `ai_update_drafts`. This protects the core project database from AI mistakes.
-
-## Streamlit Secrets
-
-Add this to Streamlit Cloud Secrets or local `.streamlit/secrets.toml`:
-
-```toml
-[AI]
-DEEPSEEK_API_KEY = "sk-your-deepseek-api-key"
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-chat"
-AI_TIMEOUT_SECONDS = 45
-AI_MAX_TOKENS = 1200
-```
-
-After updating requirements or secrets, reboot the Streamlit app.
+- `services/detail_service.py`
+- `requirements.txt`
+- `.streamlit/secrets.example.toml`

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -241,6 +242,7 @@ def extract_meeting_fields_with_ai(
     output_language: str = "English",
 ) -> dict[str, Any]:
     existing_snapshot = build_existing_field_snapshot(selected_project)
+    today = date.today().isoformat()
 
     system_prompt = """
 You are an internal project meeting assistant for Zenith E.C.S.
@@ -264,6 +266,9 @@ Important rules:
 
     user_prompt = f"""
 Please extract the following meeting fields as JSON.
+
+Today date: {today}
+Target date rule: return target_date as YYYY-MM-DD only if it can be clearly inferred from the notes and today date. If it is unclear, leave target_date empty.
 
 Output language: {output_language}
 

@@ -178,3 +178,31 @@ AI_MAX_TOKENS = 1200
 ```
 
 After updating requirements or Secrets, reboot the Streamlit app.
+
+## v17.17 AI Meeting Assistant apply-to-system update
+
+The AI Meeting Assistant can now confirm an AI draft and apply it to the existing Sales / Operation Meeting Prep fields.
+
+Flow:
+
+```text
+Search Project / Order
+→ Confirm Project ID / Entity ID
+→ Paste meeting notes
+→ DeepSeek extracts fields
+→ Review Existing Record vs AI Suggested Update
+→ Confirm AI Draft + Update System
+→ Save to ai_update_drafts
+→ Update core Sales / Operation record
+→ Write Event Timeline log
+→ Clear cached read data
+```
+
+Safety rules:
+
+- Empty AI fields do not clear existing values.
+- AI `Review This Week = Yes` will set `review_this_week = 1`.
+- AI `Review This Week = No` will not remove the existing review flag.
+- Confirmed applied drafts are marked as `confirmed_applied` in `ai_update_drafts`.
+- If no core field changes are detected, the draft is marked as `confirmed_no_change`.
+- If the draft is saved but applying fails, the draft is marked as `confirmed_apply_failed`.
