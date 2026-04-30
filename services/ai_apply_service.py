@@ -102,6 +102,7 @@ def apply_ai_meeting_draft(
 
     updates = build_ai_meeting_updates(draft)
     if not updates:
+        current_record = get_sales_project(entity_id) if entity_type == "Sales" else get_operation_order(entity_id)
         return {
             "updated": False,
             "message": "AI draft saved, but no non-empty field was available to apply.",
@@ -109,6 +110,7 @@ def apply_ai_meeting_draft(
             "entity_type": entity_type,
             "entity_id": entity_id,
             "updates": {},
+            "record": current_record or {},
         }
 
     result = update_meeting_fields(
@@ -119,7 +121,10 @@ def apply_ai_meeting_draft(
         source_page="AI Meeting Assistant",
         event_type="AI Meeting Prep Applied",
     )
+    # Read back the record after applying, so the UI can verify what is actually stored.
+    refreshed_record = get_sales_project(entity_id) if entity_type == "Sales" else get_operation_order(entity_id)
     result["entity_type"] = entity_type
     result["entity_id"] = entity_id
     result["updates"] = updates
+    result["record"] = refreshed_record or result.get("record") or {}
     return result
