@@ -176,7 +176,6 @@ def _render_selected_project(project: dict[str, Any]) -> None:
                 <div class="zai-kicker">Confirmed Project Before AI Processing</div>
                 <div class="zai-title">{_safe(project.get("project_id"))} · {_safe(project.get("project_name"))}</div>
                 <div class="zai-meta">
-                    Update Target: <b>{_safe(project.get("record_type"))} / {_safe(project.get("entity_id"))}</b><br>
                     Record Type: <b>{_safe(project.get("record_type"))}</b><br>
                     Entity ID: <b>{_safe(project.get("entity_id"))}</b><br>
                     Client Code: <b>{_safe(project.get("client_code"))}</b><br>
@@ -192,23 +191,18 @@ def _render_selected_project(project: dict[str, Any]) -> None:
 
 
 def _default_apply(field: str, existing_value: str, ai_value: str) -> bool:
-    """Default selection logic for applying AI suggestions.
-
-    v17.21 change:
-    - Any non-empty AI suggestion is selected by default when it is different from the existing value.
-    - This makes the Confirm button behave as the user expects: confirmed fields are actually written.
-    - The user can still untick any field before confirming.
-    - Review This Week is only applied automatically when AI says Yes. AI No never removes review status.
-    """
     existing = clean_text(existing_value)
     ai = clean_text(ai_value)
     if not ai:
         return False
     if field == "review_this_week":
         return ai.lower() == "yes" and existing.lower() != "yes"
+    if not existing:
+        return True
     if existing == ai:
         return False
-    return True
+    # Existing value should not be overwritten by default. User must choose it.
+    return False
 
 
 def _build_review_dataframe(project: dict[str, Any], draft: dict[str, Any]) -> pd.DataFrame:
@@ -417,30 +411,15 @@ with right_col:
         edited_review_frame = _render_review_editor(selected_project, draft)
 
         st.warning(
-            "Confirm will save the AI draft and apply only the ticked Apply rows into the selected "
-            "Sales / Operation record. In this version, non-empty AI suggestions are ticked by default "
-            "when they are different from the existing record. Untick any field you do not want to overwrite. "
-            "Empty AI fields will never clear existing data. AI Review This Week = Yes can add the item to "
-            "this week's review; AI No will not remove it. Meeting Note will not be changed by this assistant."
+            "Confirm will save the AI draft and apply only the selected fields into the core "
+            "Sales / Operation Meeting Prep fields. Empty fields will not clear existing data. "
+            "AI Review This Week = Yes can add the item to this week's review; AI No will not remove it. "
+            "Meeting Note will not be changed by this assistant."
         )
 
         selected_draft = _draft_from_review_table(edited_review_frame, draft)
-        applied_fields = selected_draft.get("applied_fields") or []
-        selected_count = len(applied_fields)
-        visible_applied_fields = [
-            FIELD_LABELS.get(field, field)
-            for field in applied_fields
-            if field != "review_this_week"
-        ]
-        st.caption(
-            f"Selected fields to apply: {selected_count}. "
-            f"Text fields: {', '.join(visible_applied_fields) if visible_applied_fields else 'None'}"
-        )
-        if selected_count > 0 and not visible_applied_fields:
-            st.info(
-                "Only Review This Week is selected. This can make the app show success, but no visible "
-                "Meeting Prep text will change in Project Details / Meeting Mode."
-            )
+        selected_count = len(selected_draft.get("applied_fields") or [])
+        st.caption(f"Selected fields to apply: {selected_count}")
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -531,24 +510,9 @@ with right_col:
                     Result: <b>{_safe(apply_message)}</b><br>
                     Changed Fields: <b>{_safe(changed_fields)}</b><br>
                     Meeting Note was not changed by this AI assistant.<br>
-                    The table below is read back from the database after apply, so it shows what the selected record currently stores.
+                    Dashboard / Meeting Mode should show the latest values after refresh because cached read data is cleared after writes.
                     </div>
                     """
                 ),
                 unsafe_allow_html=True,
             )
-
-            if apply_result and apply_result.get("record"):
-                refreshed_record = apply_result.get("record") or {}
-                verify_rows = [
-                    {"Field": "Current Progress", "Saved Value": refreshed_record.get("progress_summary") or ""},
-                    {"Field": "Main Issue", "Saved Value": refreshed_record.get("main_issue") or ""},
-                    {"Field": "Blocked At", "Saved Value": refreshed_record.get("block_point") or ""},
-                    {"Field": "Waiting For What", "Saved Value": refreshed_record.get("waiting_for_text") or ""},
-                    {"Field": "Need From Meeting", "Saved Value": refreshed_record.get("need_from_meeting") or ""},
-                    {"Field": "Next Step", "Saved Value": refreshed_record.get("next_step_summary") or ""},
-                    {"Field": "Next Step Owner", "Saved Value": refreshed_record.get("next_step_owner") or ""},
-                    {"Field": "Target Date", "Saved Value": refreshed_record.get("target_date") or ""},
-                    {"Field": "Review This Week", "Saved Value": "Yes" if refreshed_record.get("review_this_week") else "No"},
-                ]
-                st.dataframe(pd.DataFrame(verify_rows), use_container_width=True, hide_index=True)

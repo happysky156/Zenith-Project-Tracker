@@ -708,25 +708,21 @@ render_page_header(
 )
 
 # -----------------------------------------------------------------------------
-# Top controls: current operator + meeting mode, then business filters.
+# Hidden meeting view controls.
+# UI-only change:
+# - Do not render the empty top control card.
+# - Do not render "Update As".
+# - Do not render Team Detail / Boss Summary radio.
+# Business logic unchanged: acting_user is still used for updates/logs, and
+# meeting_view still exists for downstream summary/export/session logic.
+# Default view remains Boss Summary.
 # -----------------------------------------------------------------------------
-st.markdown("<div class='zt-meeting-top-control-card'>", unsafe_allow_html=True)
-meta_col, view_col = st.columns([1.1, 1.5])
-with meta_col:
-    st.markdown(
-        f"<div class='zt-meeting-inline-meta'><span><b>Update As</b>{escape(acting_user)}</span></div>",
-        unsafe_allow_html=True,
-    )
-with view_col:
-    _tooltip_label("Meeting View", "Team Detail shows the full working list. Boss Summary keeps the priority order for decision-focused review.")
-    meeting_view = st.radio(
-        "Meeting View",
-        options=["Team Detail", "Boss Summary"],
-        horizontal=True,
-        key="meeting_view_mode",
-        label_visibility="collapsed",
-    )
-st.markdown("</div>", unsafe_allow_html=True)
+if "meeting_view_mode" not in st.session_state:
+    st.session_state["meeting_view_mode"] = "Boss Summary"
+meeting_view = st.session_state.get("meeting_view_mode", "Boss Summary")
+if meeting_view not in {"Team Detail", "Boss Summary"}:
+    meeting_view = "Boss Summary"
+    st.session_state["meeting_view_mode"] = meeting_view
 
 filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns([0.9, 1.1, 1.1, 1.4, 0.7])
 with filter_col1:
