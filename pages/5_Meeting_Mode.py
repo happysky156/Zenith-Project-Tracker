@@ -29,9 +29,18 @@ def _html(markup: str) -> str:
     return dedent(markup).strip()
 
 
-def _clean(value: object) -> str:
-    text = str(value or "-").strip() or "-"
+def _clean(value: object, empty: str = "Not set") -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"-", "nan", "none", "null"}:
+        text = empty
     return escape(text).replace("\n", "<br>")
+
+
+def _plain(value: object, empty: str = "") -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"-", "nan", "none", "null"}:
+        return empty
+    return text
 
 
 def _parse_date(value: str | None):
@@ -54,6 +63,14 @@ def _meeting_session_key(view_name: str) -> str:
 
 def _set_meeting_active_filter(name: str) -> None:
     st.session_state["meeting_active_filter"] = name
+
+
+def _reset_meeting_filters() -> None:
+    st.session_state["meeting_type_filter_v2"] = "All"
+    st.session_state["meeting_next_step_owner_filter"] = "All"
+    st.session_state["meeting_followup_status_filter"] = "All"
+    st.session_state["meeting_search_query"] = ""
+    st.session_state["meeting_active_filter"] = "Meeting Pool"
 
 
 def _tooltip_label(label: str, help_text: str) -> None:
@@ -157,6 +174,26 @@ def _apply_owner_status_filters(rows: list[dict], owner_filter: str, status_filt
     return filtered
 
 
+def _apply_search_filter(rows: list[dict], query: str) -> list[dict]:
+    keyword = (query or "").strip().lower()
+    if not keyword:
+        return rows
+    search_keys = [
+        "entity_id",
+        "display_id",
+        "display_title",
+        "project_name",
+        "linked_project_name",
+        "client_code",
+        "order_no",
+    ]
+    return [
+        row
+        for row in rows
+        if any(keyword in str(row.get(key) or "").lower() for key in search_keys)
+    ]
+
+
 def _apply_meeting_filter(rows: list[dict], active_filter: str) -> list[dict]:
     if active_filter == "Need Decision":
         return [r for r in rows if _is_need_decision(r)]
@@ -175,26 +212,31 @@ def _summary_specs(metrics: dict[str, int]) -> list[dict[str, object]]:
         {
             "name": "Meeting Pool",
             "count": metrics["total"],
-            "help": "Show all unique items in this week's meeting pool after the current owner/status filters.",
+            "class": "pool",
+            "help": "Show all unique items in this week's meeting pool after the current owner/status/search filters.",
         },
         {
             "name": "Need Decision",
             "count": metrics["need_decision"],
+            "class": "decision",
             "help": "Show decision, approval or internal-alignment items." + overlap_note,
         },
         {
             "name": "Blocked",
             "count": metrics["blocked"],
+            "class": "blocked",
             "help": "Show blocked/risk items or items with a clear blocked-at point." + overlap_note,
         },
         {
             "name": "Due / Follow-up",
             "count": metrics["delayed_due"],
+            "class": "due",
             "help": "Show overdue follow-up items with a next step, owner and overdue target date." + overlap_note,
         },
         {
             "name": "Repeated Issue",
             "count": metrics["pattern"],
+            "class": "repeat",
             "help": "Show items flagged as repeated or recurring issues." + overlap_note,
         },
     ]
@@ -205,7 +247,7 @@ def _section_head(kicker: str, title: str, note: str | None = None) -> None:
     st.markdown(
         _html(
             f"""
-            <div class='zt-board-section-head'>
+            <div class='zt-board-section-head zt-meeting-section-head'>
                 <div>
                     <div class='zt-section-kicker'>{escape(kicker)}</div>
                     <div class='zt-board-section-title'>{escape(title)}</div>
@@ -221,11 +263,14 @@ def _section_head(kicker: str, title: str, note: str | None = None) -> None:
 def _render_summary_filter_bar(metrics: dict[str, int]) -> None:
     specs = _summary_specs(metrics)
     active_filter = st.session_state.get("meeting_active_filter", "Meeting Pool")
+    st.markdown("<span class='zt-meeting-kpi-marker'></span>", unsafe_allow_html=True)
     cols = st.columns(len(specs))
     for col, spec in zip(cols, specs):
         name = str(spec["name"])
         count = str(spec["count"])
-        label = f"**{count} {name}**"
+        # Streamlit button labels support Markdown; keeping the number and label on
+        # separate lines makes the control read more like a KPI card.
+        label = f"**{count}**\n\n{name}"
         is_active = active_filter == name
         with col:
             st.button(
@@ -251,62 +296,394 @@ def _card_header_html(row: dict) -> str:
         f"""
         <div class='zt-meeting-card-head'>
             <div class='zt-meeting-card-topline'>
-                <div>                    <div class='zt-meeting-card-title'><span>{_clean(entity_id)}</span> — {_clean(title)}</div>
+                <div>
+                    <div class='zt-meeting-card-title'><span>{_clean(entity_id, empty='-')}</span> — {_clean(title, empty='-')}</div>
                     <div class='zt-meeting-card-subtitle'>{escape(subtitle)}</div>
                 </div>
-                <div class='zt-project-focus-pill'>{_clean(attention)}</div>
+                <div class='zt-project-focus-pill'>{_clean(attention, empty='Meeting Item')}</div>
             </div>
         </div>
         """
     )
 
 
+def _focus_reasons(row: dict) -> list[str]:
+    reasons: list[str] = []
+    for value in [
+        row.get("meeting_focus_reason"),
+        f"Need from meeting: {row.get('need_from_meeting')}" if _has_value(row.get("need_from_meeting")) else None,
+        f"Blocked at: {row.get('block_point')}" if _has_value(row.get("block_point")) else None,
+        f"Main issue: {row.get('main_issue')}" if _has_value(row.get("main_issue")) else None,
+    ]:
+        cleaned = _plain(value)
+        if cleaned and cleaned not in reasons:
+            reasons.append(cleaned)
+    return reasons or ["Marked for meeting review."]
+
+
 def _focus_note_html(row: dict) -> str:
+    items = "".join(f"<li>{_clean(reason)}</li>" for reason in _focus_reasons(row)[:4])
     return _html(
         f"""
         <div class='zt-attention-strip zt-meeting-focus-strip'>
-            <b>Why this item is in focus:</b> {_clean(row.get('meeting_focus_reason'))}
+            <div class='zt-meeting-focus-title'>Why this item is in focus</div>
+            <ul class='zt-meeting-focus-list'>{items}</ul>
         </div>
         """
     )
 
 
-def _detail_grid_html(row: dict) -> str:
+def _meeting_field_html(label: str, value: object, class_name: str = "") -> str:
+    muted = " zt-meeting-field-empty" if not _has_value(value) else ""
+    extra = f" {class_name}" if class_name else ""
+    return (
+        f"<div class='zt-meeting-field{muted}{extra}'>"
+        f"<div class='zt-meeting-field-label'>{escape(label)}</div>"
+        f"<div class='zt-meeting-field-value'>{_clean(value)}</div>"
+        "</div>"
+    )
+
+
+def _main_summary_html(row: dict) -> str:
+    target_date = _plain(row.get("target_date"), empty="Not set")
+    footer_badges = [
+        ("Owner", row.get("next_step_owner")),
+        ("Target Date", target_date),
+        ("Support From", row.get("next_step_support")),
+    ]
+    footer_html = "".join(
+        f"<span><b>{escape(label)}:</b> {_clean(value)}</span>" for label, value in footer_badges
+    )
+    return _html(
+        f"""
+        <div class='zt-meeting-summary-grid'>
+            {_meeting_field_html('Main Issue', row.get('main_issue'), 'zt-field-main-issue')}
+            {_meeting_field_html('Current Progress', row.get('progress_summary'), 'zt-field-progress')}
+            {_meeting_field_html('Blocked At', row.get('block_point'), 'zt-field-blocked')}
+            {_meeting_field_html('Need From Meeting', row.get('need_from_meeting'), 'zt-field-need')}
+        </div>
+        <div class='zt-meeting-next-step-card'>
+            <div class='zt-meeting-field-label'>Next Step</div>
+            <div class='zt-meeting-field-value'>{_clean(row.get('next_step_summary'))}</div>
+            <div class='zt-meeting-next-step-meta'>{footer_html}</div>
+        </div>
+        """
+    )
+
+
+def _secondary_detail_grid_html(row: dict) -> str:
     fields = [
         ("Client Waiting For", row.get("client_waiting_for")),
         ("Possible Reason", row.get("likely_reason")),
-        ("Current Progress", row.get("progress_summary")),
-        ("Need From Meeting", row.get("need_from_meeting")),
-        ("Main Issue", row.get("main_issue")),
-        ("Next Step", row.get("next_step_summary")),
-        ("Blocked At", row.get("block_point")),
         ("Decision By", row.get("need_decision_from")),
+        ("Next Step Support From", row.get("next_step_support")),
+        ("Days Since Review", row.get("days_since_review")),
+        ("Days Since Status", row.get("days_since_status_update")),
     ]
-    html = []
-    for label, value in fields:
-        muted = " zt-meeting-field-empty" if not str(value or "").strip() else ""
-        html.append(
-            f"<div class='zt-meeting-field{muted}'>"
-            f"<div class='zt-meeting-field-label'>{escape(label)}</div>"
-            f"<div class='zt-meeting-field-value'>{_clean(value)}</div>"
-            "</div>"
-        )
-    return "<div class='zt-meeting-field-grid'>" + "".join(html) + "</div>"
+    html = [_meeting_field_html(label, value) for label, value in fields]
+    return "<div class='zt-meeting-field-grid zt-secondary-field-grid'>" + "".join(html) + "</div>"
 
 
 def _status_strip_html(row: dict) -> str:
+    primary_badges = [
+        ("Owner", row.get("next_step_owner")),
+        ("Status", row.get("followup_status") or "Open"),
+        ("Review This Week", "Yes" if row.get("review_this_week") else "No"),
+        ("Reason", row.get("meeting_pool_reason_text")),
+    ]
+    secondary_badges = [
+        ("Support From", row.get("next_step_support")),
+        ("Days Since Review", row.get("days_since_review")),
+        ("Days Since Status", row.get("days_since_status_update")),
+    ]
+    primary_html = "".join(
+        f"<span><b>{escape(label)}:</b> {_clean(value)}</span>" for label, value in primary_badges
+    )
+    secondary_html = "".join(
+        f"<span class='zt-meeting-status-secondary'><b>{escape(label)}:</b> {_clean(value)}</span>" for label, value in secondary_badges
+    )
     return _html(
         f"""
         <div class='zt-meeting-status-strip'>
-            <span><b>Next Step Owner:</b> {_clean(row.get('next_step_owner'))}</span>
-            <span><b>Next Step Support From:</b> {_clean(row.get('next_step_support'))}</span>
-            <span><b>Follow-up Status:</b> {_clean(row.get('followup_status') or 'Open')}</span>
-            <span><b>Meeting Reason:</b> {_clean(row.get('meeting_pool_reason_text'))}</span>
-            <span><b>Review This Week:</b> {'Yes' if row.get('review_this_week') else 'No'}</span>
-            <span><b>Days Since Review:</b> {_clean(row.get('days_since_review'))}</span>
-            <span><b>Days Since Status:</b> {_clean(row.get('days_since_status_update'))}</span>
+            <div class='zt-followup-summary-title'>Follow-up Summary</div>
+            <div class='zt-followup-summary-badges'>{primary_html}{secondary_html}</div>
         </div>
         """
+    )
+
+
+def _active_filter_html(active_filter: str, visible_count: int, meeting_type: str, owner: str, status: str, query: str) -> str:
+    badge_pairs = [
+        active_filter,
+        f"{visible_count} items",
+        f"Type: {meeting_type}",
+        f"Owner: {owner}",
+        f"Follow-up: {status}",
+    ]
+    if query.strip():
+        badge_pairs.append(f"Search: {query.strip()}")
+    badges = "".join(f"<span>{escape(str(item))}</span>" for item in badge_pairs)
+    return f"<div class='zt-meeting-active-filter'><b>Showing</b>{badges}</div>"
+
+
+def _apply_meeting_mode_css() -> None:
+    st.markdown(
+        _html(
+            """
+            <style>
+            /* Production view: hide Streamlit's default chrome so Meeting Mode feels like an internal system. */
+            #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"] {
+                visibility: hidden !important;
+                height: 0 !important;
+            }
+
+            /* More compact page header for Meeting Mode. */
+            .zt-header-grid {
+                margin-bottom: 0.65rem !important;
+            }
+            .zt-page-header {
+                min-height: 86px !important;
+                padding: 1.0rem 1.15rem !important;
+            }
+            .zt-page-title {
+                font-size: 1.45rem !important;
+            }
+            .zt-page-subtitle {
+                margin-top: 0.32rem !important;
+                font-size: 0.88rem !important;
+            }
+            .zt-header-logo-panel {
+                min-height: 86px !important;
+            }
+            .zt-header-logo-panel img {
+                max-height: 74px !important;
+            }
+
+            .zt-meeting-top-control-card,
+            .zt-meeting-filter-card-wrap,
+            .zt-meeting-toolbar-card {
+                background: #ffffff;
+                border: 1px solid #e8e8eb;
+                border-radius: 18px;
+                padding: 0.82rem 0.92rem;
+                box-shadow: 0 10px 28px rgba(17,17,17,0.035);
+                margin-bottom: 0.72rem;
+            }
+            .zt-meeting-inline-meta {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.45rem 0.7rem;
+                align-items: center;
+                margin-bottom: 0.3rem;
+            }
+            .zt-meeting-inline-meta span {
+                display: inline-flex;
+                align-items: center;
+                border: 1px solid #eeeeef;
+                background: #fafafa;
+                border-radius: 999px;
+                padding: 0.28rem 0.58rem;
+                color: #2c2c2c;
+                font-size: 0.78rem;
+                font-weight: 740;
+            }
+            .zt-meeting-inline-meta b {
+                color: #c5161d;
+                margin-right: 0.25rem;
+            }
+
+            div[data-testid="stMarkdown"]:has(.zt-meeting-kpi-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button {
+                min-height: 4.75rem !important;
+                border-radius: 18px !important;
+                border-color: #e8e8eb !important;
+                background: #ffffff !important;
+                box-shadow: 0 10px 26px rgba(17,17,17,0.035) !important;
+            }
+            div[data-testid="stMarkdown"]:has(.zt-meeting-kpi-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button[kind="primary"] {
+                background: linear-gradient(180deg, #c5161d 0%, #a81118 100%) !important;
+                border-color: #c5161d !important;
+                color: white !important;
+            }
+            div[data-testid="stMarkdown"]:has(.zt-meeting-kpi-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button p {
+                white-space: pre-line !important;
+                font-size: 0.86rem !important;
+                line-height: 1.22 !important;
+                text-align: center !important;
+                font-weight: 820 !important;
+            }
+            div[data-testid="stMarkdown"]:has(.zt-meeting-kpi-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button p strong {
+                font-size: 1.7rem !important;
+                line-height: 1.05 !important;
+                font-weight: 900 !important;
+            }
+
+            .zt-meeting-active-filter {
+                margin: 0.8rem 0 0.7rem 0 !important;
+                padding: 0.62rem 0.75rem !important;
+                border-radius: 16px !important;
+                background: #fff7f7 !important;
+                border: 1px solid #ffd6d6 !important;
+                display: flex !important;
+                align-items: center !important;
+                flex-wrap: wrap !important;
+                gap: 0.38rem !important;
+            }
+            .zt-meeting-active-filter b {
+                color: #c5161d !important;
+                font-weight: 900 !important;
+                margin-right: 0.25rem !important;
+            }
+            .zt-meeting-active-filter span {
+                display: inline-flex;
+                align-items: center;
+                border-radius: 999px;
+                border: 1px solid #ffd6d6;
+                background: #ffffff;
+                color: #2c2c2c;
+                font-size: 0.78rem;
+                font-weight: 760;
+                padding: 0.22rem 0.52rem;
+            }
+
+            /* Override previous compact toolbar rule and make labels readable. */
+            div[data-testid="stMarkdown"]:has(.zt-meeting-tools-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button,
+            div[data-testid="stMarkdown"]:has(.zt-meeting-tools-marker) + div[data-testid="stHorizontalBlock"] div.stDownloadButton > button {
+                min-height: 2.45rem !important;
+                height: auto !important;
+                padding: 0.35rem 0.55rem !important;
+                border-radius: 12px !important;
+            }
+            div[data-testid="stMarkdown"]:has(.zt-meeting-tools-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button p,
+            div[data-testid="stMarkdown"]:has(.zt-meeting-tools-marker) + div[data-testid="stHorizontalBlock"] div.stDownloadButton > button p {
+                font-size: 0.74rem !important;
+                line-height: 1.12 !important;
+                font-weight: 820 !important;
+                white-space: normal !important;
+            }
+
+            .zt-meeting-summary-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 0.66rem;
+                margin-top: 0.72rem;
+            }
+            .zt-meeting-field {
+                min-height: 88px !important;
+                box-shadow: 0 8px 20px rgba(17,17,17,0.025);
+            }
+            .zt-field-main-issue,
+            .zt-field-blocked {
+                background: #fff5f5 !important;
+                border-color: #ffd7d7 !important;
+            }
+            .zt-field-need {
+                background: #fff9ed !important;
+                border-color: #ffe5b8 !important;
+            }
+            .zt-field-progress {
+                background: #f4f8ff !important;
+                border-color: #dce9ff !important;
+            }
+            .zt-meeting-next-step-card {
+                margin-top: 0.66rem;
+                background: #f5fff8;
+                border: 1px solid #d7f1df;
+                border-radius: 16px;
+                padding: 0.72rem 0.82rem;
+                box-shadow: 0 8px 20px rgba(17,17,17,0.025);
+            }
+            .zt-meeting-next-step-meta,
+            .zt-followup-summary-badges {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.42rem;
+                margin-top: 0.55rem;
+            }
+            .zt-meeting-next-step-meta span,
+            .zt-followup-summary-badges span {
+                display: inline-flex;
+                border-radius: 999px;
+                border: 1px solid #e8e8eb;
+                background: #ffffff;
+                padding: 0.22rem 0.55rem;
+                color: #2c2c2c;
+                font-size: 0.78rem;
+                font-weight: 720;
+            }
+            .zt-meeting-next-step-meta b,
+            .zt-followup-summary-badges b {
+                color: #111111;
+                margin-right: 0.22rem;
+            }
+            .zt-secondary-field-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+                margin-top: 0.2rem !important;
+            }
+            .zt-followup-summary-title {
+                font-weight: 900;
+                color: #c5161d;
+                margin-bottom: 0.1rem;
+                font-size: 0.86rem;
+            }
+            .zt-meeting-status-strip {
+                display: block !important;
+                margin-top: 0.78rem !important;
+            }
+            .zt-meeting-status-secondary {
+                color: #646870 !important;
+            }
+            .zt-meeting-focus-strip {
+                padding: 0.72rem 0.85rem !important;
+            }
+            .zt-meeting-focus-title {
+                color: #c5161d;
+                font-size: 0.84rem;
+                font-weight: 900;
+                margin-bottom: 0.28rem;
+            }
+            .zt-meeting-focus-list {
+                margin: 0.1rem 0 0 1.1rem;
+                padding: 0;
+                color: #2c2c2c;
+                font-size: 0.9rem;
+                line-height: 1.42;
+            }
+            .zt-meeting-focus-list li {
+                margin: 0.08rem 0;
+            }
+
+            .zt-action-header {
+                border-top: 1px solid #f0f0f2;
+                margin-top: 1.0rem;
+                padding-top: 0.86rem;
+            }
+            .zt-action-header-note {
+                color: #74777e;
+                font-size: 0.82rem;
+            }
+            .zt-action-group-title {
+                margin: 0.52rem 0 0.26rem 0;
+                color: #111111;
+                font-size: 0.86rem;
+                font-weight: 900;
+            }
+            .zt-action-group-title span {
+                color: #74777e;
+                font-weight: 720;
+                margin-left: 0.35rem;
+                font-size: 0.78rem;
+            }
+
+            @media (max-width: 900px) {
+                .zt-meeting-summary-grid,
+                .zt-secondary-field-grid {
+                    grid-template-columns: 1fr !important;
+                }
+            }
+            </style>
+            """
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -324,16 +701,23 @@ ACTION_HELP = {
 current_user = require_login()
 acting_user = current_user["display_name"]
 apply_theme()
+_apply_meeting_mode_css()
 render_page_header(
     "Meeting Mode",
-    "Weekly meeting workspace for team review, boss summary, follow-up recording and post-meeting export.",
+    "Weekly meeting workspace for review, summary, follow-up recording and export.",
 )
 
-control_col1, control_col2, control_col3, control_col4, control_col5 = st.columns([0.95, 1.65, 0.9, 1.1, 1.1])
-with control_col1:
-    _tooltip_label("Update As", "Current logged-in user. Updates are recorded under this name automatically.")
-    st.text_input("Update As", value=acting_user, disabled=True, label_visibility="collapsed")
-with control_col2:
+# -----------------------------------------------------------------------------
+# Top controls: current operator + meeting mode, then business filters.
+# -----------------------------------------------------------------------------
+st.markdown("<div class='zt-meeting-top-control-card'>", unsafe_allow_html=True)
+meta_col, view_col = st.columns([1.1, 1.5])
+with meta_col:
+    st.markdown(
+        f"<div class='zt-meeting-inline-meta'><span><b>Update As</b>{escape(acting_user)}</span></div>",
+        unsafe_allow_html=True,
+    )
+with view_col:
     _tooltip_label("Meeting View", "Team Detail shows the full working list. Boss Summary keeps the priority order for decision-focused review.")
     meeting_view = st.radio(
         "Meeting View",
@@ -342,7 +726,10 @@ with control_col2:
         key="meeting_view_mode",
         label_visibility="collapsed",
     )
-with control_col3:
+st.markdown("</div>", unsafe_allow_html=True)
+
+filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns([0.9, 1.1, 1.1, 1.4, 0.7])
+with filter_col1:
     _tooltip_label("Type", "Choose All, Sales or Operation for this meeting section.")
     meeting_type_filter = st.selectbox(
         "Type",
@@ -367,7 +754,12 @@ owner_options = [
     *sorted({str(r.get("next_step_owner") or "").strip() for r in all_rows if str(r.get("next_step_owner") or "").strip()}),
 ]
 status_options = ["All", "Open", "In Progress", "Done", "Blocked"]
-with control_col4:
+if st.session_state.get("meeting_next_step_owner_filter") not in owner_options:
+    st.session_state["meeting_next_step_owner_filter"] = "All"
+if st.session_state.get("meeting_followup_status_filter") not in status_options:
+    st.session_state["meeting_followup_status_filter"] = "All"
+
+with filter_col2:
     _tooltip_label("Next Step Owner", "Filter the meeting list by the person responsible for the next step.")
     owner_filter = st.selectbox(
         "Next Step Owner",
@@ -375,7 +767,7 @@ with control_col4:
         key="meeting_next_step_owner_filter",
         label_visibility="collapsed",
     )
-with control_col5:
+with filter_col3:
     _tooltip_label("Follow-up Status", "Filter follow-up items by current completion status.")
     status_filter = st.selectbox(
         "Follow-up Status",
@@ -383,8 +775,20 @@ with control_col5:
         key="meeting_followup_status_filter",
         label_visibility="collapsed",
     )
+with filter_col4:
+    _tooltip_label("Search", "Search by Project ID, project name, order number or client code.")
+    search_query = st.text_input(
+        "Search",
+        key="meeting_search_query",
+        placeholder="Project ID / Project Name / Client Code",
+        label_visibility="collapsed",
+    )
+with filter_col5:
+    st.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
+    st.button("Reset", use_container_width=True, on_click=_reset_meeting_filters, help="Reset Meeting Mode filters.")
 
 base_rows = _apply_owner_status_filters(all_rows, owner_filter, status_filter)
+base_rows = _apply_search_filter(base_rows, search_query)
 metrics = _meeting_metrics(base_rows)
 
 if "meeting_active_filter" not in st.session_state:
@@ -399,11 +803,7 @@ minutes_text = generate_meeting_minutes_text(export_rows, meeting_view)
 followup_df = build_followup_export_dataframe(export_rows)
 
 st.markdown(
-    f"<div class='zt-meeting-active-filter'><b>Showing:</b> {_clean(active_filter)} &nbsp; | &nbsp; "
-    f"<b>{len(display_rows)}</b> visible item(s)"
-    f" &nbsp; | &nbsp; <b>Type:</b> {_clean(meeting_type_filter)}"
-    f" &nbsp; | &nbsp; <b>Owner:</b> {_clean(owner_filter)}"
-    f" &nbsp; | &nbsp; <b>Follow-up:</b> {_clean(status_filter)}</div>",
+    _active_filter_html(active_filter, len(display_rows), meeting_type_filter, owner_filter, status_filter, search_query),
     unsafe_allow_html=True,
 )
 
@@ -414,18 +814,18 @@ st.session_state.pop("meeting_flash_message", None)
 st.markdown("<span class='zt-meeting-tools-marker'></span>", unsafe_allow_html=True)
 tool_cols = st.columns(5)
 with tool_cols[0]:
-    if st.button("Save", use_container_width=True, disabled=not all_rows, help="Save a weekly snapshot for the current meeting view."):
+    if st.button("Save Weekly Snapshot", use_container_width=True, disabled=not all_rows, help="Save a weekly snapshot for the current meeting view."):
         created = generate_weekly_snapshot(all_rows)
         st.success(f"Generated {created} meeting snapshot rows for {meeting_view}.")
 with tool_cols[1]:
-    if st.button("Summary", use_container_width=True, disabled=not display_rows, help="Generate a post-meeting summary from the currently visible items."):
+    if st.button("Generate Summary", use_container_width=True, disabled=not display_rows, help="Generate a post-meeting summary from the currently visible items."):
         st.session_state["meeting_summary_output"] = generate_post_meeting_summary(display_rows, meeting_view)
 with tool_cols[2]:
-    if st.button("Hide", use_container_width=True, help="Hide the generated summary panel."):
+    if st.button("Hide Summary", use_container_width=True, help="Hide the generated summary panel."):
         st.session_state.pop("meeting_summary_output", None)
 with tool_cols[3]:
     st.download_button(
-        "Minutes",
+        "Download Minutes (.txt)",
         data=minutes_text,
         file_name=f"meeting_minutes_{meeting_view.lower().replace(' ', '_')}.txt",
         mime="text/plain",
@@ -435,7 +835,7 @@ with tool_cols[3]:
     )
 with tool_cols[4]:
     st.download_button(
-        "Follow-up",
+        "Download Follow-up (.csv)",
         data=followup_df.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"meeting_followup_{meeting_view.lower().replace(' ', '_')}.csv",
         mime="text/csv",
@@ -462,7 +862,7 @@ if not display_rows:
     st.info(f"No items found for: {active_filter}.")
     st.stop()
 
-_section_head("Meeting list", "Project meeting cards")
+_section_head("Meeting list", f"Project meeting cards ({len(display_rows)} items)")
 
 for row in display_rows:
     entity_id = row.get("entity_id") or row.get("display_id")
@@ -478,8 +878,11 @@ for row in display_rows:
             pattern=bool(row.get("pattern_flag")),
         )
         st.markdown(_focus_note_html(row), unsafe_allow_html=True)
-        st.markdown(_detail_grid_html(row), unsafe_allow_html=True)
+        st.markdown(_main_summary_html(row), unsafe_allow_html=True)
         st.markdown(_status_strip_html(row), unsafe_allow_html=True)
+
+        with st.expander("More Details / Secondary Info", expanded=False):
+            st.markdown(_secondary_detail_grid_html(row), unsafe_allow_html=True)
 
         followup_open_key = f"meeting_followup_open_{row['entity_type']}_{entity_id}"
         is_followup_open = bool(st.session_state.get(followup_open_key, False))
@@ -543,7 +946,7 @@ for row in display_rows:
                         )
                     with owner_date_cols[3]:
                         st.markdown("<div class='zt-followup-save-spacer'></div>", unsafe_allow_html=True)
-                        submitted = st.form_submit_button("**Save**", use_container_width=True, type="secondary")
+                        submitted = st.form_submit_button("**Save Follow-up**", use_container_width=True, type="secondary")
 
                 if submitted:
                     result = save_meeting_followup(
@@ -559,24 +962,33 @@ for row in display_rows:
                     )
                     if result.get("updated"):
                         _upsert_session_row(meeting_view, result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
-                        pass
-                    else:
-                        pass
                     st.session_state[followup_open_key] = False
                     st.rerun()
 
         st.markdown(
-            "<div class='zt-action-header'><div class='zt-action-header-title'>Meeting actions</div>"
-            "<div class='zt-action-header-note'>These buttons keep the existing update logic. Bold buttons are high-impact actions.</div></div>",
+            "<div class='zt-action-header'><div class='zt-action-header-title'>Meeting Actions</div>"
+            "<div class='zt-action-header-note'>Select the meeting result for this item. High-impact actions will update status and history.</div></div>",
             unsafe_allow_html=True,
         )
-        first_row = MEETING_ACTIONS[:3]
-        second_row = MEETING_ACTIONS[3:]
-        for action_row in (first_row, second_row):
-            cols = st.columns(len(action_row))
-            for col, action_name in zip(cols, action_row):
+
+        action_groups = [
+            ("Primary Actions", "Most common meeting results", ["Discussed / Follow up", "Decision Made / Close", "Review Next Meeting"]),
+            ("Secondary Actions", "Review or completion updates", ["Reviewed No Change", "Mark Follow-up Done"]),
+            ("Risk / Remove Actions", "Use carefully", ["High-Risk Follow-up", "Remove from Meeting"]),
+        ]
+        valid_actions = set(MEETING_ACTIONS)
+        for group_title, group_note, action_names in action_groups:
+            action_names = [a for a in action_names if a in valid_actions]
+            if not action_names:
+                continue
+            st.markdown(
+                f"<div class='zt-action-group-title'>{escape(group_title)} <span>{escape(group_note)}</span></div>",
+                unsafe_allow_html=True,
+            )
+            cols = st.columns(len(action_names))
+            for col, action_name in zip(cols, action_names):
                 with col:
-                    is_high_impact = action_name in {"Decision Made / Close", "High-Risk Follow-up", "Mark Follow-up Done"}
+                    is_high_impact = action_name in {"Decision Made / Close", "High-Risk Follow-up", "Mark Follow-up Done", "Remove from Meeting"}
                     label = f"**{action_name}**" if is_high_impact else action_name
                     if st.button(
                         label,
