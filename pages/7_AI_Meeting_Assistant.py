@@ -375,7 +375,13 @@ with right_col:
             disabled=generate_disabled,
             type="primary",
             use_container_width=True,
+            key="generate_ai_meeting_prep_draft_button",
         ):
+            # Keep feedback visible on the same run. Do not immediately rerun,
+            # otherwise users may think the button had no response and Step 4 may
+            # appear below the fold without a clear success message.
+            st.session_state.pop("ai_generation_error", None)
+            st.session_state.pop("ai_generation_message", None)
             try:
                 with st.spinner("AI is preparing Meeting Prep fields..."):
                     draft = extract_meeting_fields_with_ai(
@@ -386,11 +392,22 @@ with right_col:
                 st.session_state["ai_generated_draft"] = draft
                 st.session_state.pop("ai_saved_draft_id", None)
                 st.session_state.pop("ai_apply_result", None)
-                st.rerun()
+                st.session_state["ai_generation_message"] = (
+                    "AI Meeting Prep Draft generated. Please review Step 4 below."
+                )
             except (AIConfigError, AIResponseError) as exc:
-                st.error(str(exc))
+                st.session_state.pop("ai_generated_draft", None)
+                st.session_state["ai_generation_error"] = str(exc)
             except Exception as exc:
-                st.error(f"AI processing failed: {exc}")
+                st.session_state.pop("ai_generated_draft", None)
+                st.session_state["ai_generation_error"] = f"AI processing failed: {exc}"
+
+        generation_error = st.session_state.get("ai_generation_error")
+        generation_message = st.session_state.get("ai_generation_message")
+        if generation_error:
+            st.error(generation_error)
+        elif generation_message:
+            st.success(generation_message)
 
 # Keep the AI review table outside the right column so Existing / AI Suggested columns have enough width.
 draft = st.session_state.get("ai_generated_draft")
