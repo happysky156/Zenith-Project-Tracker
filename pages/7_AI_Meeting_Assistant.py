@@ -226,14 +226,9 @@ def _build_review_dataframe(project: dict[str, Any], draft: dict[str, Any]) -> p
 def _draft_from_review_table(review_frame: pd.DataFrame, original_draft: dict[str, Any]) -> dict[str, Any]:
     selected: dict[str, Any] = {}
     applied_fields: list[str] = []
-    label_to_key = {label: key for key, label in FIELD_LABELS.items()}
 
     for _, row in review_frame.iterrows():
-        # Field Key is intentionally hidden in the UI. Keep this fallback so the
-        # apply logic remains stable even if Streamlit returns only displayed columns.
         field_key = clean_text(row.get("Field Key"))
-        if field_key not in MEETING_FIELDS:
-            field_key = label_to_key.get(clean_text(row.get("Field")), "")
         if field_key not in MEETING_FIELDS:
             continue
         value = clean_text(row.get("AI Suggested Update"))
@@ -256,23 +251,18 @@ def _draft_from_review_table(review_frame: pd.DataFrame, original_draft: dict[st
 def _render_review_editor(project: dict[str, Any], draft: dict[str, Any]) -> pd.DataFrame:
     review_frame = _build_review_dataframe(project, draft)
     st.caption(
-        "Review the AI suggestion and apply only the fields you want to update. "
-        "Meeting Note is not included."
+        "Only selected fields will be written into the core Sales / Operation Meeting Prep fields. "
+        "Meeting Note is not included because it is reserved for live human meeting notes."
     )
     return st.data_editor(
         review_frame,
         use_container_width=True,
         hide_index=True,
-        height=430,
         num_rows="fixed",
-        column_order=["Apply", "Field", "Existing Record", "AI Suggested Update"],
-        disabled=["Field", "Existing Record"],
+        disabled=["Field Key", "Field", "Existing Record"],
         column_config={
-            "Apply": st.column_config.CheckboxColumn(
-                "Apply",
-                help="Tick only the fields you want to write into the system.",
-                width="small",
-            ),
+            "Apply": st.column_config.CheckboxColumn("Apply", help="Tick only the fields you want to write into the system."),
+            "Field Key": st.column_config.TextColumn("Field Key", width="small"),
             "Field": st.column_config.TextColumn("Field", width="medium"),
             "Existing Record": st.column_config.TextColumn("Existing Record", width="large"),
             "AI Suggested Update": st.column_config.TextColumn("AI Suggested Update", width="large"),
@@ -288,10 +278,22 @@ render_page_header(
     "Find project first, confirm Project ID, then let AI structure weekly meeting prep fields.",
 )
 
-st.divider()
+st.markdown(
+    _html(
+        """
+        <div class="zai-warning">
+        Rule: colleagues can search by Project Name, Order No, Client Code, or Project ID.
+        But no AI draft can be saved until one Project ID is confirmed.
+        </div>
+        <div class="zai-note">
+        Meeting Note is reserved for live human notes during the actual meeting. This AI assistant only prepares structured Meeting Prep / follow-up fields.
+        </div>
+        """
+    ),
+    unsafe_allow_html=True,
+)
 
-selected_project = st.session_state.get("ai_selected_project")
-meeting_notes = st.session_state.get("ai_meeting_notes", "")
+st.divider()
 
 left_col, right_col = st.columns([1.05, 1.25], gap="large")
 
@@ -335,212 +337,193 @@ with left_col:
 
 with right_col:
     st.subheader("Step 2 · Confirm Project ID")
+    selected_project = st.session_state.get("ai_selected_project")
 
     if not selected_project:
         st.info("Please search and select one project/order first.")
-    else:
-        _render_selected_project(selected_project)
+        st.stop()
 
-        if st.button("Clear selected project", use_container_width=True):
-            st.session_state.pop("ai_selected_project", None)
-            st.session_state.pop("ai_generated_draft", None)
+    _render_selected_project(selected_project)
+
+    if st.button("Clear selected project", use_container_width=True):
+        st.session_state.pop("ai_selected_project", None)
+        st.session_state.pop("ai_generated_draft", None)
+        st.session_state.pop("ai_saved_draft_id", None)
+        st.session_state.pop("ai_apply_result", None)
+        st.rerun()
+
+    st.divider()
+    st.subheader("Step 3 · Paste Meeting Prep Input")
+
+    output_language = st.selectbox(
+        "AI output language",
+        ["English", "Chinese", "Bilingual Chinese and English"],
+        index=0,
+        key="ai_output_language",
+    )
+
+    meeting_notes = st.text_area(
+        "Colleague input / pre-meeting information",
+        height=180,
+        placeholder=(
+            "Example: 客户还在等盐雾测试结果，供应商说下周三可以给新样板。"
+            "Maria 需要先问客户能不能接受延迟。"
+        ),
+        key="ai_meeting_notes",
+    )
+
+    generate_disabled = not bool(selected_project.get("project_id")) or not meeting_notes.strip()
+
+    if st.button(
+        "Generate AI Meeting Prep Draft",
+        disabled=generate_disabled,
+        type="primary",
+        use_container_width=True,
+    ):
+        try:
+            with st.spinner("AI is preparing Meeting Prep fields..."):
+                draft = extract_meeting_fields_with_ai(
+                    selected_project=selected_project,
+                    meeting_notes=meeting_notes,
+                    output_language=output_language,
+                )
+            st.session_state["ai_generated_draft"] = draft
             st.session_state.pop("ai_saved_draft_id", None)
             st.session_state.pop("ai_apply_result", None)
             st.rerun()
+        except (AIConfigError, AIResponseError) as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"AI processing failed: {exc}")
 
+    draft = st.session_state.get("ai_generated_draft")
+
+    if draft:
         st.divider()
-        st.subheader("Step 3 · Paste Meeting Prep Input")
+        st.subheader("Step 4 · Review AI Meeting Prep Draft")
 
-        output_language = st.selectbox(
-            "AI output language",
-            ["English", "Chinese", "Bilingual Chinese and English"],
-            index=0,
-            key="ai_output_language",
-        )
-
-        meeting_notes = st.text_area(
-            "Colleague input / pre-meeting information",
-            height=180,
-            placeholder=(
-                "Example: 客户还在等盐雾测试结果，供应商说下周三可以给新样板。"
-                "Maria 需要先问客户能不能接受延迟。"
-            ),
-            key="ai_meeting_notes",
-        )
-
-        generate_disabled = not bool(selected_project.get("project_id")) or not meeting_notes.strip()
-
-        if st.button(
-            "Generate AI Meeting Prep Draft",
-            disabled=generate_disabled,
-            type="primary",
-            use_container_width=True,
-            key="generate_ai_meeting_prep_draft_button",
-        ):
-            # Keep feedback visible on the same run. Do not immediately rerun,
-            # otherwise users may think the button had no response and Step 4 may
-            # appear below the fold without a clear success message.
-            st.session_state.pop("ai_generation_error", None)
-            st.session_state.pop("ai_generation_message", None)
-            try:
-                with st.spinner("AI is preparing Meeting Prep fields..."):
-                    draft = extract_meeting_fields_with_ai(
-                        selected_project=selected_project,
-                        meeting_notes=meeting_notes,
-                        output_language=output_language,
-                    )
-                st.session_state["ai_generated_draft"] = draft
-                st.session_state.pop("ai_saved_draft_id", None)
-                st.session_state.pop("ai_apply_result", None)
-                st.session_state["ai_generation_message"] = (
-                    "AI Meeting Prep Draft generated. Please review Step 4 below."
-                )
-                st.rerun()
-            except (AIConfigError, AIResponseError) as exc:
-                st.session_state.pop("ai_generated_draft", None)
-                st.session_state["ai_generation_error"] = str(exc)
-            except Exception as exc:
-                st.session_state.pop("ai_generated_draft", None)
-                st.session_state["ai_generation_error"] = f"AI processing failed: {exc}"
-
-        generation_error = st.session_state.get("ai_generation_error")
-        generation_message = st.session_state.get("ai_generation_message")
-        if generation_error:
-            st.error(generation_error)
-        elif generation_message:
-            st.success(generation_message)
-
-# Keep the AI review table outside the right column so Existing / AI Suggested columns have enough width.
-draft = st.session_state.get("ai_generated_draft")
-selected_project = st.session_state.get("ai_selected_project")
-meeting_notes = st.session_state.get("ai_meeting_notes", "")
-
-if selected_project and isinstance(draft, dict):
-    st.divider()
-    st.subheader("Step 4 · Review AI Meeting Prep Draft")
-
-    st.markdown(
-        _html(
-            f"""
-            <div class="zai-card">
-                <div class="zai-kicker">AI Review Summary</div>
-                <div class="zai-meta">
-                    AI Summary for Review: <b>{_safe(draft.get("ai_summary_for_review"))}</b><br>
-                    Difference Summary: <b>{_safe(draft.get("difference_summary"))}</b><br>
-                    Confidence: <b>{_safe(draft.get("confidence"))}</b><br>
-                    Needs Human Attention: <b>{_safe(draft.get("needs_human_attention"))}</b>
-                </div>
-            </div>
-            """
-        ),
-        unsafe_allow_html=True,
-    )
-
-    edited_review_frame = _render_review_editor(selected_project, draft)
-
-    st.warning(
-        "Confirm will save the AI draft and apply only the selected fields into the core "
-        "Sales / Operation Meeting Prep fields. Empty fields will not clear existing data. "
-        "AI Review This Week = Yes can add the item to this week's review; AI No will not remove it. "
-        "Meeting Note will not be changed by this assistant."
-    )
-
-    selected_draft = _draft_from_review_table(edited_review_frame, draft)
-    selected_count = len(selected_draft.get("applied_fields") or [])
-    st.caption(f"Selected fields to apply: {selected_count}")
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("Save as Pending AI Draft", use_container_width=True):
-            draft_id = save_ai_update_draft(
-                selected_project=selected_project,
-                meeting_notes=meeting_notes,
-                draft_json={"raw_ai_draft": draft, "review_table": edited_review_frame.to_dict("records")},
-                current_user=current_user,
-                status="pending",
-            )
-            st.session_state["ai_saved_draft_id"] = draft_id
-            st.session_state["ai_apply_result"] = None
-            st.success(f"AI draft saved. Draft ID: {draft_id}")
-
-    with col_b:
-        if st.button(
-            "Confirm Selected Fields + Update System",
-            type="primary",
-            use_container_width=True,
-            disabled=selected_count == 0,
-        ):
-            draft_id = save_ai_update_draft(
-                selected_project=selected_project,
-                meeting_notes=meeting_notes,
-                draft_json=selected_draft,
-                current_user=current_user,
-                status="confirmed",
-            )
-            try:
-                apply_result = apply_ai_meeting_draft(
-                    selected_project=selected_project,
-                    draft=selected_draft,
-                    operator=acting_user,
-                )
-                final_status = "confirmed_applied" if apply_result.get("updated") else "confirmed_no_change"
-                mark_ai_draft_status(
-                    draft_id=draft_id,
-                    status=final_status,
-                    current_user=current_user,
-                )
-                st.session_state["ai_saved_draft_id"] = draft_id
-                st.session_state["ai_apply_result"] = apply_result
-                if apply_result.get("updated"):
-                    st.success(
-                        f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}. "
-                        f"{apply_result.get('message')}"
-                    )
-                else:
-                    st.info(
-                        f"AI draft confirmed and saved. Draft ID: {draft_id}. "
-                        f"{apply_result.get('message')}"
-                    )
-            except AIMeetingApplyError as exc:
-                mark_ai_draft_status(
-                    draft_id=draft_id,
-                    status="confirmed_apply_failed",
-                    current_user=current_user,
-                )
-                st.session_state["ai_saved_draft_id"] = draft_id
-                st.session_state["ai_apply_result"] = None
-                st.error(f"Draft saved, but applying to the system failed: {exc}")
-            except Exception as exc:
-                mark_ai_draft_status(
-                    draft_id=draft_id,
-                    status="confirmed_apply_failed",
-                    current_user=current_user,
-                )
-                st.session_state["ai_saved_draft_id"] = draft_id
-                st.session_state["ai_apply_result"] = None
-                st.error(f"Draft saved, but applying to the system failed: {exc}")
-
-    saved_draft_id = st.session_state.get("ai_saved_draft_id")
-    apply_result = st.session_state.get("ai_apply_result")
-    if saved_draft_id:
-        changed_fields = ", ".join(apply_result.get("changed_fields") or []) if apply_result else "-"
-        apply_message = apply_result.get("message") if apply_result else "Saved as pending AI draft."
-        entity_label = (
-            f"{apply_result.get('entity_type')} / {apply_result.get('entity_id')}"
-            if apply_result else "Not applied yet"
-        )
         st.markdown(
             _html(
                 f"""
-                <div class="zai-success">
-                Saved Draft ID: <b>{_safe(saved_draft_id)}</b><br>
-                Applied Record: <b>{_safe(entity_label)}</b><br>
-                Result: <b>{_safe(apply_message)}</b><br>
-                Changed Fields: <b>{_safe(changed_fields)}</b><br>
-                Meeting Note was not changed by this AI assistant.<br>
-                Dashboard / Meeting Mode should show the latest values after refresh because cached read data is cleared after writes.
+                <div class="zai-card">
+                    <div class="zai-kicker">AI Review Summary</div>
+                    <div class="zai-meta">
+                        AI Summary for Review: <b>{_safe(draft.get("ai_summary_for_review"))}</b><br>
+                        Difference Summary: <b>{_safe(draft.get("difference_summary"))}</b><br>
+                        Confidence: <b>{_safe(draft.get("confidence"))}</b><br>
+                        Needs Human Attention: <b>{_safe(draft.get("needs_human_attention"))}</b>
+                    </div>
                 </div>
                 """
             ),
             unsafe_allow_html=True,
         )
+
+        edited_review_frame = _render_review_editor(selected_project, draft)
+
+        st.warning(
+            "Confirm will save the AI draft and apply only the selected fields into the core "
+            "Sales / Operation Meeting Prep fields. Empty fields will not clear existing data. "
+            "AI Review This Week = Yes can add the item to this week's review; AI No will not remove it. "
+            "Meeting Note will not be changed by this assistant."
+        )
+
+        selected_draft = _draft_from_review_table(edited_review_frame, draft)
+        selected_count = len(selected_draft.get("applied_fields") or [])
+        st.caption(f"Selected fields to apply: {selected_count}")
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Save as Pending AI Draft", use_container_width=True):
+                draft_id = save_ai_update_draft(
+                    selected_project=selected_project,
+                    meeting_notes=meeting_notes,
+                    draft_json={"raw_ai_draft": draft, "review_table": edited_review_frame.to_dict("records")},
+                    current_user=current_user,
+                    status="pending",
+                )
+                st.session_state["ai_saved_draft_id"] = draft_id
+                st.session_state["ai_apply_result"] = None
+                st.success(f"AI draft saved. Draft ID: {draft_id}")
+
+        with col_b:
+            if st.button(
+                "Confirm Selected Fields + Update System",
+                type="primary",
+                use_container_width=True,
+                disabled=selected_count == 0,
+            ):
+                draft_id = save_ai_update_draft(
+                    selected_project=selected_project,
+                    meeting_notes=meeting_notes,
+                    draft_json=selected_draft,
+                    current_user=current_user,
+                    status="confirmed",
+                )
+                try:
+                    apply_result = apply_ai_meeting_draft(
+                        selected_project=selected_project,
+                        draft=selected_draft,
+                        operator=acting_user,
+                    )
+                    final_status = "confirmed_applied" if apply_result.get("updated") else "confirmed_no_change"
+                    mark_ai_draft_status(
+                        draft_id=draft_id,
+                        status=final_status,
+                        current_user=current_user,
+                    )
+                    st.session_state["ai_saved_draft_id"] = draft_id
+                    st.session_state["ai_apply_result"] = apply_result
+                    if apply_result.get("updated"):
+                        st.success(
+                            f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}. "
+                            f"{apply_result.get('message')}"
+                        )
+                    else:
+                        st.info(
+                            f"AI draft confirmed and saved. Draft ID: {draft_id}. "
+                            f"{apply_result.get('message')}"
+                        )
+                except AIMeetingApplyError as exc:
+                    mark_ai_draft_status(
+                        draft_id=draft_id,
+                        status="confirmed_apply_failed",
+                        current_user=current_user,
+                    )
+                    st.session_state["ai_saved_draft_id"] = draft_id
+                    st.session_state["ai_apply_result"] = None
+                    st.error(f"Draft saved, but applying to the system failed: {exc}")
+                except Exception as exc:
+                    mark_ai_draft_status(
+                        draft_id=draft_id,
+                        status="confirmed_apply_failed",
+                        current_user=current_user,
+                    )
+                    st.session_state["ai_saved_draft_id"] = draft_id
+                    st.session_state["ai_apply_result"] = None
+                    st.error(f"Draft saved, but applying to the system failed: {exc}")
+
+        saved_draft_id = st.session_state.get("ai_saved_draft_id")
+        apply_result = st.session_state.get("ai_apply_result")
+        if saved_draft_id:
+            changed_fields = ", ".join(apply_result.get("changed_fields") or []) if apply_result else "-"
+            apply_message = apply_result.get("message") if apply_result else "Saved as pending AI draft."
+            entity_label = (
+                f"{apply_result.get('entity_type')} / {apply_result.get('entity_id')}"
+                if apply_result else "Not applied yet"
+            )
+            st.markdown(
+                _html(
+                    f"""
+                    <div class="zai-success">
+                    Saved Draft ID: <b>{_safe(saved_draft_id)}</b><br>
+                    Applied Record: <b>{_safe(entity_label)}</b><br>
+                    Result: <b>{_safe(apply_message)}</b><br>
+                    Changed Fields: <b>{_safe(changed_fields)}</b><br>
+                    Meeting Note was not changed by this AI assistant.<br>
+                    Dashboard / Meeting Mode should show the latest values after refresh because cached read data is cleared after writes.
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )

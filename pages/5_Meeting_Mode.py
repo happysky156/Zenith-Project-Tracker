@@ -307,43 +307,27 @@ def _card_header_html(row: dict) -> str:
     )
 
 
-def _focus_reason_tags(row: dict) -> list[tuple[str, str]]:
-    """Reason tags only. Keep detailed field content in the main cards below."""
-    tags: list[tuple[str, str]] = []
-
-    def add(label: str, class_name: str) -> None:
-        if label not in [existing[0] for existing in tags]:
-            tags.append((label, class_name))
-
-    if _is_delayed_due(row):
-        add("Due / Follow-up", "due")
-    if _is_need_decision(row):
-        add("Need Decision", "decision")
-    if _is_blocked(row):
-        add("Blocked / Risk", "blocked")
-    if _is_repeated(row):
-        add("Repeated Issue", "repeat")
-    if bool(row.get("review_this_week")):
-        add("Review This Week", "review")
-
-    # Keep a concise fallback tag, but do not repeat Main Issue / Need From Meeting / Blocked At text here.
-    if not tags:
-        reason = _plain(row.get("meeting_focus_reason"))
-        add(reason or "Meeting Review", "review")
-
-    return tags[:5]
+def _focus_reasons(row: dict) -> list[str]:
+    reasons: list[str] = []
+    for value in [
+        row.get("meeting_focus_reason"),
+        f"Need from meeting: {row.get('need_from_meeting')}" if _has_value(row.get("need_from_meeting")) else None,
+        f"Blocked at: {row.get('block_point')}" if _has_value(row.get("block_point")) else None,
+        f"Main issue: {row.get('main_issue')}" if _has_value(row.get("main_issue")) else None,
+    ]:
+        cleaned = _plain(value)
+        if cleaned and cleaned not in reasons:
+            reasons.append(cleaned)
+    return reasons or ["Marked for meeting review."]
 
 
 def _focus_note_html(row: dict) -> str:
-    chips = "".join(
-        f"<span class='zt-focus-chip zt-focus-{escape(class_name)}'>{escape(label)}</span>"
-        for label, class_name in _focus_reason_tags(row)
-    )
+    items = "".join(f"<li>{_clean(reason)}</li>" for reason in _focus_reasons(row)[:4])
     return _html(
         f"""
         <div class='zt-attention-strip zt-meeting-focus-strip'>
             <div class='zt-meeting-focus-title'>Why this item is in focus</div>
-            <div class='zt-meeting-focus-chips'>{chips}</div>
+            <ul class='zt-meeting-focus-list'>{items}</ul>
         </div>
         """
     )
@@ -401,71 +385,28 @@ def _secondary_detail_grid_html(row: dict) -> str:
 
 
 def _status_strip_html(row: dict) -> str:
-    """Status-only strip. Do not repeat Owner / Support From already shown in Next Step."""
-    badges = [
+    primary_badges = [
+        ("Owner", row.get("next_step_owner")),
         ("Status", row.get("followup_status") or "Open"),
         ("Review This Week", "Yes" if row.get("review_this_week") else "No"),
         ("Reason", row.get("meeting_pool_reason_text")),
+    ]
+    secondary_badges = [
+        ("Support From", row.get("next_step_support")),
+        ("Days Since Review", row.get("days_since_review")),
         ("Days Since Status", row.get("days_since_status_update")),
     ]
-    badge_html = "".join(
-        f"<span><b>{escape(label)}:</b> {_clean(value)}</span>" for label, value in badges
+    primary_html = "".join(
+        f"<span><b>{escape(label)}:</b> {_clean(value)}</span>" for label, value in primary_badges
+    )
+    secondary_html = "".join(
+        f"<span class='zt-meeting-status-secondary'><b>{escape(label)}:</b> {_clean(value)}</span>" for label, value in secondary_badges
     )
     return _html(
         f"""
         <div class='zt-meeting-status-strip'>
             <div class='zt-followup-summary-title'>Follow-up Summary</div>
-            <div class='zt-followup-summary-badges'>{badge_html}</div>
-        </div>
-        """
-    )
-
-
-def _boss_priority_tags_html(row: dict) -> str:
-    chips = "".join(
-        f"<span class='zt-focus-chip zt-focus-{escape(class_name)}'>{escape(label)}</span>"
-        for label, class_name in _focus_reason_tags(row)
-    )
-    return f"<div class='zt-boss-priority-tags'>{chips}</div>"
-
-
-def _boss_decision_focus(row: dict) -> str:
-    need = _plain(row.get("need_from_meeting"))
-    block = _plain(row.get("block_point"))
-    issue = _plain(row.get("main_issue"))
-    if need:
-        return f"Need meeting support / decision: {need}"
-    if block:
-        return f"Blocked point requires review: {block}"
-    if issue:
-        return f"Key issue for review: {issue}"
-    return _plain(row.get("meeting_focus_reason")) or "Review this item and confirm the next action."
-
-
-def _boss_summary_html(row: dict) -> str:
-    meta_items = [
-        ("Owner", row.get("next_step_owner") or row.get("current_owner")),
-        ("Target Date", row.get("target_date")),
-        ("Status", row.get("followup_status") or "Open"),
-    ]
-    meta_html = "".join(
-        f"<span><b>{escape(label)}:</b> {_clean(value)}</span>" for label, value in meta_items
-    )
-    return _html(
-        f"""
-        {_boss_priority_tags_html(row)}
-        <div class='zt-boss-focus-card'>
-            <div class='zt-meeting-field-label'>Boss Focus</div>
-            <div class='zt-boss-focus-value'>{_clean(_boss_decision_focus(row))}</div>
-        </div>
-        <div class='zt-boss-summary-grid'>
-            {_meeting_field_html('Main Issue', row.get('main_issue'), 'zt-field-main-issue')}
-            {_meeting_field_html('Need From Meeting', row.get('need_from_meeting'), 'zt-field-need')}
-        </div>
-        <div class='zt-boss-next-step-card'>
-            <div class='zt-meeting-field-label'>Recommended Next Step</div>
-            <div class='zt-meeting-field-value'>{_clean(row.get('next_step_summary'))}</div>
-            <div class='zt-meeting-next-step-meta'>{meta_html}</div>
+            <div class='zt-followup-summary-badges'>{primary_html}{secondary_html}</div>
         </div>
         """
     )
@@ -688,6 +629,9 @@ def _apply_meeting_mode_css() -> None:
                 display: block !important;
                 margin-top: 0.78rem !important;
             }
+            .zt-meeting-status-secondary {
+                color: #646870 !important;
+            }
             .zt-meeting-focus-strip {
                 padding: 0.72rem 0.85rem !important;
             }
@@ -695,121 +639,43 @@ def _apply_meeting_mode_css() -> None:
                 color: #c5161d;
                 font-size: 0.84rem;
                 font-weight: 900;
-                margin-bottom: 0.36rem;
+                margin-bottom: 0.28rem;
             }
-            .zt-meeting-focus-chips,
-            .zt-boss-priority-tags {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 0.42rem;
+            .zt-meeting-focus-list {
+                margin: 0.1rem 0 0 1.1rem;
+                padding: 0;
+                color: #2c2c2c;
+                font-size: 0.9rem;
+                line-height: 1.42;
             }
-            .zt-focus-chip {
-                display: inline-flex;
-                align-items: center;
-                border-radius: 999px;
-                padding: 0.24rem 0.62rem;
-                font-size: 0.78rem;
-                font-weight: 860;
-                border: 1px solid #e8e8eb;
-                background: #ffffff;
-            }
-            .zt-focus-due { color: #975a00; background: #fff7e8; border-color: #ffe0ad; }
-            .zt-focus-decision { color: #b45309; background: #fff3e8; border-color: #ffd6b3; }
-            .zt-focus-blocked { color: #c5161d; background: #fff2f2; border-color: #ffd1d1; }
-            .zt-focus-repeat { color: #5a3a42; background: #f7f2f4; border-color: #ead7dd; }
-            .zt-focus-review { color: #2c2c2c; background: #f8f8f8; border-color: #e7e7e7; }
-
-            .zt-boss-priority-tags {
-                margin: 0.65rem 0 0.55rem 0;
-            }
-            .zt-boss-focus-card,
-            .zt-boss-next-step-card {
-                border-radius: 16px;
-                border: 1px solid #ffd6d6;
-                background: #fff8f8;
-                padding: 0.72rem 0.82rem;
-                margin-top: 0.55rem;
-                box-shadow: 0 8px 20px rgba(17,17,17,0.025);
-            }
-            .zt-boss-focus-value {
-                color: #111111;
-                font-size: 0.98rem;
-                line-height: 1.45;
-                font-weight: 860;
-            }
-            .zt-boss-summary-grid {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 0.66rem;
-                margin-top: 0.66rem;
-            }
-            .zt-boss-next-step-card {
-                background: #f5fff8;
-                border-color: #d7f1df;
-            }
-            .zt-boss-action-header {
-                margin-top: 0.78rem !important;
-            }
-
-            .zt-open-followup-spacer {
-                height: 0.25rem;
+            .zt-meeting-focus-list li {
+                margin: 0.08rem 0;
             }
 
             .zt-action-header {
                 border-top: 1px solid #f0f0f2;
-                margin-top: 0.78rem;
-                padding-top: 0.68rem;
-            }
-            .zt-action-header-title {
-                font-size: 0.94rem;
-                color: #111111;
-                font-weight: 900;
-                margin-bottom: 0.12rem;
+                margin-top: 1.0rem;
+                padding-top: 0.86rem;
             }
             .zt-action-header-note {
                 color: #74777e;
-                font-size: 0.80rem;
-                margin-bottom: 0.36rem;
+                font-size: 0.82rem;
             }
             .zt-action-group-title {
-                margin: 0.42rem 0 0.18rem 0;
+                margin: 0.52rem 0 0.26rem 0;
                 color: #111111;
-                font-size: 0.84rem;
+                font-size: 0.86rem;
                 font-weight: 900;
             }
             .zt-action-group-title span {
                 color: #74777e;
                 font-weight: 720;
                 margin-left: 0.35rem;
-                font-size: 0.76rem;
-            }
-
-            div[data-testid="stMarkdown"]:has(.zt-action-buttons-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button,
-            div[data-testid="stMarkdown"]:has(.zt-action-risk-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button {
-                min-height: 2.45rem !important;
-                border-radius: 12px !important;
-                padding: 0.28rem 0.5rem !important;
-            }
-            div[data-testid="stMarkdown"]:has(.zt-action-buttons-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button p,
-            div[data-testid="stMarkdown"]:has(.zt-action-risk-marker) + div[data-testid="stHorizontalBlock"] div.stButton > button p {
-                font-size: 0.82rem !important;
-                line-height: 1.12 !important;
-                font-weight: 820 !important;
-            }
-            div[data-testid="stMarkdown"]:has(.zt-action-risk-marker) + div[data-testid="stHorizontalBlock"] > div:nth-child(1) div.stButton > button {
-                background: #fff7e8 !important;
-                border-color: #f4b35d !important;
-                color: #7a3d00 !important;
-            }
-            div[data-testid="stMarkdown"]:has(.zt-action-risk-marker) + div[data-testid="stHorizontalBlock"] > div:nth-child(2) div.stButton > button {
-                background: #fff2f2 !important;
-                border-color: #ffb8b8 !important;
-                color: #b00020 !important;
+                font-size: 0.78rem;
             }
 
             @media (max-width: 900px) {
                 .zt-meeting-summary-grid,
-                .zt-boss-summary-grid,
                 .zt-secondary-field-grid {
                     grid-template-columns: 1fr !important;
                 }
@@ -830,115 +696,6 @@ ACTION_HELP = {
     "High-Risk Follow-up": "Escalate this item as a high-risk decision follow-up.",
     "Remove from Meeting": "Remove this item from the current weekly meeting pool.",
 }
-
-
-def _run_meeting_action(row: dict, entity_id: str, action_name: str, acting_user: str, meeting_view: str) -> None:
-    try:
-        action_result = apply_meeting_action(
-            entity_type=row["entity_type"],
-            entity_id=str(entity_id),
-            action_name=action_name,
-            operator=acting_user,
-            source_page="Meeting Mode",
-        )
-        _upsert_session_row(meeting_view, action_result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
-        st.success(f"{entity_id}: {action_name}")
-        st.rerun()
-    except MeetingActionError as exc:
-        st.error(str(exc))
-
-
-def _render_action_button(row: dict, entity_id: str, action_name: str, acting_user: str, meeting_view: str) -> None:
-    pending_key = f"confirm_remove_{row['entity_type']}_{entity_id}"
-    is_high_impact = action_name in {"Decision Made / Close", "High-Risk Follow-up", "Mark Follow-up Done", "Remove from Meeting"}
-    label = f"**{action_name}**" if is_high_impact else action_name
-
-    if action_name == "Remove from Meeting":
-        if st.session_state.get(pending_key):
-            st.warning("Confirm remove from current meeting?", icon="⚠️")
-            confirm_col, cancel_col = st.columns(2)
-            with confirm_col:
-                if st.button(
-                    "**Confirm**",
-                    key=f"confirm_{row['entity_type']}_{entity_id}_{action_name}",
-                    use_container_width=True,
-                    help="Confirm and remove this item from the current meeting pool.",
-                ):
-                    st.session_state.pop(pending_key, None)
-                    _run_meeting_action(row, entity_id, action_name, acting_user, meeting_view)
-            with cancel_col:
-                if st.button(
-                    "Cancel",
-                    key=f"cancel_{row['entity_type']}_{entity_id}_{action_name}",
-                    use_container_width=True,
-                    help="Cancel remove action.",
-                ):
-                    st.session_state.pop(pending_key, None)
-                    st.rerun()
-            return
-
-        if st.button(
-            label,
-            key=f"meeting_{row['entity_type']}_{entity_id}_{action_name}",
-            use_container_width=True,
-            type="secondary",
-            help=ACTION_HELP.get(action_name),
-        ):
-            st.session_state[pending_key] = True
-            st.rerun()
-        return
-
-    if st.button(
-        label,
-        key=f"meeting_{row['entity_type']}_{entity_id}_{action_name}",
-        use_container_width=True,
-        type="secondary",
-        help=ACTION_HELP.get(action_name),
-    ):
-        _run_meeting_action(row, entity_id, action_name, acting_user, meeting_view)
-
-
-def _render_meeting_actions(row: dict, entity_id: str, acting_user: str, meeting_view: str, boss_mode: bool = False) -> None:
-    if boss_mode:
-        st.markdown(
-            "<div class='zt-action-header zt-boss-action-header'><div class='zt-action-header-title'>Boss Decision Actions</div>"
-            "<div class='zt-action-header-note'>Use these only to record the meeting outcome for this item.</div></div>",
-            unsafe_allow_html=True,
-        )
-        action_groups = [
-            ("Decision Actions", "Short list for boss review", ["Discussed / Follow up", "Decision Made / Close", "Review Next Meeting"]),
-        ]
-    else:
-        st.markdown(
-            "<div class='zt-action-header'><div class='zt-action-header-title'>Meeting Actions</div>"
-            "<div class='zt-action-header-note'>Select the meeting result for this item. High-impact actions will update status and history.</div></div>",
-            unsafe_allow_html=True,
-        )
-        action_groups = [
-            ("Primary Actions", "Most common meeting results", ["Discussed / Follow up", "Decision Made / Close", "Review Next Meeting"]),
-            ("Secondary Actions", "Review or completion updates", ["Reviewed No Change", "Mark Follow-up Done"]),
-            ("Risk / Remove Actions", "Use carefully", ["High-Risk Follow-up", "Remove from Meeting"]),
-        ]
-
-    valid_actions = set(MEETING_ACTIONS)
-    for group_title, group_note, action_names in action_groups:
-        action_names = [a for a in action_names if a in valid_actions]
-        if not action_names:
-            continue
-
-        risk_group = group_title == "Risk / Remove Actions"
-        marker_class = "zt-action-risk-marker" if risk_group else "zt-action-buttons-marker"
-        st.markdown(
-            f"<div class='zt-action-group-title'>{escape(group_title)} <span>{escape(group_note)}</span></div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"<span class='{marker_class}'></span>", unsafe_allow_html=True)
-        cols = st.columns(len(action_names))
-        for col, action_name in zip(cols, action_names):
-            with col:
-                _render_action_button(row, entity_id, action_name, acting_user, meeting_view)
-
-
 
 
 current_user = require_login()
@@ -1111,7 +868,6 @@ for row in display_rows:
     entity_id = row.get("entity_id") or row.get("display_id")
     if not entity_id:
         continue
-    entity_id = str(entity_id)
 
     with st.container(border=True):
         st.markdown(_card_header_html(row), unsafe_allow_html=True)
@@ -1121,34 +877,24 @@ for row in display_rows:
             result=row.get("result_status"),
             pattern=bool(row.get("pattern_flag")),
         )
-
-        if meeting_view == "Boss Summary":
-            st.markdown(_boss_summary_html(row), unsafe_allow_html=True)
-            _render_meeting_actions(row, entity_id, acting_user, meeting_view, boss_mode=True)
-            continue
-
         st.markdown(_focus_note_html(row), unsafe_allow_html=True)
         st.markdown(_main_summary_html(row), unsafe_allow_html=True)
         st.markdown(_status_strip_html(row), unsafe_allow_html=True)
 
+        with st.expander("More Details / Secondary Info", expanded=False):
+            st.markdown(_secondary_detail_grid_html(row), unsafe_allow_html=True)
+
         followup_open_key = f"meeting_followup_open_{row['entity_type']}_{entity_id}"
         is_followup_open = bool(st.session_state.get(followup_open_key, False))
         toggle_label = "Hide Meeting Follow-up" if is_followup_open else "Open Meeting Follow-up"
-
-        detail_col, followup_col = st.columns([4.4, 1.25])
-        with detail_col:
-            with st.expander("More Details / Secondary Info", expanded=False):
-                st.markdown(_secondary_detail_grid_html(row), unsafe_allow_html=True)
-        with followup_col:
-            st.markdown("<div class='zt-open-followup-spacer'></div>", unsafe_allow_html=True)
-            if st.button(
-                toggle_label,
-                key=f"toggle_followup_{row['entity_type']}_{entity_id}",
-                use_container_width=True,
-                help="Open or hide the meeting follow-up editor for this item.",
-            ):
-                _toggle_followup(row["entity_type"], entity_id)
-                st.rerun()
+        if st.button(
+            toggle_label,
+            key=f"toggle_followup_{row['entity_type']}_{entity_id}",
+            use_container_width=False,
+            help="Open or hide the meeting follow-up editor for this item.",
+        ):
+            _toggle_followup(row["entity_type"], str(entity_id))
+            st.rerun()
 
         if is_followup_open:
             with st.container(border=True):
@@ -1174,12 +920,12 @@ for row in display_rows:
 
                     owner_date_cols = st.columns([1.0, 1.2, 1.0, 1.05])
                     with owner_date_cols[0]:
-                        owner_options_form = [""] + PEOPLE
+                        owner_options = [""] + PEOPLE
                         current_owner = row.get("next_step_owner") or ""
-                        owner_index = owner_options_form.index(current_owner) if current_owner in owner_options_form else 0
+                        owner_index = owner_options.index(current_owner) if current_owner in owner_options else 0
                         next_step_owner_value = st.selectbox(
                             "Next Step Owner",
-                            options=owner_options_form,
+                            options=owner_options,
                             index=owner_index,
                             key=f"meeting_next_step_owner_{row['entity_type']}_{entity_id}",
                         )
@@ -1205,7 +951,7 @@ for row in display_rows:
                 if submitted:
                     result = save_meeting_followup(
                         entity_type=row["entity_type"],
-                        entity_id=entity_id,
+                        entity_id=str(entity_id),
                         meeting_note=meeting_note_value,
                         next_step_summary=next_step_value,
                         next_step_owner=next_step_owner_value,
@@ -1215,8 +961,52 @@ for row in display_rows:
                         source_page="Meeting Mode",
                     )
                     if result.get("updated"):
-                        _upsert_session_row(meeting_view, result.get("row") or get_meeting_record(row["entity_type"], entity_id))
+                        _upsert_session_row(meeting_view, result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
                     st.session_state[followup_open_key] = False
                     st.rerun()
 
-        _render_meeting_actions(row, entity_id, acting_user, meeting_view, boss_mode=False)
+        st.markdown(
+            "<div class='zt-action-header'><div class='zt-action-header-title'>Meeting Actions</div>"
+            "<div class='zt-action-header-note'>Select the meeting result for this item. High-impact actions will update status and history.</div></div>",
+            unsafe_allow_html=True,
+        )
+
+        action_groups = [
+            ("Primary Actions", "Most common meeting results", ["Discussed / Follow up", "Decision Made / Close", "Review Next Meeting"]),
+            ("Secondary Actions", "Review or completion updates", ["Reviewed No Change", "Mark Follow-up Done"]),
+            ("Risk / Remove Actions", "Use carefully", ["High-Risk Follow-up", "Remove from Meeting"]),
+        ]
+        valid_actions = set(MEETING_ACTIONS)
+        for group_title, group_note, action_names in action_groups:
+            action_names = [a for a in action_names if a in valid_actions]
+            if not action_names:
+                continue
+            st.markdown(
+                f"<div class='zt-action-group-title'>{escape(group_title)} <span>{escape(group_note)}</span></div>",
+                unsafe_allow_html=True,
+            )
+            cols = st.columns(len(action_names))
+            for col, action_name in zip(cols, action_names):
+                with col:
+                    is_high_impact = action_name in {"Decision Made / Close", "High-Risk Follow-up", "Mark Follow-up Done", "Remove from Meeting"}
+                    label = f"**{action_name}**" if is_high_impact else action_name
+                    if st.button(
+                        label,
+                        key=f"meeting_{row['entity_type']}_{entity_id}_{action_name}",
+                        use_container_width=True,
+                        type="secondary",
+                        help=ACTION_HELP.get(action_name),
+                    ):
+                        try:
+                            action_result = apply_meeting_action(
+                                entity_type=row["entity_type"],
+                                entity_id=str(entity_id),
+                                action_name=action_name,
+                                operator=acting_user,
+                                source_page="Meeting Mode",
+                            )
+                            _upsert_session_row(meeting_view, action_result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
+                            st.success(f"{entity_id}: {action_name}")
+                            st.rerun()
+                        except MeetingActionError as exc:
+                            st.error(str(exc))
