@@ -227,8 +227,14 @@ def _draft_from_review_table(review_frame: pd.DataFrame, original_draft: dict[st
     selected: dict[str, Any] = {}
     applied_fields: list[str] = []
 
+    reverse_field_labels = {label: field for field, label in FIELD_LABELS.items()}
+
     for _, row in review_frame.iterrows():
         field_key = clean_text(row.get("Field Key"))
+        if not field_key:
+            # Field Key is intentionally hidden in the frontend table.
+            # This fallback keeps the internal mapping safe if Streamlit returns only visible columns.
+            field_key = reverse_field_labels.get(clean_text(row.get("Field")), "")
         if field_key not in MEETING_FIELDS:
             continue
         value = clean_text(row.get("AI Suggested Update"))
@@ -250,19 +256,17 @@ def _draft_from_review_table(review_frame: pd.DataFrame, original_draft: dict[st
 
 def _render_review_editor(project: dict[str, Any], draft: dict[str, Any]) -> pd.DataFrame:
     review_frame = _build_review_dataframe(project, draft)
-    st.caption(
-        "Only selected fields will be written into the core Sales / Operation Meeting Prep fields. "
-        "Meeting Note is not included because it is reserved for live human meeting notes."
-    )
+    # Keep "Field Key" in the dataframe for internal field mapping, but hide it from the UI.
+    # Do not change the downstream save/apply logic: _draft_from_review_table still reads Field Key.
     return st.data_editor(
         review_frame,
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
-        disabled=["Field Key", "Field", "Existing Record"],
+        column_order=["Apply", "Field", "Existing Record", "AI Suggested Update"],
+        disabled=["Field", "Existing Record"],
         column_config={
-            "Apply": st.column_config.CheckboxColumn("Apply", help="Tick only the fields you want to write into the system."),
-            "Field Key": st.column_config.TextColumn("Field Key", width="small"),
+            "Apply": st.column_config.CheckboxColumn("Apply", help="Tick only the fields you want to write into the system.", width="small"),
             "Field": st.column_config.TextColumn("Field", width="medium"),
             "Existing Record": st.column_config.TextColumn("Existing Record", width="large"),
             "AI Suggested Update": st.column_config.TextColumn("AI Suggested Update", width="large"),
@@ -278,24 +282,9 @@ render_page_header(
     "Find project first, confirm Project ID, then let AI structure weekly meeting prep fields.",
 )
 
-st.markdown(
-    _html(
-        """
-        <div class="zai-warning">
-        Rule: colleagues can search by Project Name, Order No, Client Code, or Project ID.
-        But no AI draft can be saved until one Project ID is confirmed.
-        </div>
-        <div class="zai-note">
-        Meeting Note is reserved for live human notes during the actual meeting. This AI assistant only prepares structured Meeting Prep / follow-up fields.
-        </div>
-        """
-    ),
-    unsafe_allow_html=True,
-)
-
 st.divider()
 
-left_col, right_col = st.columns([1.05, 1.25], gap="large")
+left_col, right_col = st.columns([0.95, 1.55], gap="large")
 
 with left_col:
     st.subheader("Step 1 · Find Project / Order")
