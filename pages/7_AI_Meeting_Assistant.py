@@ -395,6 +395,7 @@ with right_col:
                 st.session_state["ai_generation_message"] = (
                     "AI Meeting Prep Draft generated. Please review Step 4 below."
                 )
+                st.rerun()
             except (AIConfigError, AIResponseError) as exc:
                 st.session_state.pop("ai_generated_draft", None)
                 st.session_state["ai_generation_error"] = str(exc)
@@ -414,7 +415,7 @@ draft = st.session_state.get("ai_generated_draft")
 selected_project = st.session_state.get("ai_selected_project")
 meeting_notes = st.session_state.get("ai_meeting_notes", "")
 
-if selected_project and draft:
+if selected_project and isinstance(draft, dict):
     st.divider()
     st.subheader("Step 4 · Review AI Meeting Prep Draft")
 
