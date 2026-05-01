@@ -178,6 +178,13 @@ def _summary_grid(summary: dict[str, Any]) -> None:
     )
 
 
+def _clean_frame_for_streamlit(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    cleaned = frame.loc[:, ~frame.columns.duplicated()].copy()
+    return cleaned.fillna("").astype(str)
+
+
 def _render_records_by_module(frame: pd.DataFrame, module: str) -> None:
     if frame.empty or "Source Module" not in frame.columns:
         st.info(f"No {module} evidence records found for this question.")
@@ -186,7 +193,7 @@ def _render_records_by_module(frame: pd.DataFrame, module: str) -> None:
     if module_frame.empty:
         st.info(f"No {module} evidence records found for this question.")
         return
-    st.dataframe(module_frame, use_container_width=True, hide_index=True)
+    st.dataframe(_clean_frame_for_streamlit(module_frame), use_container_width=True, hide_index=True)
 
 
 def _combined_export_frame(records_frame: pd.DataFrame, dashboard_frame: pd.DataFrame) -> pd.DataFrame:
@@ -201,21 +208,23 @@ def _combined_export_frame(records_frame: pd.DataFrame, dashboard_frame: pd.Data
         frames.append(tmp.astype(str))
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True, sort=False).fillna("")
+    combined = pd.concat(frames, ignore_index=True, sort=False).fillna("")
+    combined = combined.loc[:, ~combined.columns.duplicated()]
+    return combined
 
 
 _render_css()
 
 render_page_header(
     "AI Project Assistant",
-    "Read-only natural-language search over Sales, Operation, Dashboard, Project Details, and Meeting Mode records.",
+    "Read-only natural-language search over Sales, Operation, Dashboard, Project Details, Meeting Mode, and project history records.",
 )
 
 st.markdown(
     _html(
         """
         <div class="zpa-note">
-        This assistant only searches current system records. It does not change database records, does not update Meeting Prep, and excludes archived records by default.
+        This assistant only searches current system records. It does not change database records, does not update Meeting Prep, excludes archived records by default, and uses the existing Sales Board / Dashboard order-link rule for order association questions.
         </div>
         """
     ),
@@ -240,9 +249,11 @@ with left_col:
         placeholder=(
             "Examples:\n"
             "- Which projects are blocked this week?\n"
-            "- What is the next step for SDG-26-013?\n"
-            "- 哪些订单现在 delayed？\n"
-            "- 本周会议需要讨论什么？"
+            "- Show delayed operation orders owned by Sandy\n"
+            "- What should Ehab focus on this week?\n"
+            "- What are all open issues for client Keter?\n"
+            "- Summarize the project history for SDG-26-013\n"
+            "- 哪些项目还没有订单？"
         ),
         key="ai_project_question",
     )
@@ -358,7 +369,7 @@ with right_col:
         st.markdown("#### Detailed Answer")
         st.write(answer.get("detailed_answer") or "-")
         st.markdown("#### Source Summary")
-        st.dataframe(summary_frame, use_container_width=True, hide_index=True)
+        st.dataframe(_clean_frame_for_streamlit(summary_frame), use_container_width=True, hide_index=True)
 
     with tab_sales:
         _render_records_by_module(records_frame, "Sales Board")
@@ -370,17 +381,17 @@ with right_col:
         if dashboard_frame.empty:
             st.info("No dashboard metrics were needed for this question.")
         else:
-            st.dataframe(dashboard_frame, use_container_width=True, hide_index=True)
+            st.dataframe(_clean_frame_for_streamlit(dashboard_frame), use_container_width=True, hide_index=True)
 
     with tab_detail:
         if records_frame.empty:
-            st.info("No Project Details evidence records found for this question.")
+            st.info("No Project Details or Project History evidence records found for this question.")
         else:
-            detail_frame = records_frame[records_frame["Source Module"].isin(["Sales Board", "Operation Board"])] if "Source Module" in records_frame.columns else records_frame
+            detail_frame = records_frame[records_frame["Source Module"].isin(["Sales Board", "Operation Board", "Project History"])] if "Source Module" in records_frame.columns else records_frame
             if detail_frame.empty:
-                st.info("No Project Details evidence records found for this question.")
+                st.info("No Project Details or Project History evidence records found for this question.")
             else:
-                st.dataframe(detail_frame, use_container_width=True, hide_index=True)
+                st.dataframe(_clean_frame_for_streamlit(detail_frame), use_container_width=True, hide_index=True)
 
     with tab_meeting:
         _render_records_by_module(records_frame, "Meeting Mode")
@@ -411,7 +422,7 @@ with right_col:
 
         if not records_frame.empty:
             st.markdown("##### Evidence Records Preview")
-            st.dataframe(records_frame, use_container_width=True, hide_index=True)
+            st.dataframe(_clean_frame_for_streamlit(records_frame), use_container_width=True, hide_index=True)
         if not dashboard_frame.empty:
             st.markdown("##### Dashboard Metrics Preview")
-            st.dataframe(dashboard_frame, use_container_width=True, hide_index=True)
+            st.dataframe(_clean_frame_for_streamlit(dashboard_frame), use_container_width=True, hide_index=True)
