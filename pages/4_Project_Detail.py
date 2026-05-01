@@ -858,7 +858,35 @@ with st.expander("Advanced Record Control", expanded=False):
     st.write(f"Current status: **{status_text}**")
     confirm_key = f"archive_confirm_{selected_type}_{selected_record_id}"
     confirm_text = st.text_input("Type the Project ID / Order No to confirm", key=confirm_key)
-    confirmed = confirm_text.strip() == selected_record_id
+
+    def _confirmation_tokens(*values: Any) -> set[str]:
+        tokens: set[str] = set()
+        for value in values:
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            pieces = [raw]
+            for separator in [",", ";", "|", "\n"]:
+                next_pieces: list[str] = []
+                for piece in pieces:
+                    next_pieces.extend(piece.split(separator))
+                pieces = next_pieces
+            for piece in pieces:
+                cleaned = piece.strip()
+                if cleaned:
+                    tokens.add(cleaned.upper())
+        return tokens
+
+    accepted_confirmation_values = _confirmation_tokens(
+        selected_record_id,
+        detail.get("project_id"),
+        detail.get("order_no"),
+        detail.get("linked_orders"),
+    )
+    confirmed = confirm_text.strip().upper() in accepted_confirmation_values
+    accepted_display = " / ".join(sorted(accepted_confirmation_values)) if accepted_confirmation_values else selected_record_id
+    st.caption(f"Accepted confirmation value: {accepted_display}")
+
     if is_archived:
         if st.button("Restore this record", key=f"restore_{selected_type}_{selected_record_id}", disabled=not confirmed):
             result = set_record_archive_status(selected_type, selected_record_id, archived=False, operator=acting_user)
