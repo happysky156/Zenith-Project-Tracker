@@ -255,12 +255,10 @@ def _normalise_operation_row(row: dict[str, Any], *, source_module: str = "Opera
 
 
 def _load_sales_records() -> list[dict[str, Any]]:
-    # Default repository behaviour excludes archived records. This is intentional.
     return [_normalise_sales_row(row, source_id=f"S{idx + 1}") for idx, row in enumerate(list_sales_projects())]
 
 
 def _load_operation_records() -> list[dict[str, Any]]:
-    # Default repository behaviour excludes archived records. This is intentional.
     return [_normalise_operation_row(row, source_id=f"O{idx + 1}") for idx, row in enumerate(list_operation_orders())]
 
 
@@ -864,9 +862,6 @@ def _build_order_association_answer(intent: str, *, output_language: str, record
     lang = _safe_language(output_language)
     total = int(metadata.get("full_result_count") or metadata.get("total_matched_records") or 0)
     returned = len(records)
-    displayed_note_en = "" if returned >= total else f" The table displays the first {returned} record(s) because of the Result Limit."
-    displayed_note_cn = "" if returned >= total else f" 因为 Result Limit 限制，表格仅显示前 {returned} 条记录。"
-
     if intent == "projects_without_orders":
         label_en = "Sales projects have no linked active Operation Order by Project ID"
         label_cn = "个 Sales 项目没有通过 Project ID 关联到 active Operation Order"
@@ -889,22 +884,22 @@ def _build_order_association_answer(intent: str, *, output_language: str, record
     if lang == "Chinese":
         return {
             "direct_answer": f"根据系统现有 Sales Board / Dashboard 订单关联规则，当前共有 {total}{label_cn}。",
-            "evidence_summary": "判断依据：复用系统已有的订单关联逻辑，即用 active Sales Project ID 与 active Operation Project ID 进行匹配；Archived records 默认排除。" + displayed_note_cn,
+            "evidence_summary": "答案依据：复用系统已有的订单关联逻辑，即用 active Sales Project ID 与 active Operation Project ID 进行匹配。",
             "detailed_answer": detail,
-            "not_found_or_limitations": "Result Limit 只影响表格展示数量，不影响系统完整统计。",
+            "not_found_or_limitations": "",
         }
     if lang == "Bilingual Chinese and English":
         return {
             "direct_answer": f"根据系统现有 Sales Board / Dashboard 订单关联规则，当前共有 {total}{label_cn}。 / Based on the existing Sales Board / Dashboard order-link rule, {total} {label_en}.",
-            "evidence_summary": "判断依据：active Sales Project ID 与 active Operation Project ID 匹配；Archived records 默认排除。 / Evidence basis: active Sales Project ID is matched against active Operation Project ID; archived records are excluded by default." + displayed_note_cn + displayed_note_en,
+            "evidence_summary": "答案依据：active Sales Project ID 与 active Operation Project ID 匹配。 / The answer is based on the system order-link rule: active Sales Project ID is matched against active Operation Project ID.",
             "detailed_answer": detail,
-            "not_found_or_limitations": "Result Limit 只影响表格展示数量，不影响系统完整统计。 / Result Limit only controls table display, not the full system count.",
+            "not_found_or_limitations": "",
         }
     return {
         "direct_answer": f"Based on the existing Sales Board / Dashboard order-link rule, {total} {label_en}.",
-        "evidence_summary": "Evidence basis: active Sales Project ID is matched against active Operation Project ID, using the same order-link logic as the current system. Archived records are excluded by default." + displayed_note_en,
+        "evidence_summary": "The answer is based on the system order-link rule: active Sales Project ID is matched against active Operation Project ID, using the same order-link logic as the current system.",
         "detailed_answer": detail,
-        "not_found_or_limitations": "Result Limit only controls table display. It does not change the full system count.",
+        "not_found_or_limitations": "",
     }
 
 def _search_records(query: str, *, scope: str, record_type: str, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -997,16 +992,17 @@ def _prepare_ai_evidence(records: list[dict[str, Any]], dashboard_rows: list[dic
 
     return {
         "dashboard_metrics": dashboard_rows[:80],
-        "matched_records": evidence_records,
+        "system_records": evidence_records,
     }
 
 
 def _source_summary(records: list[dict[str, Any]], dashboard_rows: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
     module_counts = Counter(clean_text(row.get("Source Module")) or "Unknown" for row in records)
     type_counts = Counter(clean_text(row.get("Record Type")) or "Unknown" for row in records)
+    final_count = len(records) if records else len(dashboard_rows)
     summary = {
         "query_mode": metadata.get("query_mode", "Natural Language Search"),
-        "matched_records": len(records),
+        "final_answer_records": final_count,
         "dashboard_metrics": len(dashboard_rows),
         "sales_records": int(type_counts.get("Sales", 0)),
         "operation_records": int(type_counts.get("Operation", 0)),
@@ -1014,17 +1010,192 @@ def _source_summary(records: list[dict[str, Any]], dashboard_rows: list[dict[str
         "operation_board_records": int(module_counts.get("Operation Board", 0)),
         "meeting_mode_records": int(module_counts.get("Meeting Mode", 0)),
         "project_history_records": int(module_counts.get("Project History", 0)),
-        "archived_records": "Excluded by default",
-        "total_searchable_records": metadata.get("total_searchable_records", 0),
-        "total_records_after_deterministic_filters": metadata.get("total_records_after_deterministic_filters", "-"),
-        "total_matched_records_before_limit": metadata.get("total_matched_records", 0),
-        "returned_records": metadata.get("returned_records", len(records)),
     }
     if metadata.get("full_result_count") is not None:
-        summary["full_system_result_count"] = metadata.get("full_result_count")
+        summary["total_final_answer_records"] = metadata.get("full_result_count")
+        summary["records_shown"] = len(records)
     if metadata.get("client_terms"):
         summary["client_terms"] = metadata.get("client_terms")
     return summary
+
+
+def _coerce_source_id_set(value: Any) -> set[str]:
+    ids: set[str] = set()
+    if isinstance(value, list):
+        for item in value:
+            text = clean_text(item)
+            if text:
+                ids.add(text)
+    elif isinstance(value, str):
+        for item in re.split(r"[,;\n]+", value):
+            text = clean_text(item)
+            if text:
+                ids.add(text)
+    return ids
+
+
+def _source_ids_mentioned_in_answer(answer: dict[str, Any], records: list[dict[str, Any]]) -> set[str]:
+    valid_ids = {clean_text(row.get("Source ID")) for row in records if clean_text(row.get("Source ID"))}
+    selected = _coerce_source_id_set(answer.get("final_source_ids"))
+    selected = {sid for sid in selected if sid in valid_ids}
+    if selected:
+        return selected
+
+    answer_text = " ".join(
+        clean_text(answer.get(key))
+        for key in ["direct_answer", "evidence_summary", "detailed_answer", "not_found_or_limitations"]
+    )
+    for sid in valid_ids:
+        if re.search(rf"(?<![A-Za-z0-9_-]){re.escape(sid)}(?![A-Za-z0-9_-])", answer_text):
+            selected.add(sid)
+    return selected
+
+
+def _apply_final_condition_filters(query: str, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not records:
+        return records
+
+    lower = _lower(query)
+    owner_terms = _extract_owner_terms(query, records)
+    final_records = records
+
+    next_step_owner_phrases = [
+        "next step owner",
+        "next_step_owner",
+        "next-step owner",
+        "下一步负责人",
+        "跟进负责人",
+        "next step 负责人",
+    ]
+    if _has_any(lower, next_step_owner_phrases) and owner_terms:
+        candidate = [
+            row for row in final_records
+            if clean_text(row.get("Next Step"))
+            and any(term in _lower(row.get("Next Step Owner")) for term in owner_terms)
+        ]
+        if candidate:
+            final_records = candidate
+
+    current_owner_phrases = ["current owner", "owned by", "owner is", "owner:", "负责人", "当前负责人"]
+    if _has_any(lower, current_owner_phrases) and not _has_any(lower, next_step_owner_phrases) and owner_terms:
+        candidate = [
+            row for row in final_records
+            if any(term in _lower(row.get("Current Owner")) for term in owner_terms)
+        ]
+        if candidate:
+            final_records = candidate
+
+    return final_records
+
+
+def _dedupe_final_records(records: list[dict[str, Any]], *, scope: str) -> list[dict[str, Any]]:
+    if not records or scope == "Meeting Mode":
+        return records
+
+    def priority(row: dict[str, Any]) -> int:
+        module = clean_text(row.get("Source Module"))
+        if module in {"Sales Board", "Operation Board"}:
+            return 0
+        if module == "Project History":
+            return 1
+        if module == "Meeting Mode":
+            return 2
+        return 3
+
+    chosen: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in records:
+        module = clean_text(row.get("Source Module"))
+        if module == "Project History":
+            key = (
+                clean_text(row.get("Record Type")),
+                clean_text(row.get("Project ID")),
+                clean_text(row.get("Order No")),
+                clean_text(row.get("Source ID")),
+            )
+        else:
+            key = (
+                clean_text(row.get("Record Type")),
+                clean_text(row.get("Project ID")),
+                clean_text(row.get("Order No")) or clean_text(row.get("Entity ID")),
+                "",
+            )
+        existing = chosen.get(key)
+        if existing is None or priority(row) < priority(existing):
+            chosen[key] = row
+
+    return list(chosen.values())
+
+
+def _finalize_records_for_display(
+    *,
+    question: str,
+    records: list[dict[str, Any]],
+    answer: dict[str, Any],
+    scope: str,
+) -> list[dict[str, Any]]:
+    if not records:
+        return records
+
+    selected_ids = _source_ids_mentioned_in_answer(answer, records)
+    if selected_ids:
+        selected = [row for row in records if clean_text(row.get("Source ID")) in selected_ids]
+    else:
+        selected = _apply_final_condition_filters(question, records)
+
+    return _dedupe_final_records(selected or records, scope=scope)
+
+
+def _build_scope_limitations(
+    *,
+    output_language: str,
+    records: list[dict[str, Any]],
+    dashboard_rows: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    scope: str,
+    record_type: str,
+) -> tuple[str, bool, bool]:
+    lang = _safe_language(output_language)
+    full_count = metadata.get("full_result_count")
+    shown_count = len(records)
+    is_truncated = bool(full_count is not None and int(full_count or 0) > shown_count)
+    has_scope_limitations = scope != "All" or record_type != "All"
+
+    type_counts = Counter(clean_text(row.get("Record Type")) or "Unknown" for row in records)
+    sales_count = int(type_counts.get("Sales", 0))
+    operation_count = int(type_counts.get("Operation", 0))
+
+    notes_en: list[str] = []
+    notes_cn: list[str] = []
+
+    if is_truncated:
+        notes_en.append(f"The system found more final answer records than the current Result Limit. Only the first {shown_count} records are shown.")
+        notes_cn.append(f"系统找到的最终结果数量超过当前 Result Limit，因此当前只显示前 {shown_count} 条记录。")
+
+    if has_scope_limitations:
+        notes_en.append(f"The search was limited to Scope = {scope}, Record Type = {record_type}.")
+        notes_cn.append(f"本次搜索范围限制为 Scope = {scope}, Record Type = {record_type}。")
+
+    if records:
+        if sales_count == 0 and operation_count > 0 and record_type == "All":
+            notes_en.append("All final answer records are from Operation Board. No final answer records were found in Sales Board.")
+            notes_cn.append("所有最终结果均来自 Operation Board；Sales Board 中没有最终结果记录。")
+        elif operation_count == 0 and sales_count > 0 and record_type == "All":
+            notes_en.append("All final answer records are from Sales Board. No final answer records were found in Operation Board.")
+            notes_cn.append("所有最终结果均来自 Sales Board；Operation Board 中没有最终结果记录。")
+
+    if not notes_en and (records or dashboard_rows):
+        notes_en.append("All records shown are from the current active system records.")
+        notes_cn.append("当前显示的记录均来自系统当前有效记录。")
+
+    if not notes_en and not records and not dashboard_rows:
+        notes_en.append("No final answer records were found in the current active system records.")
+        notes_cn.append("当前系统有效记录中没有找到最终结果。")
+
+    if lang == "Chinese":
+        return " ".join(notes_cn), is_truncated, has_scope_limitations
+    if lang == "Bilingual Chinese and English":
+        return " ".join(notes_cn) + " / " + " ".join(notes_en), is_truncated, has_scope_limitations
+    return " ".join(notes_en), is_truncated, has_scope_limitations
 
 
 def _safe_language(output_language: str) -> str:
@@ -1037,25 +1208,25 @@ def _fallback_answer(*, question: str, output_language: str, records: list[dict[
     metric_count = len(dashboard_rows)
 
     if lang == "Chinese":
-        direct = f"已根据当前系统记录找到 {count} 条匹配记录。" if count else f"已根据 Dashboard 找到 {metric_count} 条统计信息。"
+        direct = f"已根据当前系统记录找到 {count} 条最终结果。" if count else f"已根据 Dashboard 找到 {metric_count} 条统计信息。"
         detailed = "AI 总结暂时不可用。下面的表格是本次查询使用的真实系统记录。"
-        limitation = "默认不包含 archived records；未在系统记录中出现的信息不会显示。"
+        limitation = "未在系统记录中出现的信息不会显示。"
     elif lang == "Bilingual Chinese and English":
         direct = (
-            f"已根据当前系统记录找到 {count} 条匹配记录。 / Found {count} matching record(s) from current system records."
+            f"已根据当前系统记录找到 {count} 条最终结果。 / Found {count} final answer record(s) from current system records."
             if count
             else f"已根据 Dashboard 找到 {metric_count} 条统计信息。 / Found {metric_count} dashboard metric row(s)."
         )
         detailed = "AI summary is not available now. / AI 总结暂时不可用。Please review the evidence tables below. / 请查看下面的证据表格。"
-        limitation = "Archived records are excluded by default. / 默认不包含 archived records。"
+        limitation = "当前显示的记录均来自系统当前有效记录。"
     else:
-        direct = f"Found {count} matching record(s) from current system records." if count else f"Found {metric_count} dashboard metric row(s)."
+        direct = f"Found {count} final answer record(s) from current system records." if count else f"Found {metric_count} dashboard metric row(s)."
         detailed = "AI summary is not available now. The tables below show the real system records used for this query."
-        limitation = "Archived records are excluded by default. Information not found in system records is not shown."
+        limitation = "Information not found in system records is not shown."
 
     return {
         "direct_answer": direct,
-        "evidence_summary": f"Matched records: {count}; Dashboard metrics: {metric_count}; Question: {question}",
+        "evidence_summary": f"Final answer records: {count}; Dashboard metrics: {metric_count}; Question: {question}",
         "detailed_answer": detailed,
         "not_found_or_limitations": limitation,
     }
@@ -1066,20 +1237,20 @@ def _not_found_answer(output_language: str) -> dict[str, Any]:
     if lang == "Chinese":
         return {
             "direct_answer": "搜索不到相关记录。",
-            "evidence_summary": "当前系统数据中没有找到匹配记录。Archived records 默认不包含在查询范围内。",
+            "evidence_summary": "当前系统数据中没有找到最终结果记录。",
             "detailed_answer": "请尝试使用 Project ID、Order No、Client Code、Project Name、Owner、状态或会议关键词重新搜索。",
             "not_found_or_limitations": "没有系统记录作为证据，因此未调用 AI 生成业务结论。",
         }
     if lang == "Bilingual Chinese and English":
         return {
-            "direct_answer": "搜索不到相关记录。 / No matching record was found.",
-            "evidence_summary": "当前系统数据中没有找到匹配记录。 / No matched record exists in the current system data. Archived records are excluded by default.",
+            "direct_answer": "搜索不到相关记录。 / No final answer record was found.",
+            "evidence_summary": "当前系统数据中没有找到最终结果记录。 / No final answer record exists in the current system data.",
             "detailed_answer": "Please try Project ID, Order No, Client Code, Project Name, Owner, status, or meeting keywords. / 请尝试使用项目编号、订单号、客户代码、项目名称、负责人、状态或会议关键词。",
             "not_found_or_limitations": "No system evidence was found, so no AI business conclusion was generated. / 没有系统记录作为证据，因此未生成业务结论。",
         }
     return {
-        "direct_answer": "No matching record was found.",
-        "evidence_summary": "No matched record exists in the current system data. Archived records are excluded by default.",
+        "direct_answer": "No final answer record was found.",
+        "evidence_summary": "No final answer record exists in the current system data.",
         "detailed_answer": "Please try Project ID, Order No, Client Code, Project Name, Owner, status, or meeting keywords.",
         "not_found_or_limitations": "No system evidence was found, so no AI business conclusion was generated.",
     }
@@ -1097,7 +1268,6 @@ def ask_ai_project_assistant(
 
     Important safety design:
     - Database writes are never performed here.
-    - Repositories are called with their default behaviour, which excludes archived records.
     - AI is called only after deterministic system-data retrieval.
     - If no system evidence is found, a not-found answer is returned without asking the model to infer.
     """
@@ -1118,13 +1288,22 @@ def ask_ai_project_assistant(
     meeting_question = _looks_like_meeting_question(question, scope)
     special_intent = _detect_special_intent(question)
 
-    if dashboard_question or special_intent in {"projects_with_orders", "projects_without_orders", "unlinked_operation_orders", "boss_summary"}:
+    if dashboard_question:
         dashboard_rows = _build_dashboard_rows()
 
     if special_intent in {"projects_with_orders", "projects_without_orders", "unlinked_operation_orders"}:
         records, metadata = _order_association_query(special_intent, scope=scope, record_type=record_type, limit=result_limit)
-        if not records and not dashboard_rows:
+        if not records:
             answer = _not_found_answer(output_language)
+            limitation_text, is_truncated, has_scope_limitations = _build_scope_limitations(
+                output_language=output_language,
+                records=[],
+                dashboard_rows=[],
+                metadata=metadata,
+                scope=scope,
+                record_type=record_type,
+            )
+            answer["not_found_or_limitations"] = limitation_text
             return {
                 "found": False,
                 "question": question,
@@ -1135,19 +1314,33 @@ def ask_ai_project_assistant(
                 "scope": scope,
                 "record_type": record_type,
                 "output_language": output_language,
+                "is_truncated": is_truncated,
+                "has_scope_limitations": has_scope_limitations,
             }
+        records = _dedupe_final_records(records, scope=scope)
         answer = _build_order_association_answer(special_intent, output_language=output_language, records=records, metadata=metadata)
+        limitation_text, is_truncated, has_scope_limitations = _build_scope_limitations(
+            output_language=output_language,
+            records=records,
+            dashboard_rows=[],
+            metadata=metadata,
+            scope=scope,
+            record_type=record_type,
+        )
+        answer["not_found_or_limitations"] = limitation_text
         return {
             "found": bool(records),
             "question": question,
             "answer": answer,
-            "source_summary": _source_summary(records, dashboard_rows, metadata),
+            "source_summary": _source_summary(records, [], metadata),
             "records": records,
-            "dashboard_rows": dashboard_rows,
+            "dashboard_rows": [],
             "scope": scope,
             "record_type": record_type,
             "output_language": output_language,
             "ai_error": "",
+            "is_truncated": is_truncated,
+            "has_scope_limitations": has_scope_limitations,
         }
 
     if special_intent == "boss_summary":
@@ -1164,6 +1357,15 @@ def ask_ai_project_assistant(
     # Dashboard-only questions are valid even when they do not return project rows.
     if not records and not dashboard_rows:
         answer = _not_found_answer(output_language)
+        limitation_text, is_truncated, has_scope_limitations = _build_scope_limitations(
+            output_language=output_language,
+            records=[],
+            dashboard_rows=[],
+            metadata=metadata,
+            scope=scope,
+            record_type=record_type,
+        )
+        answer["not_found_or_limitations"] = limitation_text
         return {
             "found": False,
             "question": question,
@@ -1174,10 +1376,11 @@ def ask_ai_project_assistant(
             "scope": scope,
             "record_type": record_type,
             "output_language": output_language,
+            "is_truncated": is_truncated,
+            "has_scope_limitations": has_scope_limitations,
         }
 
     evidence_payload = _prepare_ai_evidence(records, dashboard_rows, max_rows=result_limit)
-    source_summary = _source_summary(records, dashboard_rows, metadata)
 
     system_prompt = """
 You are the AI Project Assistant for Zenith Project Tracker System.
@@ -1188,11 +1391,10 @@ Role:
 - You must not create, update, delete, assume, or invent any business data.
 
 Hard rules:
-- Only use the provided dashboard_metrics and matched_records.
+- Only use the provided dashboard_metrics and system_records.
 - Do not invent project names, order numbers, clients, owners, dates, statuses, issues, next steps, decisions, suppliers, testing results, or links.
 - If the evidence does not contain the answer, say it is not found in current system records.
 - Do not recommend changing system records.
-- Archived records are excluded by default.
 - Give the direct answer first, then evidence-based details.
 - For order association answers, respect the system order-link rule evidence rather than guessing from wording.
 - For boss, client and history summaries, summarise only the evidence rows provided.
@@ -1203,8 +1405,15 @@ Return JSON only with exactly these keys:
   "direct_answer": "...",
   "evidence_summary": "...",
   "detailed_answer": "...",
-  "not_found_or_limitations": "..."
+  "not_found_or_limitations": "...",
+  "final_source_ids": ["Source ID values that directly satisfy the user's question"]
 }
+
+Important display rule:
+- final_source_ids must include only records that truly answer the user's question.
+- Do not include records that were merely checked or used as candidates.
+- Do not mention candidate record counts, checked record counts, or internal search counts in the user-facing answer.
+- Use "final answer records" rather than "matched records" when describing the result count.
 """
 
     user_prompt = json.dumps(
@@ -1213,10 +1422,10 @@ Return JSON only with exactly these keys:
             "requested_output_language": output_language,
             "search_scope": scope,
             "record_type_filter": record_type,
-            "source_summary": source_summary,
+            "search_context": {"query_mode": metadata.get("query_mode", "Natural Language Search")},
             "special_intent": special_intent,
             "evidence": evidence_payload,
-            "required_answer_style": "Direct answer first. Then summarize by Sales Board, Operation Board, Dashboard, Project Details, and Meeting Mode when applicable.",
+            "required_answer_style": "Direct answer first. Then summarize only the final answer records by Sales Board, Operation Board, Dashboard, Project Details, and Meeting Mode when applicable. Do not mention candidate records or internal checked records.",
         },
         ensure_ascii=False,
         indent=2,
@@ -1235,17 +1444,35 @@ Return JSON only with exactly these keys:
     for key in ["direct_answer", "evidence_summary", "detailed_answer", "not_found_or_limitations"]:
         answer[key] = clean_text(answer.get(key))
 
+    if records and special_intent == "natural_search":
+        final_records = _finalize_records_for_display(question=question, records=records, answer=answer, scope=scope)
+    else:
+        final_records = _dedupe_final_records(records, scope=scope)
+
+    limitation_text, is_truncated, has_scope_limitations = _build_scope_limitations(
+        output_language=output_language,
+        records=final_records,
+        dashboard_rows=dashboard_rows,
+        metadata=metadata,
+        scope=scope,
+        record_type=record_type,
+    )
+    answer["not_found_or_limitations"] = limitation_text
+    source_summary = _source_summary(final_records, dashboard_rows, metadata)
+
     return {
         "found": True,
         "question": question,
         "answer": answer,
         "source_summary": source_summary,
-        "records": records,
+        "records": final_records,
         "dashboard_rows": dashboard_rows,
         "scope": scope,
         "record_type": record_type,
         "output_language": output_language,
         "ai_error": ai_error,
+        "is_truncated": is_truncated,
+        "has_scope_limitations": has_scope_limitations,
     }
 
 
@@ -1284,7 +1511,7 @@ def build_text_export(result: dict[str, Any]) -> str:
         "AI Project Assistant Answer",
         "=" * 32,
         f"Generated At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "Archived Records: Excluded by default",
+        "",
         "",
         "Question:",
         clean_text(result.get("question")),
@@ -1292,13 +1519,13 @@ def build_text_export(result: dict[str, Any]) -> str:
         "Direct Answer:",
         clean_text(answer.get("direct_answer")),
         "",
-        "Evidence Summary:",
+        "Based on System Records:",
         clean_text(answer.get("evidence_summary")),
         "",
         "Detailed Answer:",
         clean_text(answer.get("detailed_answer")),
         "",
-        "Not Found / Limitations:",
+        "Search Scope and Limitations:",
         clean_text(answer.get("not_found_or_limitations")),
         "",
         "Source Summary:",
@@ -1308,7 +1535,7 @@ def build_text_export(result: dict[str, Any]) -> str:
 
     records = result.get("records") or []
     if records:
-        lines.extend(["", "Evidence Records:"])
+        lines.extend(["", "Final Answer Records:"])
         for index, record in enumerate(records, start=1):
             lines.append(
                 f"{index}. [{record.get('Source Module')}] {record.get('Record Type')} | "

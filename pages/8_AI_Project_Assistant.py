@@ -19,7 +19,6 @@ from services.ai_project_service import (
     dashboard_to_dataframe,
     dataframe_to_csv_bytes,
     records_to_dataframe,
-    source_summary_to_dataframe,
 )
 from ui.theme import apply_theme, render_page_header
 
@@ -114,7 +113,7 @@ def _render_css() -> None:
             }
             .zpa-grid {
                 display: grid;
-                grid-template-columns: repeat(4, minmax(0, 1fr));
+                grid-template-columns: repeat(3, minmax(0, 1fr));
                 gap: 0.65rem;
                 margin: 0.3rem 0 0.2rem 0;
             }
@@ -167,10 +166,9 @@ def _summary_grid(summary: dict[str, Any]) -> None:
         _html(
             f"""
             <div class="zpa-grid">
-                <div class="zpa-mini"><div class="zpa-mini-label">Matched Records</div><div class="zpa-mini-value">{_safe(summary.get("matched_records"))}</div></div>
+                <div class="zpa-mini"><div class="zpa-mini-label">Final Answer Records</div><div class="zpa-mini-value">{_safe(summary.get("final_answer_records"))}</div></div>
                 <div class="zpa-mini"><div class="zpa-mini-label">Sales</div><div class="zpa-mini-value">{_safe(summary.get("sales_records"))}</div></div>
                 <div class="zpa-mini"><div class="zpa-mini-label">Operation</div><div class="zpa-mini-value">{_safe(summary.get("operation_records"))}</div></div>
-                <div class="zpa-mini"><div class="zpa-mini-label">Archived</div><div class="zpa-mini-value">Excluded</div></div>
             </div>
             """
         ),
@@ -187,11 +185,11 @@ def _clean_frame_for_streamlit(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _render_records_by_module(frame: pd.DataFrame, module: str) -> None:
     if frame.empty or "Source Module" not in frame.columns:
-        st.info(f"No {module} evidence records found for this question.")
+        st.info(f"No final answer records in {module}.")
         return
     module_frame = frame[frame["Source Module"] == module]
     if module_frame.empty:
-        st.info(f"No {module} evidence records found for this question.")
+        st.info(f"No final answer records in {module}.")
         return
     st.dataframe(_clean_frame_for_streamlit(module_frame), use_container_width=True, hide_index=True)
 
@@ -200,7 +198,7 @@ def _combined_export_frame(records_frame: pd.DataFrame, dashboard_frame: pd.Data
     frames: list[pd.DataFrame] = []
     if not records_frame.empty:
         tmp = records_frame.copy()
-        tmp.insert(0, "Export Section", "Evidence Records")
+        tmp.insert(0, "Export Section", "Final Answer Records")
         frames.append(tmp.astype(str))
     if not dashboard_frame.empty:
         tmp = dashboard_frame.copy()
@@ -224,7 +222,7 @@ st.markdown(
     _html(
         """
         <div class="zpa-note">
-        This assistant only searches current system records. It does not change database records, does not update Meeting Prep, excludes archived records by default, and uses the existing Sales Board / Dashboard order-link rule for order association questions.
+        This assistant only searches current system records. It does not change database records, does not update Meeting Prep, and uses the existing Sales Board / Dashboard order-link rule for order association questions.
         </div>
         """
     ),
@@ -320,7 +318,6 @@ with right_col:
     summary = result.get("source_summary") or {}
     records_frame = records_to_dataframe(result.get("records") or [])
     dashboard_frame = dashboard_to_dataframe(result.get("dashboard_rows") or [])
-    summary_frame = source_summary_to_dataframe(summary)
     combined_frame = _combined_export_frame(records_frame, dashboard_frame)
 
     _answer_card(answer)
@@ -330,7 +327,7 @@ with right_col:
         _html(
             f"""
             <div class="zpa-card">
-                <div class="zpa-kicker">Evidence Summary</div>
+                <div class="zpa-kicker">Based on System Records</div>
                 <div class="zpa-meta">{_safe(answer.get("evidence_summary"))}</div>
                 <span class="zpa-chip">Scope: {_safe(result.get("scope"))}</span>
                 <span class="zpa-chip">Record Type: {_safe(result.get("record_type"))}</span>
@@ -347,17 +344,19 @@ with right_col:
             f"API message: {result.get('ai_error')}"
         )
 
-    if answer.get("not_found_or_limitations"):
-        st.markdown(
-            _html(
-                f"""
-                <div class="zpa-warning">
-                <b>Not Found / Limitations</b><br>{_safe(answer.get("not_found_or_limitations"))}
-                </div>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
+    limitation_text = answer.get("not_found_or_limitations") or "All records shown are from the current active system records."
+    limitation_class = "zpa-warning" if (not result.get("found") or result.get("is_truncated") or result.get("has_scope_limitations")) else "zpa-card"
+    st.markdown(
+        _html(
+            f"""
+            <div class="{limitation_class}">
+                <div class="zpa-kicker">Search Scope and Limitations</div>
+                <div class="zpa-meta">{_safe(limitation_text)}</div>
+            </div>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
 
     tab_answer, tab_sales, tab_operation, tab_dashboard, tab_detail, tab_meeting, tab_export = st.tabs(
         ["Answer", "Sales Board", "Operation Board", "Dashboard", "Project Details", "Meeting Mode", "Export"]
@@ -368,8 +367,10 @@ with right_col:
         st.write(answer.get("direct_answer") or "-")
         st.markdown("#### Detailed Answer")
         st.write(answer.get("detailed_answer") or "-")
-        st.markdown("#### Source Summary")
-        st.dataframe(_clean_frame_for_streamlit(summary_frame), use_container_width=True, hide_index=True)
+        st.markdown("#### Based on System Records")
+        st.write(answer.get("evidence_summary") or "The answer is based on the final records found in the current system data.")
+        st.markdown("#### Search Scope and Limitations")
+        st.write(limitation_text)
 
     with tab_sales:
         _render_records_by_module(records_frame, "Sales Board")
@@ -385,11 +386,11 @@ with right_col:
 
     with tab_detail:
         if records_frame.empty:
-            st.info("No Project Details or Project History evidence records found for this question.")
+            st.info("No final answer records in Project Details or Project History.")
         else:
             detail_frame = records_frame[records_frame["Source Module"].isin(["Sales Board", "Operation Board", "Project History"])] if "Source Module" in records_frame.columns else records_frame
             if detail_frame.empty:
-                st.info("No Project Details or Project History evidence records found for this question.")
+                st.info("No final answer records in Project Details or Project History.")
             else:
                 st.dataframe(_clean_frame_for_streamlit(detail_frame), use_container_width=True, hide_index=True)
 
@@ -397,8 +398,8 @@ with right_col:
         _render_records_by_module(records_frame, "Meeting Mode")
 
     with tab_export:
-        st.markdown("#### Export Answer and Evidence")
-        st.caption("Text export contains the AI answer and summary. CSV export contains the evidence rows used for the answer.")
+        st.markdown("#### Export Answer and Final Answer Records")
+        st.caption("Text export contains the AI answer and summary. CSV export contains only the final answer records shown on this page.")
 
         text_export = build_text_export(result)
         st.download_button(
@@ -410,18 +411,18 @@ with right_col:
         )
 
         if combined_frame.empty:
-            st.info("No CSV evidence is available for this search result.")
+            st.info("No CSV final answer records are available for this search result.")
         else:
             st.download_button(
-                "Download Evidence (.csv)",
+                "Download Final Answer Records (.csv)",
                 data=dataframe_to_csv_bytes(combined_frame),
-                file_name="ai_project_assistant_evidence.csv",
+                file_name="ai_project_assistant_final_records.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
 
         if not records_frame.empty:
-            st.markdown("##### Evidence Records Preview")
+            st.markdown("##### Final Answer Records Preview")
             st.dataframe(_clean_frame_for_streamlit(records_frame), use_container_width=True, hide_index=True)
         if not dashboard_frame.empty:
             st.markdown("##### Dashboard Metrics Preview")
