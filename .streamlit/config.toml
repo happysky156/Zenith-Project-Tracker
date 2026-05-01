@@ -1,6 +1,12 @@
 [server]
 headless = true
 
+[client]
+# Hide Streamlit developer options such as Clear cache from the app menu.
+# This prevents the Clear caches modal from being triggered accidentally
+# by the developer shortcut key while selecting/copying text in the app.
+toolbarMode = "viewer"
+
 [theme]
 primaryColor = "#C5161D"
 backgroundColor = "#F7F7F8"
