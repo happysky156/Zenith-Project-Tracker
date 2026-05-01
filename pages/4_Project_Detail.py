@@ -325,6 +325,13 @@ def _render_search_focus() -> tuple[str | None, str | None]:
     review_only = r2c2.checkbox("Review this week", value=st.session_state.get("detail_focus_review", False), key="detail_focus_review")
     meeting_pool_only = r2c3.checkbox("Meeting pool only", value=st.session_state.get("detail_focus_meeting_pool", False), key="detail_focus_meeting_pool")
     high_attention_only = r2c4.checkbox("High attention only", value=st.session_state.get("detail_focus_attention", False), key="detail_focus_attention")
+    # If a record has just been archived, enable "Include archived" on the next rerun.
+    # Do this before the checkbox widget is created. Streamlit does not allow
+    # assigning to a widget-backed session_state key after that widget has
+    # already been instantiated in the same run.
+    if st.session_state.pop("detail_force_include_archived", False):
+        st.session_state["detail_include_archived"] = True
+
     include_archived = r2c5.checkbox("Include archived", value=st.session_state.get("detail_include_archived", False), key="detail_include_archived")
 
     if type_filter == "Sales":
@@ -863,7 +870,9 @@ with st.expander("Advanced Record Control", expanded=False):
         if st.button("Archive this record", key=f"archive_{selected_type}_{selected_record_id}", disabled=not confirmed):
             result = set_record_archive_status(selected_type, selected_record_id, archived=True, operator=acting_user)
             if result.get("updated"):
-                st.session_state["detail_include_archived"] = True
+                # Set a non-widget flag now; the actual checkbox state is updated
+                # at the top of the next rerun before the checkbox is created.
+                st.session_state["detail_force_include_archived"] = True
                 st.rerun()
             else:
                 st.info(result.get("message", "No change."))
