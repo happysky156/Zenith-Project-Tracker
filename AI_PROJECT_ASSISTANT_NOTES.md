@@ -65,3 +65,12 @@ Display and export changes:
 - Search-scope wording is simplified to avoid implying that there are hidden extra results.
 - The assistant asks the AI model to return `final_source_ids`, then filters display/export records to those final records when available.
 - Duplicate records across board and meeting views are de-duplicated for final display, preferring board records unless the user specifically searches Meeting Mode.
+
+## v17.32 Display and Language Consistency Update
+
+- Strengthened output-language handling so the selected AI output language controls the narrative answer, even when the user's question is written in another language.
+- Added a safety fallback for English output when the model returns mixed Chinese/English narrative text.
+- Compacted Direct Answer / Detailed Answer formatting to remove excessive blank lines and standalone list-number spacing.
+- Sales Board and Operation Board tabs now display final answer records by Record Type, so Sales-type final records from Meeting Mode are still shown under Sales Board.
+- CSV export remains limited to Final Answer Records only.
+

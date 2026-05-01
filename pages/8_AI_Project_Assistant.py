@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 from textwrap import dedent
+import re
 from typing import Any
 
 import pandas as pd
@@ -42,6 +43,22 @@ def _safe(value: Any) -> str:
     return escape(str(value or "-"))
 
 
+def _compact_answer_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n[ \t]*\n+", "\n", text)
+    text = re.sub(r"(?m)^\s*(\d+)\.\s*\n\s*", r"\1. ", text)
+    text = re.sub(r"(?m)^\s*[-•]\s*\n\s*", "- ", text)
+    text = re.sub(r"(?m)^\s*(Sales Board|Operation Board|Dashboard|Project Details|Meeting Mode):\s*", r"\1:", text)
+    return text.strip()
+
+
+def _safe_compact(value: Any) -> str:
+    return escape(_compact_answer_text(value))
+
+
 def _render_css() -> None:
     st.markdown(
         _html(
@@ -77,7 +94,7 @@ def _render_css() -> None:
             .zpa-meta {
                 color: #444850;
                 font-size: 0.9rem;
-                line-height: 1.55;
+                line-height: 1.42;
                 white-space: pre-wrap;
             }
             .zpa-chip {
@@ -152,8 +169,8 @@ def _answer_card(answer: dict[str, Any]) -> None:
             f"""
             <div class="zpa-card zpa-answer">
                 <div class="zpa-kicker">Direct Answer</div>
-                <div class="zpa-title">{_safe(answer.get("direct_answer"))}</div>
-                <div class="zpa-meta">{_safe(answer.get("detailed_answer"))}</div>
+                <div class="zpa-title">{_safe_compact(answer.get("direct_answer"))}</div>
+                <div class="zpa-meta">{_safe_compact(answer.get("detailed_answer"))}</div>
             </div>
             """
         ),
@@ -184,10 +201,20 @@ def _clean_frame_for_streamlit(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _render_records_by_module(frame: pd.DataFrame, module: str) -> None:
-    if frame.empty or "Source Module" not in frame.columns:
+    if frame.empty:
         st.info(f"No final answer records in {module}.")
         return
-    module_frame = frame[frame["Source Module"] == module]
+
+    if module == "Sales Board" and "Record Type" in frame.columns:
+        module_frame = frame[frame["Record Type"] == "Sales"]
+    elif module == "Operation Board" and "Record Type" in frame.columns:
+        module_frame = frame[frame["Record Type"] == "Operation"]
+    elif "Source Module" in frame.columns:
+        module_frame = frame[frame["Source Module"] == module]
+    else:
+        st.info(f"No final answer records in {module}.")
+        return
+
     if module_frame.empty:
         st.info(f"No final answer records in {module}.")
         return
@@ -364,13 +391,13 @@ with right_col:
 
     with tab_answer:
         st.markdown("#### Direct Answer")
-        st.write(answer.get("direct_answer") or "-")
+        st.markdown(_compact_answer_text(answer.get("direct_answer") or "-"))
         st.markdown("#### Detailed Answer")
-        st.write(answer.get("detailed_answer") or "-")
+        st.markdown(_compact_answer_text(answer.get("detailed_answer") or "-"))
         st.markdown("#### Based on System Records")
-        st.write(answer.get("evidence_summary") or "The answer is based on the final records found in the current system data.")
+        st.markdown(_compact_answer_text(answer.get("evidence_summary") or "The answer is based on the final records found in the current system data."))
         st.markdown("#### Search Scope and Limitations")
-        st.write(limitation_text)
+        st.markdown(_compact_answer_text(limitation_text))
 
     with tab_sales:
         _render_records_by_module(records_frame, "Sales Board")

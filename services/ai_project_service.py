@@ -1202,6 +1202,154 @@ def _safe_language(output_language: str) -> str:
     return output_language if output_language in SUPPORTED_OUTPUT_LANGUAGES else "English"
 
 
+
+
+def _contains_cjk(text: Any) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", clean_text(text)))
+
+
+def _language_mismatch_for_output(answer: dict[str, Any], output_language: str) -> bool:
+    """Detect obvious narrative-language mismatch in model output.
+
+    This is a safety net for UI consistency. Project names, client codes and raw
+    system field values are still preserved in tables and exports.
+    """
+    lang = _safe_language(output_language)
+    if lang != "English":
+        return False
+    # English output should not have Chinese narrative in the core answer sections.
+    text = " ".join(clean_text(answer.get(key)) for key in ["direct_answer", "evidence_summary", "detailed_answer"])
+    return _contains_cjk(text)
+
+
+def _record_display_name(record: dict[str, Any]) -> str:
+    name = clean_text(record.get("Project Name")) or clean_text(record.get("Entity ID")) or clean_text(record.get("Project ID")) or clean_text(record.get("Order No")) or "Unnamed record"
+    project_id = clean_text(record.get("Project ID"))
+    order_no = clean_text(record.get("Order No"))
+    parts = [name]
+    if project_id:
+        parts.append(f"Project ID: {project_id}")
+    if order_no:
+        parts.append(f"Order: {order_no}")
+    return " (" + ", ".join(parts[1:]) + ")" if len(parts) > 1 and not name.startswith("(") else name
+
+
+def _format_record_line(record: dict[str, Any], *, lang: str) -> str:
+    name = clean_text(record.get("Project Name")) or clean_text(record.get("Entity ID")) or clean_text(record.get("Project ID")) or clean_text(record.get("Order No")) or "Unnamed record"
+    project_id = clean_text(record.get("Project ID"))
+    order_no = clean_text(record.get("Order No"))
+    owner = clean_text(record.get("Current Owner"))
+    phase = clean_text(record.get("Phase"))
+    health = clean_text(record.get("Health Status"))
+    next_step_owner = clean_text(record.get("Next Step Owner"))
+    target_date = clean_text(record.get("Target Date"))
+    issue = clean_text(record.get("Main Issue") or record.get("Need From Meeting") or record.get("Meeting Focus Reason") or record.get("Next Step"))
+
+    if lang == "Chinese":
+        bits = [name]
+        if project_id:
+            bits.append(f"Project ID: {project_id}")
+        if order_no:
+            bits.append(f"Order: {order_no}")
+        if owner:
+            bits.append(f"负责人: {owner}")
+        if phase:
+            bits.append(f"阶段: {phase}")
+        if health:
+            bits.append(f"状态: {health}")
+        if next_step_owner:
+            bits.append(f"下一步负责人: {next_step_owner}")
+        if target_date:
+            bits.append(f"目标日期: {target_date}")
+        if issue:
+            bits.append(f"依据: {issue}")
+        return "；".join(bits) + "。"
+
+    bits = [name]
+    if project_id:
+        bits.append(f"Project ID: {project_id}")
+    if order_no:
+        bits.append(f"Order: {order_no}")
+    if owner:
+        bits.append(f"Owner: {owner}")
+    if phase:
+        bits.append(f"Phase: {phase}")
+    if health:
+        bits.append(f"Health: {health}")
+    if next_step_owner:
+        bits.append(f"Next Step Owner: {next_step_owner}")
+    if target_date:
+        bits.append(f"Target Date: {target_date}")
+    if issue:
+        bits.append(f"Evidence: {issue}")
+    return "; ".join(bits) + "."
+
+
+def _build_language_safe_final_answer(
+    *,
+    question: str,
+    output_language: str,
+    final_records: list[dict[str, Any]],
+    dashboard_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    lang = _safe_language(output_language)
+    count = len(final_records)
+    metric_count = len(dashboard_rows)
+
+    sales = [row for row in final_records if clean_text(row.get("Record Type")) == "Sales"]
+    operation = [row for row in final_records if clean_text(row.get("Record Type")) == "Operation"]
+
+    names = [clean_text(row.get("Project Name")) or clean_text(row.get("Entity ID")) or clean_text(row.get("Project ID")) or clean_text(row.get("Order No")) for row in final_records]
+    names = [name for name in names if name]
+    name_text = ", ".join(names[:12])
+
+    if lang == "Chinese":
+        direct = f"根据当前系统记录，本次查询共有 {count} 条最终结果。" + (f" 包括：{name_text}。" if name_text else "")
+        details: list[str] = []
+        if sales:
+            details.append("Sales Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang=lang)}" for idx, row in enumerate(sales, start=1)))
+        if operation:
+            details.append("Operation Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang=lang)}" for idx, row in enumerate(operation, start=1)))
+        if not details and dashboard_rows:
+            details.append("Dashboard:\n" + "\n".join(f"- {row.get('Metric')}: {row.get('Value')}" for row in dashboard_rows))
+        detailed = "\n\n".join(details) if details else "未找到可显示的最终记录。"
+        evidence = "答案基于当前系统数据中的最终结果记录。"
+    elif lang == "Bilingual Chinese and English":
+        direct = (
+            f"根据当前系统记录，本次查询共有 {count} 条最终结果。 / "
+            f"Based on current system records, this query returned {count} final answer record(s)."
+            + (f" Records / 记录: {name_text}." if name_text else "")
+        )
+        details = []
+        if sales:
+            details.append("Sales Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(sales, start=1)))
+        if operation:
+            details.append("Operation Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(operation, start=1)))
+        if not details and dashboard_rows:
+            details.append("Dashboard:\n" + "\n".join(f"- {row.get('Metric')}: {row.get('Value')}" for row in dashboard_rows))
+        detailed = "\n\n".join(details) if details else "未找到可显示的最终记录。 / No final records are available for display."
+        evidence = "答案基于当前系统数据中的最终结果记录。 / The answer is based on the final records found in the current system data."
+    else:
+        direct = f"Based on current system records, this query returned {count} final answer record(s)." + (f" Records: {name_text}." if name_text else "")
+        details = []
+        if sales:
+            details.append("Sales Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(sales, start=1)))
+        if operation:
+            details.append("Operation Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(operation, start=1)))
+        if not details and dashboard_rows:
+            details.append("Dashboard:\n" + "\n".join(f"- {row.get('Metric')}: {row.get('Value')}" for row in dashboard_rows))
+        detailed = "\n\n".join(details) if details else f"Dashboard metrics returned: {metric_count}."
+        evidence = "The answer is based on the final records found in the current system data."
+
+    return {
+        "direct_answer": direct,
+        "evidence_summary": evidence,
+        "detailed_answer": detailed,
+        "not_found_or_limitations": "",
+        "final_source_ids": [clean_text(row.get("Source ID")) for row in final_records if clean_text(row.get("Source ID"))],
+    }
+
+
 def _fallback_answer(*, question: str, output_language: str, records: list[dict[str, Any]], dashboard_rows: list[dict[str, Any]]) -> dict[str, Any]:
     lang = _safe_language(output_language)
     count = len(records)
@@ -1400,6 +1548,12 @@ Hard rules:
 - For boss, client and history summaries, summarise only the evidence rows provided.
 - Keep the reply clear, concise, and complete.
 
+Language rule:
+- The requested_output_language value is mandatory and overrides the language of the user's question.
+- If requested_output_language is "English", write all narrative text, labels, explanations and summaries in English only. Do not mix Chinese narrative into the answer. Keep project names, order numbers, client codes and raw system field values unchanged when needed.
+- If requested_output_language is "Chinese", write the narrative text in Simplified Chinese. Keep project names, order numbers and client codes unchanged.
+- If requested_output_language is "Bilingual Chinese and English", provide a clearly bilingual answer rather than random mixed-language text.
+
 Return JSON only with exactly these keys:
 {
   "direct_answer": "...",
@@ -1425,7 +1579,10 @@ Important display rule:
             "search_context": {"query_mode": metadata.get("query_mode", "Natural Language Search")},
             "special_intent": special_intent,
             "evidence": evidence_payload,
-            "required_answer_style": "Direct answer first. Then summarize only the final answer records by Sales Board, Operation Board, Dashboard, Project Details, and Meeting Mode when applicable. Do not mention candidate records or internal checked records.",
+            "required_answer_style": (
+                "Direct answer first. Then summarize only the final answer records by Sales Board, Operation Board, Dashboard, Project Details, and Meeting Mode when applicable. "
+                "Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
+            ),
         },
         ensure_ascii=False,
         indent=2,
@@ -1457,6 +1614,16 @@ Important display rule:
         scope=scope,
         record_type=record_type,
     )
+
+    if _language_mismatch_for_output(answer, output_language):
+        safe_answer = _build_language_safe_final_answer(
+            question=question,
+            output_language=output_language,
+            final_records=final_records,
+            dashboard_rows=dashboard_rows,
+        )
+        answer.update(safe_answer)
+
     answer["not_found_or_limitations"] = limitation_text
     source_summary = _source_summary(final_records, dashboard_rows, metadata)
 
