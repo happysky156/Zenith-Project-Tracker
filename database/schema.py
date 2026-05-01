@@ -14,6 +14,12 @@ SALES_CORE_COLUMNS_SQL = """
     category TEXT,
     priority TEXT,
     reference_link TEXT,
+    meeting_reference_link_1_label TEXT,
+    meeting_reference_link_1_url TEXT,
+    meeting_reference_link_2_label TEXT,
+    meeting_reference_link_2_url TEXT,
+    meeting_reference_link_3_label TEXT,
+    meeting_reference_link_3_url TEXT,
     source_file TEXT,
     created_at TEXT NOT NULL,
 
@@ -65,6 +71,12 @@ OPERATION_CORE_COLUMNS_SQL = """
     project_id TEXT NOT NULL,
     client_code TEXT NOT NULL,
     reference_link TEXT,
+    meeting_reference_link_1_label TEXT,
+    meeting_reference_link_1_url TEXT,
+    meeting_reference_link_2_label TEXT,
+    meeting_reference_link_2_url TEXT,
+    meeting_reference_link_3_label TEXT,
+    meeting_reference_link_3_url TEXT,
     source_file TEXT,
     created_at TEXT NOT NULL,
 
@@ -332,6 +344,16 @@ def init_db(force: bool = False) -> None:
     _ensure_column(cur, "meeting_snapshots_v2", "meeting_note", "TEXT")
     _ensure_column(cur, "import_batches", "import_type", "TEXT")
     _ensure_column(cur, "import_file_archive", "content_type", "TEXT")
+
+    # Meeting Mode reference links: fixed three link slots per Sales / Operation record.
+    # Safe additive migrations only; existing business/data logic is not changed.
+    for table_name in ["sales_projects", "operation_orders"]:
+        _ensure_column(cur, table_name, "meeting_reference_link_1_label", "TEXT")
+        _ensure_column(cur, table_name, "meeting_reference_link_1_url", "TEXT")
+        _ensure_column(cur, table_name, "meeting_reference_link_2_label", "TEXT")
+        _ensure_column(cur, table_name, "meeting_reference_link_2_url", "TEXT")
+        _ensure_column(cur, table_name, "meeting_reference_link_3_label", "TEXT")
+        _ensure_column(cur, table_name, "meeting_reference_link_3_url", "TEXT")
 
     _seed_default_app_users(cur)
 

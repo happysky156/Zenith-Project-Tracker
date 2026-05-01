@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 from html import escape
 from textwrap import dedent
 
@@ -21,6 +22,7 @@ from services.meeting_service import (
     get_boss_view_rows,
     get_team_view_rows,
     save_meeting_followup,
+    save_meeting_reference_links,
 )
 from ui.theme import apply_theme, render_badges, render_page_header
 
@@ -426,6 +428,58 @@ def _active_filter_html(active_filter: str, visible_count: int, meeting_type: st
     return f"<div class='zt-meeting-active-filter'><b>Showing</b>{badges}</div>"
 
 
+def _meeting_result_label(row: dict) -> str:
+    entity_id = _plain(row.get("entity_id") or row.get("display_id"), empty="-")
+    title = _plain(row.get("display_title") or row.get("project_name") or row.get("linked_project_name"), empty="-")
+    client = _plain(row.get("client_code"), empty="-")
+    owner = _plain(row.get("next_step_owner") or row.get("current_owner"), empty="-")
+    health = _plain(row.get("health_status"), empty="-")
+    return f"{entity_id} — {title} | {client} | {owner} | {health}"
+
+
+def _meeting_results_key(rows: list[dict], active_filter: str, meeting_type: str, owner: str, status: str, query: str) -> str:
+    row_signature = "|".join(
+        f"{row.get('entity_type')}:{row.get('entity_id') or row.get('display_id')}"
+        for row in rows[:80]
+    )
+    raw = f"{active_filter}|{meeting_type}|{owner}|{status}|{query}|{row_signature}"
+    return "meeting_selected_result_" + hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _normalise_link_url(value: object) -> str:
+    url = _plain(value)
+    if not url:
+        return ""
+    lowered = url.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return url
+    return "https://" + url
+
+
+def _render_link_or_disabled_button(label: str, url: object, key: str, help_text: str | None = None) -> None:
+    normalised_url = _normalise_link_url(url)
+    if normalised_url:
+        st.link_button(
+            label,
+            normalised_url,
+            use_container_width=True,
+            type="secondary",
+            help=help_text,
+        )
+    else:
+        st.button(
+            label,
+            key=key,
+            use_container_width=True,
+            disabled=True,
+            help=help_text or "No link available.",
+        )
+
+
+def _meeting_reference_button_label(row: dict, index: int) -> str:
+    return _plain(row.get(f"meeting_reference_link_{index}_label"), empty=f"Meeting Ref {index}")
+
+
 def _apply_meeting_mode_css() -> None:
     st.markdown(
         _html(
@@ -798,10 +852,8 @@ export_rows = _build_export_rows(meeting_view, display_rows)
 minutes_text = generate_meeting_minutes_text(export_rows, meeting_view)
 followup_df = build_followup_export_dataframe(export_rows)
 
-st.markdown(
-    _active_filter_html(active_filter, len(display_rows), meeting_type_filter, owner_filter, status_filter, search_query),
-    unsafe_allow_html=True,
-)
+# The previous "Showing" status strip is intentionally hidden.
+# The active filter is now reflected by the selected KPI card and Search results dropdown.
 
 # Keep the meeting workspace clean after saving follow-up updates.
 # Follow-up save actions auto-close the editor without showing a large success banner.
@@ -858,9 +910,20 @@ if not display_rows:
     st.info(f"No items found for: {active_filter}.")
     st.stop()
 
-_section_head("Meeting list", f"Project meeting cards ({len(display_rows)} items)")
+_section_head("Meeting list", f"Search results ({len(display_rows)} items)")
 
-for row in display_rows:
+selected_index = st.selectbox(
+    "Search results",
+    options=list(range(len(display_rows))),
+    index=0,
+    format_func=lambda idx: _meeting_result_label(display_rows[idx]),
+    key=_meeting_results_key(display_rows, active_filter, meeting_type_filter, owner_filter, status_filter, search_query),
+    help="Select one item from the current Meeting Mode filter result. The selected item opens automatically below.",
+)
+st.caption("Selected record opens automatically below. This does not change any project data.")
+selected_row = display_rows[int(selected_index)]
+
+for row in [selected_row]:
     entity_id = row.get("entity_id") or row.get("display_id")
     if not entity_id:
         continue
@@ -883,14 +946,67 @@ for row in display_rows:
         followup_open_key = f"meeting_followup_open_{row['entity_type']}_{entity_id}"
         is_followup_open = bool(st.session_state.get(followup_open_key, False))
         toggle_label = "Hide Meeting Follow-up" if is_followup_open else "Open Meeting Follow-up"
-        if st.button(
-            toggle_label,
-            key=f"toggle_followup_{row['entity_type']}_{entity_id}",
-            use_container_width=False,
-            help="Open or hide the meeting follow-up editor for this item.",
-        ):
-            _toggle_followup(row["entity_type"], str(entity_id))
-            st.rerun()
+
+        link_cols = st.columns([1.35, 1.05, 1.05, 1.05, 1.05])
+        with link_cols[0]:
+            if st.button(
+                toggle_label,
+                key=f"toggle_followup_{row['entity_type']}_{entity_id}",
+                use_container_width=True,
+                help="Open or hide the meeting follow-up editor for this item.",
+            ):
+                _toggle_followup(row["entity_type"], str(entity_id))
+                st.rerun()
+        with link_cols[1]:
+            _render_link_or_disabled_button(
+                "Project Link",
+                row.get("reference_link"),
+                key=f"project_link_disabled_{row['entity_type']}_{entity_id}",
+                help_text="Open the Project Details Reference Link. Edit this link in Project Details, not Meeting Mode.",
+            )
+        for idx, col in enumerate(link_cols[2:], start=1):
+            with col:
+                _render_link_or_disabled_button(
+                    _meeting_reference_button_label(row, idx),
+                    row.get(f"meeting_reference_link_{idx}_url"),
+                    key=f"meeting_ref_disabled_{idx}_{row['entity_type']}_{entity_id}",
+                    help_text=f"Open Meeting Reference Link {idx}. Edit these links in Meeting Mode.",
+                )
+
+        with st.expander("Edit Meeting Reference Links", expanded=False):
+            st.caption("Up to 3 links can be saved for this Sales / Operation record. Project Link is read from Project Details and is not edited here.")
+            with st.form(key=f"meeting_reference_links_form_{row['entity_type']}_{entity_id}"):
+                meeting_reference_links = []
+                for idx in range(1, 4):
+                    ref_cols = st.columns([0.9, 2.2])
+                    with ref_cols[0]:
+                        ref_label = st.text_input(
+                            f"Link {idx} Label",
+                            value=row.get(f"meeting_reference_link_{idx}_label") or "",
+                            key=f"meeting_ref_label_{idx}_{row['entity_type']}_{entity_id}",
+                            placeholder=f"Meeting Ref {idx}",
+                        )
+                    with ref_cols[1]:
+                        ref_url = st.text_input(
+                            f"Link {idx} URL",
+                            value=row.get(f"meeting_reference_link_{idx}_url") or "",
+                            key=f"meeting_ref_url_{idx}_{row['entity_type']}_{entity_id}",
+                            placeholder="https://...",
+                        )
+                    meeting_reference_links.append({"label": ref_label, "url": ref_url})
+                ref_submitted = st.form_submit_button("Save Meeting Reference Links", use_container_width=True, type="secondary")
+
+            if ref_submitted:
+                result = save_meeting_reference_links(
+                    entity_type=row["entity_type"],
+                    entity_id=str(entity_id),
+                    links=meeting_reference_links,
+                    operator=acting_user,
+                    source_page="Meeting Mode",
+                )
+                if result.get("updated"):
+                    _upsert_session_row(meeting_view, result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
+                st.rerun()
 
         if is_followup_open:
             with st.container(border=True):

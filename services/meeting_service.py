@@ -369,6 +369,92 @@ def save_meeting_followup(
 
 
 
+def _normalize_meeting_reference_value(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def save_meeting_reference_links(
+    entity_type: str,
+    entity_id: str,
+    links: list[dict[str, Any]],
+    operator: str = "",
+    source_page: str = "Meeting Mode",
+) -> dict[str, Any]:
+    """Save up to three Meeting Reference Links for one Sales/Operation record.
+
+    UI-only feature support: this does not change meeting action/status logic.
+    It only stores fixed link slots on the current record and writes an event log.
+    """
+    record = _record_as_dict(entity_type, entity_id)
+
+    candidate_updates: dict[str, Any] = {}
+    for idx in range(1, 4):
+        link = links[idx - 1] if idx - 1 < len(links) else {}
+        candidate_updates[f"meeting_reference_link_{idx}_label"] = _normalize_meeting_reference_value(link.get("label"))
+        candidate_updates[f"meeting_reference_link_{idx}_url"] = _normalize_meeting_reference_value(link.get("url"))
+
+    changed_fields = [
+        field
+        for field, value in candidate_updates.items()
+        if (record.get(field) or None) != value
+    ]
+    if not changed_fields:
+        return {"updated": False, "message": "No change in meeting reference links."}
+
+    now = now_iso()
+    updates = dict(candidate_updates)
+    updates.update(
+        {
+            "last_event": "Meeting Reference Links Updated",
+            "last_updated_by": operator,
+        }
+    )
+
+    if entity_type == "Sales":
+        update_sales_project_fields(entity_id, updates)
+    else:
+        update_operation_order_fields(entity_id, updates)
+
+    record_after = _record_as_dict(entity_type, entity_id)
+    link_labels: list[str] = []
+    for idx in range(1, 4):
+        label = record_after.get(f"meeting_reference_link_{idx}_label") or f"Meeting Ref {idx}"
+        url = record_after.get(f"meeting_reference_link_{idx}_url")
+        if url:
+            link_labels.append(str(label))
+
+    insert_event_log(
+        {
+            "event_id": new_event_id(),
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "project_id": record_after.get("project_id") if entity_type == "Operation" else entity_id,
+            "order_no": entity_id if entity_type == "Operation" else None,
+            "event_time": now,
+            "event_type": "Meeting Reference Links Updated",
+            "event_group": "Meeting",
+            "old_phase": record.get("phase"),
+            "new_phase": record_after.get("phase"),
+            "old_health": record.get("health_status"),
+            "new_health": record_after.get("health_status"),
+            "old_result": record.get("result_status"),
+            "new_result": record_after.get("result_status"),
+            "round_change": None,
+            "operator": operator,
+            "event_note": "Updated links: " + (", ".join(link_labels) if link_labels else "cleared"),
+            "source_page": source_page,
+        }
+    )
+
+    return {
+        "updated": True,
+        "message": "Meeting reference links saved.",
+        "changed_fields": changed_fields,
+        "row": _decorate_meeting_record(record_after, entity_type, entity_id),
+    }
+
+
 def generate_weekly_snapshot(rows: list[dict[str, Any]]) -> int:
     count = 0
     for row in rows:
