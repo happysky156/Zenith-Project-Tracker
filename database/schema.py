@@ -585,7 +585,10 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users(email)",
     "CREATE INDEX IF NOT EXISTS idx_app_user_sessions_email ON app_user_sessions(email)",
     "CREATE INDEX IF NOT EXISTS idx_app_user_sessions_expires ON app_user_sessions(expires_at)",
+]
 
+
+EXTENSION_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_supplier_details_code ON supplier_details(supplier_code)",
     "CREATE INDEX IF NOT EXISTS idx_supplier_details_name ON supplier_details(supplier_name)",
     "CREATE INDEX IF NOT EXISTS idx_project_items_project ON project_items(project_id)",
@@ -681,9 +684,9 @@ def init_db(force: bool = False) -> None:
     execute(cur, APP_USERS_SQL)
     execute(cur, APP_USER_SESSIONS_SQL)
 
-    # Extension tables: additive only, no changes to core Sales/Operation logic.
-    for sql in EXTENSION_TABLE_SQL:
-        execute(cur, sql)
+    # Keep application startup light: extension tables are initialised lazily
+    # by services.upgrade_service.ensure_ready() when an extension page/import is used.
+    # This avoids blocking the main Dashboard/login page on Streamlit Cloud.
 
     # Safe additive migrations for already-created databases.
     _ensure_column(cur, "sales_projects", "support_from", "TEXT")
@@ -718,3 +721,24 @@ def init_db(force: bool = False) -> None:
     conn.commit()
     conn.close()
     _INIT_DONE = True
+
+def init_extension_db(force: bool = False) -> None:
+    """Initialise additive extension tables only when extension modules are used.
+
+    The core app calls init_db() during login/session checks. Keeping extension
+    schema work out of that startup path makes Streamlit Cloud cold starts safer
+    and preserves the original Sales/Operation behaviour.
+    """
+    # Ensure the original core schema exists first, but do not force it unless
+    # explicitly requested.
+    init_db(force=force)
+
+    conn = get_connection()
+    cur = conn.cursor()
+    for sql in EXTENSION_TABLE_SQL:
+        execute(cur, sql)
+    for sql in EXTENSION_INDEX_SQL:
+        execute(cur, sql)
+    conn.commit()
+    conn.close()
+
