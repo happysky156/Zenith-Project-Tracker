@@ -114,7 +114,7 @@ def render_upgrade_css() -> None:
     )
 
 
-def render_upgrade_intro(title: str, description: str, kicker: str = "v18 Extension") -> None:
+def render_upgrade_intro(title: str, description: str, kicker: str = "Extension Module") -> None:
     st.markdown(
         _html(
             f"""

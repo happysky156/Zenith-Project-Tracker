@@ -681,7 +681,7 @@ def init_db(force: bool = False) -> None:
     execute(cur, APP_USERS_SQL)
     execute(cur, APP_USER_SESSIONS_SQL)
 
-    # v18 extension tables: additive only, no changes to core Sales/Operation logic.
+    # Extension tables: additive only, no changes to core Sales/Operation logic.
     for sql in EXTENSION_TABLE_SQL:
         execute(cur, sql)
 

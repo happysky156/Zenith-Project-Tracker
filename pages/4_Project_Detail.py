@@ -829,7 +829,7 @@ with meeting_tab:
                         st.info(result["message"])
 
 
-# v18 extension tabs. These are read-only summary/detail views over new extension tables.
+# Extension tabs. These are read-only summary/detail views over new extension tables.
 # They do not modify the original Sales / Operation core workflow.
 ext_project_id = selected_record_id if selected_type == "Sales" else detail.get("project_id")
 if selected_type == "Sales":

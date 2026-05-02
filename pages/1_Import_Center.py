@@ -333,14 +333,14 @@ _render_import_file_archive()
 
 
 # -----------------------------------------------------------------------------
-# v18 extension import layer. This is additive and does not change the existing
+# Extension import layer. This is additive and does not change the existing
 # Sales / Operation import workflow below.
 # -----------------------------------------------------------------------------
 import_mode = st.radio(
     "Import Center Mode",
-    options=["Core Sales / Operation", "Project ID Create", "v18 Extension Import"],
+    options=["Core Sales / Operation", "Project ID Create", "Extension Import"],
     horizontal=True,
-    help="Core import keeps the original workflow. v18 Extension Import writes only to new extension tables.",
+    help="Core import keeps the original workflow. Extension Import writes only to new extension tables.",
 )
 
 if import_mode == "Project ID Create":
@@ -351,7 +351,7 @@ if import_mode == "Project ID Create":
                 <div class='zi-section-kicker'>Project ID Create</div>
                 <div class='zi-workflow-title'>Generate the next non-duplicate Project ID</div>
                 <div class='zi-workflow-text'>
-                    The generator checks active and archived records across Sales, Operation and v18 extension tables.
+                    The generator checks active and archived records across Sales, Operation and extension tables.
                     It does not create or overwrite any project record.
                 </div>
             </div>
@@ -378,15 +378,15 @@ if import_mode == "Project ID Create":
         st.code(str(result.get("project_id")), language=None)
     st.stop()
 
-if import_mode == "v18 Extension Import":
+if import_mode == "Extension Import":
     st.markdown(
         _html(
             """
             <div class='zi-workflow-card'>
-                <div class='zi-section-kicker'>v18 Extension Import</div>
+                <div class='zi-section-kicker'>Extension Import</div>
                 <div class='zi-workflow-title'>Import new module data without touching core Sales / Operation logic</div>
                 <div class='zi-workflow-text'>
-                    This import writes only to v18 extension tables such as Supplier Details, Project Items,
+                    This import writes only to extension tables such as Supplier Details, Project Items,
                     Price Comparison, Client Quotation, Index Center, Order Details, Order Costs and Sample Tracking.
                 </div>
             </div>
@@ -396,11 +396,11 @@ if import_mode == "v18 Extension Import":
     )
     meta_col1, meta_col2, meta_col3 = st.columns([1.15, 1, 1.25])
     with meta_col1:
-        v18_module = st.selectbox("v18 Module", options=list(V18_MODULES.keys()))
+        v18_module = st.selectbox("Module", options=list(V18_MODULES.keys()))
     with meta_col2:
         st.text_input("Imported by", value=operator, disabled=True, key="v18_imported_by")
     with meta_col3:
-        v18_uploaded_file = st.file_uploader("Upload v18 Excel file", type=["xlsx", "xls"], key="v18_upload")
+        v18_uploaded_file = st.file_uploader("Upload Extension Excel file", type=["xlsx", "xls"], key="v18_upload")
 
     with st.expander("Required fields and field guide", expanded=False):
         guide = [
@@ -415,7 +415,7 @@ if import_mode == "v18 Extension Import":
         render_project_table(guide, ["field_name", "display_name", "required", "description"], enable_jump=False)
 
     if not v18_uploaded_file:
-        st.markdown("<div class='zi-empty'>Upload an Excel file to start v18 extension import.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='zi-empty'>Upload an Excel file to start Extension Import.</div>", unsafe_allow_html=True)
         st.stop()
 
     try:
@@ -460,7 +460,7 @@ if import_mode == "v18 Extension Import":
         _html(
             f"""
             <div class='zi-validation-panel'>
-                <div class='zi-section-title'>v18 Import validation</div>
+                <div class='zi-section-title'>Import validation</div>
                 <div class='zi-section-subtitle'>This preview does not touch core Sales / Operation records.</div>
                 <div class='zi-validation-grid'>
                     {_validation_card('Total Input Records', int(v18_validation.get('total') or 0), '#111111')}
@@ -477,7 +477,7 @@ if import_mode == "v18 Extension Import":
         for msg in list(v18_validation.get("errors") or [])[:80]:
             st.error(msg)
 
-    _section_head("v18 Import preview", "Preview records before confirming the extension import.")
+    _section_head("Import preview", "Preview records before confirming the extension import.")
     preview_columns = [f for f in v18_required_fields(v18_module) + v18_field_names(v18_module)[:8] if f in v18_mapped_df.columns]
     preview_columns = list(dict.fromkeys(preview_columns + ["source_file", "_source_row_number"]))
     render_project_table(v18_mapped_df.to_dict(orient="records"), preview_columns, empty_message="Nothing to preview.", enable_jump=False)
@@ -486,7 +486,7 @@ if import_mode == "v18 Extension Import":
         st.error("Please fix the listed errors before importing.")
         st.stop()
 
-    if st.button("Confirm v18 Extension Import", type="primary"):
+    if st.button("Confirm Extension Import", type="primary"):
         result = v18_import_module_dataframe(v18_mapped_df, v18_module, operator=operator, source_file=v18_uploaded_file.name)
         try:
             archive_uploaded_import_file(v18_uploaded_file, import_type=v18_module, uploaded_by=operator)

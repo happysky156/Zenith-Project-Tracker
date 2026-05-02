@@ -952,7 +952,7 @@ def import_module_dataframe(mapped_df: pd.DataFrame, module_name: str, operator:
             "new_count": inserted,
             "update_count": updated,
             "failed_count": failed,
-            "notes": "; ".join(errors[:5]) if errors else "v18 extension import",
+            "notes": "; ".join(errors[:5]) if errors else "extension import",
         }
     )
     return {"inserted": inserted, "updated": updated, "failed": failed, "errors_count": len(errors)}

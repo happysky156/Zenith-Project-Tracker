@@ -218,9 +218,9 @@ This version refines the AI assistant logic:
 - Existing non-empty fields are not selected for overwrite by default.
 - Confirm applies only selected fields through the existing detail update/event log pathway.
 
-## v18 extension layer: quotation, supplier, index, order cost and sample tracking
+## Extension layer: quotation, supplier, index, order cost and sample tracking
 
-This package adds a v18 extension layer while keeping the original Sales / Operation business logic unchanged.
+This package adds an extension layer while keeping the original Sales / Operation business logic unchanged.
 
 ### New left-side pages
 
@@ -237,7 +237,7 @@ Import Center now has three modes:
 
 1. Core Sales / Operation — original workflow, unchanged.
 2. Project ID Create — generates the next non-duplicate Project ID, including archived records and extension tables.
-3. v18 Extension Import — imports only into new extension tables.
+3. Extension Import — imports only into new extension tables.
 
 ### New extension tables
 
@@ -295,7 +295,7 @@ The included workflow is:
 
 The script currently seeds the fixed index list and carries forward missing values. External parsers should be added only after the company confirms fixed data sources for FX, metals, plastics and freight.
 
-### Default v18 indices
+### Default market indices
 
 - USD/CNY
 - Stainless Steel 304

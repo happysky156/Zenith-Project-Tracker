@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 """
-v18 Daily Index Fetch
+Daily Index Fetch
 ---------------------
 Recommended deployment pattern for Streamlit Cloud:
 - GitHub Actions runs this script every day.
 - The script writes one daily row per configured index into Supabase/PostgreSQL.
 - Streamlit only displays, confirms, or manually overrides values.
 
-Current v18.0 behaviour is deliberately conservative:
+Current behaviour is deliberately conservative:
 - It seeds the fixed index list if missing.
 - It carries forward yesterday's value for any active index that does not have a new value.
 - External parsers can be added inside fetch_external_value() for fixed sources.
@@ -34,7 +34,7 @@ from services.upgrade_service import carry_forward_daily_indices, list_module_re
 def fetch_external_value(config: dict[str, Any]) -> tuple[float | None, str | None]:
     """Return (value, error_message).
 
-    v18.0 keeps automatic web parsing off by default because material/FX pages can
+    Automatic web parsing stays off by default because material/FX pages can
     change format or require subscriptions. Add fixed-source parsers here after
     your team confirms the exact source and field to read.
     """
