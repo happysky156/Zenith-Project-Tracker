@@ -18,6 +18,17 @@ from services.import_service import (
     read_uploaded_excel,
 )
 from services.validation_service import require_required_columns
+from services.upgrade_service import (
+    MODULES as V18_MODULES,
+    apply_import_mapping as v18_apply_import_mapping,
+    field_names as v18_field_names,
+    field_display_map as v18_field_display_map,
+    generate_next_project_id,
+    guess_mapping as v18_guess_mapping,
+    import_module_dataframe as v18_import_module_dataframe,
+    required_fields as v18_required_fields,
+    validate_import_dataframe as v18_validate_import_dataframe,
+)
 from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_page_header
 from utils.excel import guess_default_mapping
@@ -318,6 +329,174 @@ def _render_import_file_archive() -> None:
                         st.warning(f"Could not prepare download: {exc}")
 _render_import_css()
 _render_import_file_archive()
+
+
+
+# -----------------------------------------------------------------------------
+# v18 extension import layer. This is additive and does not change the existing
+# Sales / Operation import workflow below.
+# -----------------------------------------------------------------------------
+import_mode = st.radio(
+    "Import Center Mode",
+    options=["Core Sales / Operation", "Project ID Create", "v18 Extension Import"],
+    horizontal=True,
+    help="Core import keeps the original workflow. v18 Extension Import writes only to new extension tables.",
+)
+
+if import_mode == "Project ID Create":
+    st.markdown(
+        _html(
+            """
+            <div class='zi-workflow-card'>
+                <div class='zi-section-kicker'>Project ID Create</div>
+                <div class='zi-workflow-title'>Generate the next non-duplicate Project ID</div>
+                <div class='zi-workflow-text'>
+                    The generator checks active and archived records across Sales, Operation and v18 extension tables.
+                    It does not create or overwrite any project record.
+                </div>
+            </div>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        prefix = st.text_input("Prefix", value="SDG")
+    with col2:
+        year_value = st.number_input("Year", min_value=2020, max_value=2099, value=__import__("datetime").datetime.now().year, step=1)
+    if st.button("Generate New Project ID", type="primary"):
+        result = generate_next_project_id(prefix=prefix.strip() or "SDG", year=int(year_value))
+        st.session_state["generated_project_id_v18"] = result
+    result = st.session_state.get("generated_project_id_v18")
+    if result:
+        st.success("New Project ID generated. Copy it into Sales Import or your source Excel when ready.")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Project ID", result.get("project_id"))
+        c2.metric("Year", result.get("project_id_year"))
+        c3.metric("Sequence", result.get("project_id_sequence"))
+        c4.metric("Checked Records", result.get("checked_records"))
+        st.code(str(result.get("project_id")), language=None)
+    st.stop()
+
+if import_mode == "v18 Extension Import":
+    st.markdown(
+        _html(
+            """
+            <div class='zi-workflow-card'>
+                <div class='zi-section-kicker'>v18 Extension Import</div>
+                <div class='zi-workflow-title'>Import new module data without touching core Sales / Operation logic</div>
+                <div class='zi-workflow-text'>
+                    This import writes only to v18 extension tables such as Supplier Details, Project Items,
+                    Price Comparison, Client Quotation, Index Center, Order Details, Order Costs and Sample Tracking.
+                </div>
+            </div>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
+    meta_col1, meta_col2, meta_col3 = st.columns([1.15, 1, 1.25])
+    with meta_col1:
+        v18_module = st.selectbox("v18 Module", options=list(V18_MODULES.keys()))
+    with meta_col2:
+        st.text_input("Imported by", value=operator, disabled=True, key="v18_imported_by")
+    with meta_col3:
+        v18_uploaded_file = st.file_uploader("Upload v18 Excel file", type=["xlsx", "xls"], key="v18_upload")
+
+    with st.expander("Required fields and field guide", expanded=False):
+        guide = [
+            {
+                "field_name": f.name,
+                "display_name": f.display,
+                "required": "Yes" if f.required else "No",
+                "description": f.description,
+            }
+            for f in V18_MODULES[v18_module].fields
+        ]
+        render_project_table(guide, ["field_name", "display_name", "required", "description"], enable_jump=False)
+
+    if not v18_uploaded_file:
+        st.markdown("<div class='zi-empty'>Upload an Excel file to start v18 extension import.</div>", unsafe_allow_html=True)
+        st.stop()
+
+    try:
+        v18_sheets = read_uploaded_excel(v18_uploaded_file)
+    except Exception as exc:
+        st.error(f"Failed to read the Excel file: {exc}")
+        st.stop()
+
+    v18_sheet_name = st.selectbox("Select sheet", list(v18_sheets.keys()), key="v18_sheet")
+    v18_raw_df = v18_sheets[v18_sheet_name]
+    preview_col, mapping_col = st.columns([1.1, 1])
+    with preview_col:
+        _section_head("Sheet preview", "First 10 rows from the selected sheet.")
+        st.dataframe(v18_raw_df.head(10), use_container_width=True, hide_index=True)
+    with mapping_col:
+        _section_head("Field mapping", "Map only what you have. Required fields must be mapped.")
+        columns = list(v18_raw_df.columns)
+        defaults = v18_guess_mapping(columns, v18_module)
+        options = [None] + columns
+        mapping: dict[str, str | None] = {}
+        display_map = v18_field_display_map(v18_module)
+        fields = v18_field_names(v18_module)
+        field_groups = [fields[i:i + 12] for i in range(0, len(fields), 12)]
+        for group_no, group in enumerate(field_groups, start=1):
+            with st.expander(f"Mapping group {group_no}", expanded=(group_no == 1)):
+                cols = st.columns(2)
+                for idx, target in enumerate(group):
+                    mapping[target] = cols[idx % 2].selectbox(
+                        f"{display_map.get(target, target)} ({target})",
+                        options=options,
+                        index=options.index(defaults.get(target)) if defaults.get(target) in options else 0,
+                        key=f"v18_map_{v18_module}_{target}",
+                    )
+
+    if not require_required_columns(mapping, v18_required_fields(v18_module)):
+        st.error("Please map all required fields before building the import preview.")
+        st.stop()
+
+    v18_mapped_df, v18_blank_rows = v18_apply_import_mapping(v18_raw_df, mapping, v18_module, v18_uploaded_file.name)
+    v18_validation = v18_validate_import_dataframe(v18_mapped_df, v18_module)
+    st.markdown(
+        _html(
+            f"""
+            <div class='zi-validation-panel'>
+                <div class='zi-section-title'>v18 Import validation</div>
+                <div class='zi-section-subtitle'>This preview does not touch core Sales / Operation records.</div>
+                <div class='zi-validation-grid'>
+                    {_validation_card('Total Input Records', int(v18_validation.get('total') or 0), '#111111')}
+                    {_validation_card('Missing Required', int(v18_validation.get('missing_required_rows') or 0), '#c5161d' if v18_validation.get('missing_required_rows') else '#111111')}
+                    {_validation_card('Ignored Blank Rows', int(v18_blank_rows), '#a1a1aa')}
+                </div>
+            </div>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
+    if v18_validation.get("errors"):
+        _section_head("Error list", "Please fix these before importing.")
+        for msg in list(v18_validation.get("errors") or [])[:80]:
+            st.error(msg)
+
+    _section_head("v18 Import preview", "Preview records before confirming the extension import.")
+    preview_columns = [f for f in v18_required_fields(v18_module) + v18_field_names(v18_module)[:8] if f in v18_mapped_df.columns]
+    preview_columns = list(dict.fromkeys(preview_columns + ["source_file", "_source_row_number"]))
+    render_project_table(v18_mapped_df.to_dict(orient="records"), preview_columns, empty_message="Nothing to preview.", enable_jump=False)
+
+    if not v18_validation.get("ready"):
+        st.error("Please fix the listed errors before importing.")
+        st.stop()
+
+    if st.button("Confirm v18 Extension Import", type="primary"):
+        result = v18_import_module_dataframe(v18_mapped_df, v18_module, operator=operator, source_file=v18_uploaded_file.name)
+        try:
+            archive_uploaded_import_file(v18_uploaded_file, import_type=v18_module, uploaded_by=operator)
+        except Exception as exc:
+            st.warning(f"Import data saved, but the source file could not be archived: {exc}")
+        st.success(
+            f"{v18_module} import completed. Inserted: {result.get('inserted', 0)} | "
+            f"Updated: {result.get('updated', 0)} | Failed: {result.get('failed', 0)}"
+        )
+    st.stop()
 
 meta_col1, meta_col2, meta_col3 = st.columns([1, 1, 1])
 with meta_col1:

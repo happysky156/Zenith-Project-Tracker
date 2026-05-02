@@ -27,6 +27,11 @@ from services.detail_service import (
     update_meeting_fields,
     update_request_layer_fields,
 )
+from services.upgrade_service import (
+    get_operation_extension_rows,
+    get_project_extension_rows,
+    get_related_suppliers,
+)
 from services.project_service import (
     get_record_detail,
     get_record_snapshots,
@@ -36,6 +41,7 @@ from services.project_service import (
 )
 from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_badges_html, render_page_header
+from ui.upgrade_ui import render_layered_records, render_upgrade_css
 
 
 current_user = require_login()
@@ -582,6 +588,7 @@ def _render_overview(detail: dict[str, Any], selected_type: str) -> None:
 
 
 apply_theme()
+render_upgrade_css()
 render_page_header(
     "Project / Order Detail",
     "Search, open and update Sales projects or Operation orders from one focused editing page.",
@@ -617,14 +624,35 @@ for key in [basic_open_key, request_open_key, meeting_open_key]:
 _render_selected_header(detail, selected_type, selected_record_id)
 _render_sticky_summary(detail, selected_type, selected_record_id)
 
-overview_tab, detail_tab, meeting_tab, timeline_tab = st.tabs(
-    [
+if selected_type == "Sales":
+    tab_names = [
         "Overview",
         "Basic Info",
         "Meeting Prep",
+        "Supplier Details",
+        "Project Items",
+        "Price Comparison",
+        "Client Quotation",
+        "Sample Tracking",
         "History",
     ]
-)
+else:
+    tab_names = [
+        "Overview",
+        "Basic Info",
+        "Meeting Prep",
+        "Supplier Details",
+        "Order Details",
+        "Order Costs",
+        "Client Quotation",
+        "History",
+    ]
+
+tab_map = dict(zip(tab_names, st.tabs(tab_names)))
+overview_tab = tab_map["Overview"]
+detail_tab = tab_map["Basic Info"]
+meeting_tab = tab_map["Meeting Prep"]
+timeline_tab = tab_map["History"]
 
 with overview_tab:
     _render_overview(detail, selected_type)
@@ -799,6 +827,112 @@ with meeting_tab:
                         st.rerun()
                     else:
                         st.info(result["message"])
+
+
+# v18 extension tabs. These are read-only summary/detail views over new extension tables.
+# They do not modify the original Sales / Operation core workflow.
+ext_project_id = selected_record_id if selected_type == "Sales" else detail.get("project_id")
+if selected_type == "Sales":
+    ext_rows = get_project_extension_rows(str(ext_project_id or "")) if ext_project_id else {}
+else:
+    ext_rows = get_operation_extension_rows(selected_record_id, str(ext_project_id or "") if ext_project_id else None)
+
+with tab_map["Supplier Details"]:
+    supplier_rows = get_related_suppliers(selected_type, selected_record_id, project_id=str(ext_project_id or "") if ext_project_id else None)
+    render_layered_records(
+        "Supplier Details",
+        supplier_rows,
+        key_prefix=f"detail_supplier_{record_key}",
+        summary_field="active_status",
+        preview_columns=["supplier_id", "supplier_code", "supplier_name", "supplier_source", "contact_status", "active_status", "active_reason", "quality_risk", "commercial_risk"],
+    )
+
+if selected_type == "Sales":
+    with tab_map["Project Items"]:
+        render_layered_records(
+            "Project Items",
+            ext_rows.get("Project Items", []),
+            key_prefix=f"detail_items_{record_key}",
+            summary_field="item_status",
+            preview_columns=["project_id", "item_code", "item_name", "client_item_no", "material", "surface_treatment", "estimated_qty", "unit", "item_status"],
+        )
+
+    with tab_map["Price Comparison"]:
+        render_layered_records(
+            "Supplier Price Comparison",
+            ext_rows.get("Supplier Price Comparison", []),
+            key_prefix=f"detail_price_{record_key}",
+            summary_field="comparison_status",
+            preview_columns=["project_id", "item_code", "supplier_code", "supplier_name", "quote_round", "supplier_unit_cost", "currency", "recommended_supplier", "selected_supplier", "comparison_status"],
+        )
+
+    with tab_map["Client Quotation"]:
+        st.markdown("### Client Quotation Versions")
+        render_layered_records(
+            "Client Quotation Header",
+            ext_rows.get("Client Quotation Header", []),
+            key_prefix=f"detail_client_header_{record_key}",
+            summary_field="quote_status",
+            preview_columns=["client_quote_id", "project_id", "quote_version", "quote_date", "client_code", "quote_status", "price_term", "quote_currency"],
+        )
+        st.markdown("### Client Quotation Lines")
+        render_layered_records(
+            "Client Quotation Lines",
+            ext_rows.get("Client Quotation Lines", []),
+            key_prefix=f"detail_client_lines_{record_key}",
+            preview_columns=["client_quote_id", "project_id", "item_code", "client_unit_price", "supplier_unit_cost", "quantity_basis", "estimated_gp", "estimated_gp_percent"],
+        )
+        st.markdown("### Locked Index Snapshots")
+        render_layered_records(
+            "Index Snapshot",
+            ext_rows.get("Index Snapshot", []),
+            key_prefix=f"detail_index_snapshots_{record_key}",
+            preview_columns=["project_id", "item_code", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
+        )
+
+    with tab_map["Sample Tracking"]:
+        render_layered_records(
+            "Sample Tracking",
+            ext_rows.get("Sample Tracking", []),
+            key_prefix=f"detail_sample_{record_key}",
+            summary_field="sample_status",
+            preview_columns=["project_id", "item_code", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"],
+        )
+else:
+    with tab_map["Order Details"]:
+        render_layered_records(
+            "Order Details",
+            ext_rows.get("Order Details", []),
+            key_prefix=f"detail_order_details_{record_key}",
+            summary_field="shipment_status",
+            preview_columns=["order_no", "project_id", "item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"],
+        )
+
+    with tab_map["Order Costs"]:
+        render_layered_records(
+            "Order Costs",
+            ext_rows.get("Order Costs", []),
+            key_prefix=f"detail_order_costs_{record_key}",
+            summary_field="cost_type",
+            preview_columns=["order_no", "project_id", "item_code", "cost_type", "cost_amount", "currency", "paid_by", "charge_to_client", "cost_date"],
+        )
+
+    with tab_map["Client Quotation"]:
+        st.markdown("### Linked Client Quotation Versions")
+        render_layered_records(
+            "Client Quotation Header",
+            ext_rows.get("Client Quotation Header", []),
+            key_prefix=f"detail_op_client_header_{record_key}",
+            summary_field="quote_status",
+            preview_columns=["client_quote_id", "project_id", "quote_version", "quote_date", "client_code", "quote_status", "price_term", "quote_currency"],
+        )
+        st.markdown("### Locked Index Snapshots")
+        render_layered_records(
+            "Index Snapshot",
+            ext_rows.get("Index Snapshot", []),
+            key_prefix=f"detail_op_snapshots_{record_key}",
+            preview_columns=["project_id", "item_code", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
+        )
 
 with timeline_tab:
     st.markdown("<div class='zt-board-section-title'>Event Timeline</div>", unsafe_allow_html=True)

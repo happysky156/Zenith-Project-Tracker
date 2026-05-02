@@ -217,3 +217,93 @@ This version refines the AI assistant logic:
 - Users must review an editable field-level table before applying changes.
 - Existing non-empty fields are not selected for overwrite by default.
 - Confirm applies only selected fields through the existing detail update/event log pathway.
+
+## v18 extension layer: quotation, supplier, index, order cost and sample tracking
+
+This package adds a v18 extension layer while keeping the original Sales / Operation business logic unchanged.
+
+### New left-side pages
+
+- Supplier Details
+- Price Comparison
+- Client Quotation
+- Index Center
+- Order Details
+- Sample Tracking
+
+### Import Center additions
+
+Import Center now has three modes:
+
+1. Core Sales / Operation — original workflow, unchanged.
+2. Project ID Create — generates the next non-duplicate Project ID, including archived records and extension tables.
+3. v18 Extension Import — imports only into new extension tables.
+
+### New extension tables
+
+- supplier_details
+- project_items
+- supplier_price_comparisons
+- client_quotation_headers
+- client_quotation_lines
+- index_config
+- daily_market_indices
+- index_snapshots
+- freight_indices
+- order_details
+- order_costs
+- sample_tracking
+
+### Project / Order Detail additions
+
+Project / Order Detail now adds read-only, layered tabs for the new extension records. Large field groups are hidden in expanders by default for speed and readability.
+
+Sales Project detail tabs include:
+
+- Supplier Details
+- Project Items
+- Price Comparison
+- Client Quotation
+- Sample Tracking
+
+Operation Order detail tabs include:
+
+- Supplier Details
+- Order Details
+- Order Costs
+- Client Quotation
+
+### Daily Index automation
+
+Use GitHub Actions to run:
+
+```text
+tools/daily_index_fetch.py
+```
+
+Recommended schedule:
+
+```text
+Every day at 10:30 Beijing/Singapore time
+```
+
+The included workflow is:
+
+```text
+.github/workflows/daily_index_fetch.yml
+```
+
+The script currently seeds the fixed index list and carries forward missing values. External parsers should be added only after the company confirms fixed data sources for FX, metals, plastics and freight.
+
+### Default v18 indices
+
+- USD/CNY
+- Stainless Steel 304
+- Carbon Steel
+- Zinc
+- Aluminium
+- PP
+- ABS
+- PVC
+- Freight to Israel
+- Freight to Morocco

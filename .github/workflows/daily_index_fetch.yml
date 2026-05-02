@@ -1,0 +1,24 @@
+name: Daily Index Fetch
+
+on:
+  schedule:
+    # 02:30 UTC = 10:30 Beijing/Singapore time
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  daily-index-fetch:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run daily index fetch
+        run: python tools/daily_index_fetch.py
