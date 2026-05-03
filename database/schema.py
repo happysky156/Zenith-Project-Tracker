@@ -236,33 +236,52 @@ EXTENSION_TABLE_SQL = [
         supplier_code TEXT,
         supplier_name TEXT NOT NULL,
         supplier_short_name TEXT,
-        supplier_source TEXT,
-        contact_status TEXT,
-        contact_person TEXT,
-        phone TEXT,
-        email TEXT,
-        wechat TEXT,
-        address TEXT,
-        city TEXT,
-        province TEXT,
+        company_type TEXT,
         country TEXT,
+        province TEXT,
+        city TEXT,
+        location_raw TEXT,
+        address_standardised TEXT,
+        website_primary TEXT,
+        website_others TEXT,
+        primary_contact_name TEXT,
+        primary_contact_mobile TEXT,
+        primary_contact_email TEXT,
+        primary_contact_landline TEXT,
+        wechat TEXT,
+        other_contacts TEXT,
+        source_channel TEXT,
+        source_ref TEXT,
+        certificate TEXT,
+        certificate_remarks TEXT,
+        export_license TEXT,
+        nda_status TEXT,
+        nda_file TEXT,
+        audit_status TEXT,
+        audit_file TEXT,
+        catalogue_status TEXT,
+        catalogue_file TEXT,
         main_products TEXT,
         main_process TEXT,
         material_capability TEXT,
         surface_treatment TEXT,
         testing_capability TEXT,
-        certification TEXT,
-        cooperation_status TEXT,
-        supplier_level TEXT,
+        capability_tags TEXT,
         payment_terms TEXT,
         lead_time TEXT,
         quality_risk TEXT,
         commercial_risk TEXT,
+        last_contact_date TEXT,
+        remark_internal TEXT,
         active_status TEXT,
         active_reason TEXT,
         last_order_no TEXT,
         last_project_id TEXT,
-        remarks TEXT,
+        price_comparison_count INTEGER,
+        order_count INTEGER,
+        risk_summary TEXT,
+        created_at TEXT,
+        created_by TEXT,
         last_updated_at TEXT,
         last_updated_by TEXT
     )
@@ -588,6 +607,39 @@ INDEX_SQL = [
 ]
 
 
+SUPPLIER_DETAILS_EXTENSION_COLUMNS = {
+    "company_type": "TEXT",
+    "location_raw": "TEXT",
+    "address_standardised": "TEXT",
+    "website_primary": "TEXT",
+    "website_others": "TEXT",
+    "primary_contact_name": "TEXT",
+    "primary_contact_mobile": "TEXT",
+    "primary_contact_email": "TEXT",
+    "primary_contact_landline": "TEXT",
+    "other_contacts": "TEXT",
+    "source_channel": "TEXT",
+    "source_ref": "TEXT",
+    "certificate": "TEXT",
+    "certificate_remarks": "TEXT",
+    "export_license": "TEXT",
+    "nda_status": "TEXT",
+    "nda_file": "TEXT",
+    "audit_status": "TEXT",
+    "audit_file": "TEXT",
+    "catalogue_status": "TEXT",
+    "catalogue_file": "TEXT",
+    "capability_tags": "TEXT",
+    "last_contact_date": "TEXT",
+    "remark_internal": "TEXT",
+    "price_comparison_count": "INTEGER",
+    "order_count": "INTEGER",
+    "risk_summary": "TEXT",
+    "created_at": "TEXT",
+    "created_by": "TEXT",
+}
+
+
 EXTENSION_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_supplier_details_code ON supplier_details(supplier_code)",
     "CREATE INDEX IF NOT EXISTS idx_supplier_details_name ON supplier_details(supplier_name)",
@@ -737,6 +789,34 @@ def init_extension_db(force: bool = False) -> None:
     cur = conn.cursor()
     for sql in EXTENSION_TABLE_SQL:
         execute(cur, sql)
+
+    # Additive Supplier Details migrations. Existing databases may still have the
+    # earlier short supplier table; these columns make the new tabbed supplier
+    # detail page and import template available without dropping any old data.
+    for column_name, column_sql in SUPPLIER_DETAILS_EXTENSION_COLUMNS.items():
+        _ensure_column(cur, "supplier_details", column_name, column_sql)
+
+    # One-time safe copy from the earlier short Supplier Details fields into the
+    # new structured fields. Old columns are intentionally not dropped, so no
+    # existing data is destroyed. These updates only fill blank new fields.
+    supplier_copy_pairs = [
+        ("contact_person", "primary_contact_name"),
+        ("phone", "primary_contact_mobile"),
+        ("email", "primary_contact_email"),
+        ("address", "location_raw"),
+        ("address", "address_standardised"),
+        ("certification", "certificate"),
+        ("supplier_source", "source_channel"),
+        ("remarks", "remark_internal"),
+    ]
+    for old_column, new_column in supplier_copy_pairs:
+        if _column_exists(cur, "supplier_details", old_column) and _column_exists(cur, "supplier_details", new_column):
+            execute(
+                cur,
+                f"UPDATE supplier_details SET {new_column} = COALESCE({new_column}, {old_column}) "
+                f"WHERE {new_column} IS NULL AND {old_column} IS NOT NULL",
+            )
+
     for sql in EXTENSION_INDEX_SQL:
         execute(cur, sql)
     conn.commit()

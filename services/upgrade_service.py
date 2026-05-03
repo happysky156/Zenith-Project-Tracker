@@ -43,37 +43,66 @@ class ModuleSpec:
 
 
 SUPPLIER_FIELDS = (
+    # System-generated / auto-calculated fields. They are displayed in Overview
+    # and Activity tabs, but they are not intended to be maintained manually.
     FieldSpec("supplier_id", "Supplier ID", "System-generated supplier unique ID, for example SUP-000001."),
     FieldSpec("supplier_code", "Supplier Code", "Internal supplier code. Optional, because expo/new suppliers may not have one yet."),
     FieldSpec("supplier_name", "Supplier Name", "Supplier company name.", True),
     FieldSpec("supplier_short_name", "Supplier Short Name", "Supplier short name or alias."),
-    FieldSpec("supplier_source", "Supplier Source", "Existing / Expo / Online / Referral / Other."),
-    FieldSpec("contact_status", "Contact Status", "Not Contacted / Contacted / Quoted / Ordered."),
-    FieldSpec("contact_person", "Contact Person", "Main contact person."),
-    FieldSpec("phone", "Phone", "Phone number."),
-    FieldSpec("email", "Email", "Email address."),
-    FieldSpec("wechat", "WeChat", "WeChat contact."),
-    FieldSpec("address", "Address", "Supplier address."),
-    FieldSpec("city", "City", "City."),
-    FieldSpec("province", "Province", "Province."),
+    FieldSpec("company_type", "Company Type", "Factory / Trading Company / Service Provider / Other."),
+
     FieldSpec("country", "Country", "Country."),
+    FieldSpec("province", "Province", "Province."),
+    FieldSpec("city", "City", "City."),
+    FieldSpec("location_raw", "Location Raw", "Original location or address text from the source file."),
+    FieldSpec("address_standardised", "Address Standardised", "Cleaned or standardised address."),
+    FieldSpec("website_primary", "Website Primary", "Main supplier website."),
+    FieldSpec("website_others", "Website Others", "Other website links."),
+
+    FieldSpec("primary_contact_name", "Primary Contact Name", "Main contact person."),
+    FieldSpec("primary_contact_mobile", "Primary Contact Mobile", "Main contact mobile number."),
+    FieldSpec("primary_contact_email", "Primary Contact Email", "Main contact email address."),
+    FieldSpec("primary_contact_landline", "Primary Contact Landline", "Main contact landline number."),
+    FieldSpec("wechat", "WeChat", "WeChat contact."),
+    FieldSpec("other_contacts", "Other Contacts", "Other contact persons or contact details."),
+
+    FieldSpec("source_channel", "Source Channel", "Source channel, for example Expo / Website / Referral / Existing Database."),
+    FieldSpec("source_ref", "Source Reference", "Source reference, such as exhibition name, website link, email, or old source file."),
+
+    FieldSpec("certificate", "Certificate", "Certificates, such as ISO, BSCI or product certificates."),
+    FieldSpec("certificate_remarks", "Certificate Remarks", "Certificate remarks."),
+    FieldSpec("export_license", "Export License", "Export licence information."),
+    FieldSpec("nda_status", "NDA Status", "NDA status."),
+    FieldSpec("nda_file", "NDA File", "NDA file link."),
+    FieldSpec("audit_status", "Audit Status", "Factory audit status."),
+    FieldSpec("audit_file", "Audit File", "Factory audit file link."),
+    FieldSpec("catalogue_status", "Catalogue Status", "Catalogue status."),
+    FieldSpec("catalogue_file", "Catalogue File", "Catalogue file link."),
+
     FieldSpec("main_products", "Main Products", "Main product range."),
     FieldSpec("main_process", "Main Process", "Main production process."),
     FieldSpec("material_capability", "Material Capability", "Material capability."),
     FieldSpec("surface_treatment", "Surface Treatment", "Surface treatment capability."),
     FieldSpec("testing_capability", "Testing Capability", "Testing capability."),
-    FieldSpec("certification", "Certification", "ISO, BSCI, product certifications, etc."),
-    FieldSpec("cooperation_status", "Cooperation Status", "New / Existing / Potential / Blacklist."),
-    FieldSpec("supplier_level", "Supplier Level", "A / B / C / Pending."),
+    FieldSpec("capability_tags", "Capability Tags", "Capability tags for screening/searching."),
+
     FieldSpec("payment_terms", "Payment Terms", "Usual payment terms."),
     FieldSpec("lead_time", "Lead Time", "Usual lead time."),
     FieldSpec("quality_risk", "Quality Risk", "Low / Medium / High."),
     FieldSpec("commercial_risk", "Commercial Risk", "Low / Medium / High."),
+
+    FieldSpec("last_contact_date", "Last Contact Date", "Last contact date."),
+    FieldSpec("remark_internal", "Internal Remark", "Internal remark."),
+
     FieldSpec("active_status", "Active Status", "Auto-calculated from open orders. Do not manually maintain."),
     FieldSpec("active_reason", "Active Reason", "Auto-calculated explanation, e.g. linked open order."),
     FieldSpec("last_order_no", "Last Order No", "Auto-calculated latest linked order."),
     FieldSpec("last_project_id", "Last Project ID", "Auto-calculated latest linked project."),
-    FieldSpec("remarks", "Remarks", "Free text notes."),
+    FieldSpec("price_comparison_count", "Price Comparison Count", "Auto-calculated supplier quotation count."),
+    FieldSpec("order_count", "Order Count", "Auto-calculated linked order count."),
+    FieldSpec("risk_summary", "Risk Summary", "Auto-generated summary from risk and quotation/order context."),
+    FieldSpec("created_at", "Created At", "System created timestamp."),
+    FieldSpec("created_by", "Created By", "System created by."),
     FieldSpec("last_updated_at", "Last Updated At", "System updated timestamp."),
     FieldSpec("last_updated_by", "Last Updated By", "System updated by."),
 )
@@ -414,6 +443,34 @@ def required_fields(module_name: str) -> list[str]:
     return [f.name for f in MODULES[module_name].fields if f.required]
 
 
+IMPORT_EXCLUDED_FIELDS: dict[str, set[str]] = {
+    "Supplier Details": {
+        "supplier_id",
+        "active_status",
+        "active_reason",
+        "last_order_no",
+        "last_project_id",
+        "price_comparison_count",
+        "order_count",
+        "risk_summary",
+        "created_at",
+        "created_by",
+        "last_updated_at",
+        "last_updated_by",
+    }
+}
+
+
+def import_field_names(module_name: str) -> list[str]:
+    excluded = IMPORT_EXCLUDED_FIELDS.get(module_name, set())
+    return [field for field in field_names(module_name) if field not in excluded]
+
+
+def import_required_fields(module_name: str) -> list[str]:
+    excluded = IMPORT_EXCLUDED_FIELDS.get(module_name, set())
+    return [field for field in required_fields(module_name) if field not in excluded]
+
+
 def numeric_fields(module_name: str) -> set[str]:
     return {f.name for f in MODULES[module_name].fields if f.numeric}
 
@@ -618,8 +675,9 @@ def ensure_supplier(supplier_name: str | None, supplier_code: str | None = None,
         "supplier_id": supplier_id,
         "supplier_code": supplier_code,
         "supplier_name": supplier_name or supplier_code,
-        "supplier_source": "Imported",
-        "contact_status": "Quoted" if supplier_code else "Not Contacted",
+        "source_channel": "Imported",
+        "created_at": now,
+        "created_by": operator,
         "last_updated_at": now,
         "last_updated_by": operator,
     }
@@ -647,9 +705,17 @@ def _prepare_record(module_name: str, raw: dict[str, Any], operator: str | None 
     now = now_iso()
 
     if module_name == "Supplier Details":
+        existing = None
         if not record.get("supplier_id"):
             existing = get_supplier_by_code_or_name(record.get("supplier_code"), record.get("supplier_name"))
             record["supplier_id"] = existing.get("supplier_id") if existing else _sequence_id("SUP", spec.table, "supplier_id")
+        else:
+            existing = get_supplier_by_code_or_name(record.get("supplier_code"), record.get("supplier_name"))
+        if existing and not record.get("supplier_name"):
+            record["supplier_name"] = existing.get("supplier_name")
+        if not existing:
+            record["created_at"] = record.get("created_at") or now
+            record["created_by"] = record.get("created_by") or operator
         record["last_updated_at"] = now
         record["last_updated_by"] = operator
 
@@ -875,7 +941,7 @@ def guess_mapping(columns: list[str], module_name: str) -> dict[str, str | None]
     normalized = {re.sub(r"[^a-z0-9]", "", str(col).lower()): col for col in columns}
     mapping: dict[str, str | None] = {}
     display_map = field_display_map(module_name)
-    for field in field_names(module_name):
+    for field in import_field_names(module_name):
         keys = {
             re.sub(r"[^a-z0-9]", "", field.lower()),
             re.sub(r"[^a-z0-9]", "", display_map.get(field, field).lower()),
@@ -892,7 +958,7 @@ def guess_mapping(columns: list[str], module_name: str) -> dict[str, str | None]
 def apply_import_mapping(df: pd.DataFrame, mapping: dict[str, str | None], module_name: str, source_file: str) -> tuple[pd.DataFrame, int]:
     rows: list[dict[str, Any]] = []
     blank_rows = 0
-    required = required_fields(module_name)
+    required = import_required_fields(module_name)
     for idx, row in df.iterrows():
         item: dict[str, Any] = {field: None for field in field_names(module_name)}
         for target, source_col in mapping.items():
@@ -909,7 +975,7 @@ def apply_import_mapping(df: pd.DataFrame, mapping: dict[str, str | None], modul
 
 def validate_import_dataframe(mapped_df: pd.DataFrame, module_name: str) -> dict[str, Any]:
     errors: list[str] = []
-    required = required_fields(module_name)
+    required = import_required_fields(module_name)
     if mapped_df.empty:
         return {"ready": False, "errors": ["No records to import."], "missing_required_rows": 0, "total": 0}
     missing_required_rows = 0
@@ -1011,29 +1077,50 @@ def _decorate_supplier_active(supplier: dict[str, Any]) -> dict[str, Any]:
         clauses.append("lower(supplier_name) = lower(?)")
         params.append(supplier_name)
     where = " OR ".join(clauses) if clauses else "1=0"
+
     execute(
         cur,
         f"""
-        SELECT order_no, project_id, shipment_status, payment_status, production_status
+        SELECT order_no, project_id, shipment_status, payment_status, production_status, imported_at
         FROM order_details
         WHERE ({where})
         ORDER BY imported_at DESC
-        LIMIT 5
+        LIMIT 500
         """,
         tuple(params),
     )
     linked = _rows_to_dicts(cur.fetchall())
+
+    execute(cur, f"SELECT COUNT(*) AS count_value FROM supplier_price_comparisons WHERE ({where})", tuple(params))
+    price_row = _fetchone_dict(cur) or {}
+    price_count = int(price_row.get("count_value") or 0)
+
     conn.close()
+
     closed_tokens = {"paid", "closed", "cancelled", "canceled", "shipped complete", "complete"}
     active_orders = []
     for row in linked:
         status_text = " ".join(str(row.get(k) or "") for k in ["shipment_status", "payment_status", "production_status"]).lower()
         if not any(token in status_text for token in closed_tokens):
             active_orders.append(row)
+
     supplier["active_status"] = "Active" if active_orders else "Inactive"
     supplier["active_reason"] = ", ".join(row.get("order_no") or "" for row in active_orders[:3]) if active_orders else "No open linked order"
     supplier["last_order_no"] = linked[0].get("order_no") if linked else supplier.get("last_order_no")
     supplier["last_project_id"] = linked[0].get("project_id") if linked else supplier.get("last_project_id")
+    supplier["price_comparison_count"] = price_count
+    supplier["order_count"] = len(linked)
+
+    risk_parts = []
+    if supplier.get("quality_risk"):
+        risk_parts.append(f"Quality: {supplier.get('quality_risk')}")
+    if supplier.get("commercial_risk"):
+        risk_parts.append(f"Commercial: {supplier.get('commercial_risk')}")
+    if price_count == 0:
+        risk_parts.append("No supplier quotation yet")
+    if active_orders:
+        risk_parts.append(f"Open orders: {len(active_orders)}")
+    supplier["risk_summary"] = "; ".join(risk_parts) if risk_parts else "No major risk flag"
     return supplier
 
 

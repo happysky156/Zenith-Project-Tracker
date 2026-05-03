@@ -21,12 +21,12 @@ from services.validation_service import require_required_columns
 from services.upgrade_service import (
     MODULES as V18_MODULES,
     apply_import_mapping as v18_apply_import_mapping,
-    field_names as v18_field_names,
+    import_field_names as v18_field_names,
     field_display_map as v18_field_display_map,
     generate_next_project_id,
     guess_mapping as v18_guess_mapping,
     import_module_dataframe as v18_import_module_dataframe,
-    required_fields as v18_required_fields,
+    import_required_fields as v18_required_fields,
     validate_import_dataframe as v18_validate_import_dataframe,
 )
 from ui.project_table import render_project_table

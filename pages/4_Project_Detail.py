@@ -844,7 +844,7 @@ with tab_map["Supplier Details"]:
         supplier_rows,
         key_prefix=f"detail_supplier_{record_key}",
         summary_field="active_status",
-        preview_columns=["supplier_id", "supplier_code", "supplier_name", "supplier_source", "contact_status", "active_status", "active_reason", "quality_risk", "commercial_risk"],
+        preview_columns=["supplier_id", "supplier_code", "supplier_name", "supplier_short_name", "company_type", "country", "city", "active_status", "active_reason", "last_order_no", "last_project_id", "price_comparison_count", "order_count", "quality_risk", "commercial_risk"],
     )
 
 if selected_type == "Sales":
