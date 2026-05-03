@@ -946,7 +946,9 @@ def _prepare_record(module_name: str, raw: dict[str, Any], operator: str | None 
         record["supplier_id"] = record.get("supplier_id") or ensure_supplier(record.get("supplier_name"), record.get("supplier_code"), operator)
         record["imported_at"] = record.get("imported_at") or now
         record["imported_by"] = record.get("imported_by") or operator
-        _recalculate_order_record(record)
+        # Fast local calculation during prepare. After insert/update, the saved
+        # record is recalculated against current Order Costs.
+        _recalculate_order_record(record, extra_cost=0.0)
 
     elif module_name == "Order Costs":
         if not record.get("cost_id"):
@@ -1018,14 +1020,15 @@ def _extra_cost_for_order(order_no: str | None, project_id: str | None, order_it
     return total
 
 
-def _recalculate_order_record(record: dict[str, Any]) -> dict[str, Any]:
+def _recalculate_order_record(record: dict[str, Any], extra_cost: float | None = None) -> dict[str, Any]:
     _normalise_money_fields_to_usd(record, ("client_unit_price", "supplier_unit_cost"))
     qty = _to_float(record.get("order_qty")) or 0
     client_unit = _to_float(record.get("client_unit_price")) or 0
     supplier_unit = _to_float(record.get("supplier_unit_cost")) or 0
     sales_revenue = client_unit * qty if qty or client_unit else _to_float(record.get("sales_revenue"))
     supplier_cost = supplier_unit * qty if qty or supplier_unit else _to_float(record.get("supplier_cost"))
-    extra_cost = _extra_cost_for_order(record.get("order_no"), record.get("project_id"), record.get("order_item_code"))
+    if extra_cost is None:
+        extra_cost = _extra_cost_for_order(record.get("order_no"), record.get("project_id"), record.get("order_item_code"))
     if sales_revenue is not None:
         record["sales_revenue"] = sales_revenue
     if supplier_cost is not None:
@@ -1037,6 +1040,95 @@ def _recalculate_order_record(record: dict[str, Any]) -> dict[str, Any]:
         record["gross_profit_percent"] = (gp / float(sales_revenue) * 100) if sales_revenue else None
     return record
 
+
+
+def _fetch_order_cost_rows_for_batch(limit: int = 50000) -> list[dict[str, Any]]:
+    """Fetch Order Costs once for batch order-detail decoration.
+
+    The Order Details page must not query Order Costs once per detail row.
+    On Streamlit Cloud + Supabase this N+1 pattern can make the page appear to
+    hang for minutes.  The cost table is expected to be modest, so one bounded
+    read is safer and much faster.
+    """
+    ensure_ready()
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        execute(cur, "SELECT * FROM order_costs LIMIT ?", (int(limit),))
+        return _rows_to_dicts(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def _same_text(left: Any, right: Any) -> bool:
+    left_text = _normalize_text(left)
+    right_text = _normalize_text(right)
+    return bool(left_text and right_text and left_text == right_text)
+
+
+def _cost_row_matches_order(cost_row: dict[str, Any], order_no: Any, project_id: Any, order_item_code: Any) -> bool:
+    order_no_text = _normalize_text(order_no)
+    project_id_text = _normalize_text(project_id)
+    order_item_code_text = _normalize_text(order_item_code)
+
+    # Keep the same business semantics as _extra_cost_for_order(): at least one
+    # high-level identifier is required; when both order_no and project_id exist,
+    # both must match.
+    if not order_no_text and not project_id_text:
+        return False
+    if order_no_text and not _same_text(cost_row.get("order_no"), order_no_text):
+        return False
+    if project_id_text and not _same_text(cost_row.get("project_id"), project_id_text):
+        return False
+
+    # If the order detail has an item code, include item-level matching costs and
+    # blank item-code order-level costs. If the order detail has no item code,
+    # keep the previous logic and include all costs under the matched order/project.
+    if order_item_code_text:
+        cost_item_code = _normalize_text(cost_row.get("order_item_code"))
+        return cost_item_code in (None, "", order_item_code_text)
+    return True
+
+
+def _extra_cost_for_order_from_rows(
+    order_no: Any,
+    project_id: Any,
+    order_item_code: Any,
+    cost_rows: list[dict[str, Any]],
+    cache: dict[tuple[str | None, str | None, str | None], float] | None = None,
+) -> float:
+    key = (_normalize_text(order_no), _normalize_text(project_id), _normalize_text(order_item_code))
+    if cache is not None and key in cache:
+        return cache[key]
+    total = 0.0
+    for cost_row in cost_rows:
+        if _cost_row_matches_order(cost_row, order_no, project_id, order_item_code):
+            total += _amount_to_usd(cost_row.get("cost_amount"), cost_row.get("currency")) or 0.0
+    if cache is not None:
+        cache[key] = total
+    return total
+
+
+def _decorate_order_details_many(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Batch-calculate Order Details finance fields without N+1 DB queries."""
+    if not rows:
+        return rows
+    try:
+        cost_rows = _fetch_order_cost_rows_for_batch()
+    except Exception as exc:
+        logger.warning("Order Details batch cost fetch failed; using zero extra cost for display: %s", exc)
+        cost_rows = []
+    extra_cost_cache: dict[tuple[str | None, str | None, str | None], float] = {}
+    for row in rows:
+        extra_cost = _extra_cost_for_order_from_rows(
+            row.get("order_no"),
+            row.get("project_id"),
+            row.get("order_item_code"),
+            cost_rows,
+            extra_cost_cache,
+        )
+        _recalculate_order_record(row, extra_cost=extra_cost)
+    return rows
 
 def upsert_module_record(module_name: str, raw: dict[str, Any], operator: str | None = None) -> str:
     spec = MODULES[module_name]
@@ -1068,8 +1160,17 @@ def recalculate_order_details(order_no: str | None = None, project_id: str | Non
     cur = conn.cursor()
     execute(cur, f"SELECT * FROM order_details WHERE {where}", tuple(params))
     rows = _rows_to_dicts(cur.fetchall())
+    cost_rows = _fetch_order_cost_rows_for_batch()
+    extra_cost_cache: dict[tuple[str | None, str | None, str | None], float] = {}
     for row in rows:
-        updated = _recalculate_order_record(row)
+        extra_cost = _extra_cost_for_order_from_rows(
+            row.get("order_no"),
+            row.get("project_id"),
+            row.get("order_item_code"),
+            cost_rows,
+            extra_cost_cache,
+        )
+        updated = _recalculate_order_record(row, extra_cost=extra_cost)
         execute(
             cur,
             """
@@ -1348,8 +1449,7 @@ def list_module_records(module_name: str, limit: int = 500, filters: dict[str, A
     rows = _rows_to_dicts(cur.fetchall())
     conn.close()
     if module_name == "Order Details":
-        for row in rows:
-            _recalculate_order_record(row)
+        rows = _decorate_order_details_many(rows)
     if module_name == "Supplier Details":
         rows = _decorate_supplier_active_many(rows)
     return rows

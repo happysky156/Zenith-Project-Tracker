@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import streamlit as st
 
 from core.auth import require_login
@@ -17,8 +19,23 @@ render_upgrade_intro(
     "Order Details supplements Operation Board without changing original operation status logic. Sales Revenue, Supplier Cost, Order Costs and Gross Profit are calculated in USD. RMB/CNY input is converted using the fixed rate 1 USD = 6.80 CNY.",
 )
 
-order_rows = list_module_records("Order Details", limit=1000)
-cost_rows = list_module_records("Order Costs", limit=1000)
+record_limit = st.selectbox(
+    "Load recent order detail rows",
+    options=[100, 300, 500, 1000, 2000],
+    index=1,
+    help="Use a smaller limit for faster weekly review. Increase only when you need to audit older rows.",
+)
+
+load_start = time.perf_counter()
+with st.spinner("Loading Order Details and Order Costs..."):
+    # Performance note:
+    # list_module_records('Order Details') now batch-calculates extra cost and GP.
+    # It no longer queries Order Costs once per order row.
+    order_rows = list_module_records("Order Details", limit=int(record_limit))
+    cost_rows = list_module_records("Order Costs", limit=max(1000, int(record_limit)))
+load_seconds = time.perf_counter() - load_start
+st.caption(f"Loaded {len(order_rows)} order detail rows and {len(cost_rows)} cost rows in {load_seconds:.1f}s.")
+
 revenue = sum(float(r.get("sales_revenue") or 0) for r in order_rows)
 gp = sum(float(r.get("gross_profit") or 0) for r in order_rows)
 render_metric_grid({"Order Detail Rows": len(order_rows), "Cost Rows": len(cost_rows), "Sales Revenue (USD)": f"{revenue:,.2f}", "Gross Profit (USD)": f"{gp:,.2f}"})
