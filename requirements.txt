@@ -6,3 +6,6 @@ requests>=2.31
 
 psycopg-pool>=3.2
 openai>=1.40.0
+beautifulsoup4>=4.12
+lxml>=5.0
+python-dotenv>=1.0
