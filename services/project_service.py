@@ -335,6 +335,13 @@ def get_record_timeline(record_type: str, record_id: str) -> list[dict[str, Any]
     return list_event_logs(record_type, record_id)
 
 
+@_cache_data(ttl=120)
+def get_record_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
+    from services.timeline_service import build_lifecycle_view
+
+    return build_lifecycle_view(record_type, record_id, detail=detail)
+
+
 @_cache_data(ttl=300)
 def get_record_snapshots(record_type: str, record_id: str) -> list[dict[str, Any]]:
     return list_meeting_snapshots(record_type, record_id)

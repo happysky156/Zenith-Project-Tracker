@@ -8,20 +8,6 @@ _INIT_DONE = False
 _EXT_INIT_DONE = False
 _EXTENSION_LOCK_KEY = 90218001
 
-# Minimal column checks used to skip heavy extension DDL on Streamlit reruns/reboots.
-# If these critical columns exist, the additive v18 compatibility migrations have
-# already been applied and pages can read safely without running many remote
-# information_schema checks or CREATE INDEX statements again.
-_EXTENSION_CRITICAL_COLUMN_CHECKS = [
-    ("supplier_details", "supplier_name"),
-    ("supplier_price_comparisons", "rfq_item_ref"),
-    ("order_details", "order_item_code"),
-    ("order_costs", "order_item_code"),
-    ("client_quotation_headers", "project_id"),
-    ("client_quotation_lines", "rfq_item_ref"),
-    ("index_snapshots", "project_id"),
-]
-
 
 SALES_CORE_COLUMNS_SQL = """
     project_id TEXT PRIMARY KEY,
@@ -147,6 +133,19 @@ EVENT_LOGS_SQL = """
         event_time TEXT NOT NULL,
         event_type TEXT NOT NULL,
         event_group TEXT,
+        planned_date TEXT,
+        actual_date TEXT,
+        delay_days INTEGER,
+        date_source TEXT,
+        stage_from TEXT,
+        stage_to TEXT,
+        waiting_for TEXT,
+        owner TEXT,
+        risk_level TEXT,
+        customer_impact TEXT,
+        commercial_impact TEXT,
+        source_module TEXT,
+        source_record_id TEXT,
         old_phase TEXT,
         new_phase TEXT,
         old_health TEXT,
@@ -623,326 +622,6 @@ INDEX_SQL = [
 ]
 
 
-EXTENSION_MODULE_COLUMN_MIGRATIONS = {'supplier_details': {'supplier_id': 'TEXT',
-                      'supplier_code': 'TEXT',
-                      'supplier_name': 'TEXT',
-                      'supplier_short_name': 'TEXT',
-                      'company_type': 'TEXT',
-                      'country': 'TEXT',
-                      'province': 'TEXT',
-                      'city': 'TEXT',
-                      'location_raw': 'TEXT',
-                      'address_standardised': 'TEXT',
-                      'website_primary': 'TEXT',
-                      'website_others': 'TEXT',
-                      'primary_contact_name': 'TEXT',
-                      'primary_contact_mobile': 'TEXT',
-                      'primary_contact_email': 'TEXT',
-                      'primary_contact_landline': 'TEXT',
-                      'wechat': 'TEXT',
-                      'other_contacts': 'TEXT',
-                      'source_channel': 'TEXT',
-                      'source_ref': 'TEXT',
-                      'certificate': 'TEXT',
-                      'certificate_remarks': 'TEXT',
-                      'export_license': 'TEXT',
-                      'nda_status': 'TEXT',
-                      'nda_file': 'TEXT',
-                      'audit_status': 'TEXT',
-                      'audit_file': 'TEXT',
-                      'catalogue_status': 'TEXT',
-                      'catalogue_file': 'TEXT',
-                      'main_products': 'TEXT',
-                      'main_process': 'TEXT',
-                      'material_capability': 'TEXT',
-                      'surface_treatment': 'TEXT',
-                      'testing_capability': 'TEXT',
-                      'capability_tags': 'TEXT',
-                      'payment_terms': 'TEXT',
-                      'lead_time': 'TEXT',
-                      'quality_risk': 'TEXT',
-                      'commercial_risk': 'TEXT',
-                      'last_contact_date': 'TEXT',
-                      'remark_internal': 'TEXT',
-                      'active_status': 'TEXT',
-                      'active_reason': 'TEXT',
-                      'last_order_no': 'TEXT',
-                      'last_project_id': 'TEXT',
-                      'price_comparison_count': 'TEXT',
-                      'order_count': 'TEXT',
-                      'risk_summary': 'TEXT',
-                      'created_at': 'TEXT',
-                      'created_by': 'TEXT',
-                      'last_updated_at': 'TEXT',
-                      'last_updated_by': 'TEXT'},
- 'project_items': {'project_id': 'TEXT',
-                   'rfq_item_ref': 'TEXT',
-                   'item_name': 'TEXT',
-                   'item_description': 'TEXT',
-                   'client_item_no': 'TEXT',
-                   'drawing_no': 'TEXT',
-                   'drawing_revision': 'TEXT',
-                   'material': 'TEXT',
-                   'surface_treatment': 'TEXT',
-                   'estimated_qty': 'REAL',
-                   'unit': 'TEXT',
-                   'item_status': 'TEXT',
-                   'remarks': 'TEXT',
-                   'created_at': 'TEXT',
-                   'created_by': 'TEXT',
-                   'last_updated_at': 'TEXT',
-                   'last_updated_by': 'TEXT'},
- 'supplier_price_comparisons': {'supplier_quote_id': 'TEXT',
-                                'project_id': 'TEXT',
-                                'rfq_item_ref': 'TEXT',
-                                'supplier_id': 'TEXT',
-                                'supplier_code': 'TEXT',
-                                'supplier_name': 'TEXT',
-                                'quote_round': 'TEXT',
-                                'quote_date': 'TEXT',
-                                'supplier_unit_cost': 'REAL',
-                                'currency': 'TEXT',
-                                'moq': 'TEXT',
-                                'lead_time': 'TEXT',
-                                'sample_lead_time': 'TEXT',
-                                'price_term': 'TEXT',
-                                'tooling_cost': 'REAL',
-                                'sample_cost': 'REAL',
-                                'packing_cost': 'REAL',
-                                'supplier_material_basis': 'TEXT',
-                                'supplier_quote_validity': 'TEXT',
-                                'price_adjustment_note': 'TEXT',
-                                'missing_info': 'TEXT',
-                                'quotation_quality': 'TEXT',
-                                'quotation_risk': 'TEXT',
-                                'recommended_supplier': 'INTEGER',
-                                'selected_supplier': 'INTEGER',
-                                'selection_reason': 'TEXT',
-                                'comparison_status': 'TEXT',
-                                'remarks': 'TEXT',
-                                'imported_at': 'TEXT',
-                                'imported_by': 'TEXT'},
- 'client_quotation_headers': {'client_quote_id': 'TEXT',
-                              'project_id': 'TEXT',
-                              'quote_version': 'TEXT',
-                              'quote_date': 'TEXT',
-                              'client_code': 'TEXT',
-                              'client_name': 'TEXT',
-                              'quote_status': 'TEXT',
-                              'price_term': 'TEXT',
-                              'quote_currency': 'TEXT',
-                              'index_snapshot_date': 'TEXT',
-                              'material_snapshot_status': 'TEXT',
-                              'fx_snapshot_status': 'TEXT',
-                              'freight_snapshot_status': 'TEXT',
-                              'quote_valid_until': 'TEXT',
-                              'remarks': 'TEXT',
-                              'created_at': 'TEXT',
-                              'created_by': 'TEXT',
-                              'last_updated_at': 'TEXT',
-                              'last_updated_by': 'TEXT'},
- 'client_quotation_lines': {'client_quote_line_id': 'TEXT',
-                            'client_quote_id': 'TEXT',
-                            'project_id': 'TEXT',
-                            'rfq_item_ref': 'TEXT',
-                            'item_name': 'TEXT',
-                            'selected_supplier_id': 'TEXT',
-                            'supplier_quote_id': 'TEXT',
-                            'supplier_unit_cost': 'REAL',
-                            'client_unit_price': 'REAL',
-                            'quantity_basis': 'REAL',
-                            'currency': 'TEXT',
-                            'price_term': 'TEXT',
-                            'material_index_used': 'TEXT',
-                            'freight_used': 'TEXT',
-                            'estimated_revenue': 'REAL',
-                            'estimated_supplier_cost': 'REAL',
-                            'estimated_extra_cost': 'REAL',
-                            'estimated_gp': 'REAL',
-                            'estimated_gp_percent': 'REAL',
-                            'remarks': 'TEXT'},
- 'index_config': {'index_config_id': 'TEXT',
-                  'index_category': 'TEXT',
-                  'index_name': 'TEXT',
-                  'display_name': 'TEXT',
-                  'unit': 'TEXT',
-                  'source_name': 'TEXT',
-                  'source_url': 'TEXT',
-                  'fetch_enabled': 'INTEGER',
-                  'fetch_method': 'TEXT',
-                  'fallback_method': 'TEXT',
-                  'active': 'INTEGER',
-                  'remarks': 'TEXT'},
- 'daily_market_indices': {'daily_index_id': 'TEXT',
-                          'index_date': 'TEXT',
-                          'index_category': 'TEXT',
-                          'index_name': 'TEXT',
-                          'index_value': 'REAL',
-                          'unit': 'TEXT',
-                          'source_name': 'TEXT',
-                          'source_url': 'TEXT',
-                          'fetch_method': 'TEXT',
-                          'fetch_status': 'TEXT',
-                          'previous_value': 'REAL',
-                          'change_value': 'REAL',
-                          'change_percent': 'REAL',
-                          'error_message': 'TEXT',
-                          'confirmed_by_user': 'INTEGER',
-                          'confirmed_at': 'TEXT',
-                          'last_updated_at': 'TEXT',
-                          'updated_by': 'TEXT'},
- 'index_snapshots': {'index_snapshot_id': 'TEXT',
-                     'client_quote_id': 'TEXT',
-                     'project_id': 'TEXT',
-                     'rfq_item_ref': 'TEXT',
-                     'quote_version': 'TEXT',
-                     'snapshot_date': 'TEXT',
-                     'material_index_name': 'TEXT',
-                     'material_index_value': 'REAL',
-                     'material_index_unit': 'TEXT',
-                     'freight_index_name': 'TEXT',
-                     'freight_index_value': 'REAL',
-                     'freight_route': 'TEXT',
-                     'freight_unit': 'TEXT',
-                     'exchange_rate_pair': 'TEXT',
-                     'exchange_rate_value': 'REAL',
-                     'exchange_rate_source': 'TEXT',
-                     'source_name': 'TEXT',
-                     'source_url': 'TEXT',
-                     'locked_at': 'TEXT',
-                     'locked_by': 'TEXT',
-                     'remarks': 'TEXT'},
- 'freight_indices': {'freight_index_id': 'TEXT',
-                     'index_date': 'TEXT',
-                     'destination_country': 'TEXT',
-                     'destination_port': 'TEXT',
-                     'origin_port': 'TEXT',
-                     'container_type': 'TEXT',
-                     'freight_value': 'REAL',
-                     'currency': 'TEXT',
-                     'source_type': 'TEXT',
-                     'source_note': 'TEXT',
-                     'last_actual_update_date': 'TEXT',
-                     'carry_forward': 'INTEGER',
-                     'remarks': 'TEXT'},
- 'order_details': {'order_detail_id': 'TEXT',
-                   'order_no': 'TEXT',
-                   'project_id': 'TEXT',
-                   'order_item_code': 'TEXT',
-                   'client_quote_id': 'TEXT',
-                   'client_quote_line_id': 'TEXT',
-                   'supplier_quote_id': 'TEXT',
-                   'supplier_id': 'TEXT',
-                   'supplier_code': 'TEXT',
-                   'supplier_name': 'TEXT',
-                   'client_code': 'TEXT',
-                   'po_no': 'TEXT',
-                   'customer_item_no': 'TEXT',
-                   'supplier_item_no': 'TEXT',
-                   'order_qty': 'REAL',
-                   'unit': 'TEXT',
-                   'client_unit_price': 'REAL',
-                   'supplier_unit_cost': 'REAL',
-                   'currency': 'TEXT',
-                   'sales_revenue': 'REAL',
-                   'supplier_cost': 'REAL',
-                   'extra_cost': 'REAL',
-                   'gross_profit': 'REAL',
-                   'gross_profit_percent': 'REAL',
-                   'payment_status': 'TEXT',
-                   'production_status': 'TEXT',
-                   'inspection_status': 'TEXT',
-                   'packing_status': 'TEXT',
-                   'shipment_status': 'TEXT',
-                   'order_date': 'TEXT',
-                   'deposit_date': 'TEXT',
-                   'target_delivery_date': 'TEXT',
-                   'actual_delivery_date': 'TEXT',
-                   'inspection_date': 'TEXT',
-                   'shipment_date': 'TEXT',
-                   'container_no': 'TEXT',
-                   'bl_no': 'TEXT',
-                   'main_issue': 'TEXT',
-                   'next_step': 'TEXT',
-                   'next_step_owner': 'TEXT',
-                   'remarks': 'TEXT',
-                   'imported_at': 'TEXT',
-                   'imported_by': 'TEXT'},
- 'order_costs': {'cost_id': 'TEXT',
-                 'order_no': 'TEXT',
-                 'project_id': 'TEXT',
-                 'order_item_code': 'TEXT',
-                 'cost_type': 'TEXT',
-                 'cost_description': 'TEXT',
-                 'cost_amount': 'REAL',
-                 'currency': 'TEXT',
-                 'paid_by': 'TEXT',
-                 'charge_to_client': 'INTEGER',
-                 'cost_date': 'TEXT',
-                 'invoice_no': 'TEXT',
-                 'remarks': 'TEXT',
-                 'created_at': 'TEXT',
-                 'created_by': 'TEXT'},
- 'sample_tracking': {'sample_id': 'TEXT',
-                     'project_id': 'TEXT',
-                     'rfq_item_ref': 'TEXT',
-                     'supplier_id': 'TEXT',
-                     'supplier_code': 'TEXT',
-                     'supplier_name': 'TEXT',
-                     'sample_type': 'TEXT',
-                     'sample_round': 'TEXT',
-                     'sample_status': 'TEXT',
-                     'sample_purpose': 'TEXT',
-                     'sample_request_date': 'TEXT',
-                     'target_sample_date': 'TEXT',
-                     'sample_sent_date': 'TEXT',
-                     'sample_received_date': 'TEXT',
-                     'sample_sent_to_client_date': 'TEXT',
-                     'client_feedback_date': 'TEXT',
-                     'client_feedback': 'TEXT',
-                     'sample_issue': 'TEXT',
-                     'revision_required': 'INTEGER',
-                     'next_sample_round_needed': 'INTEGER',
-                     'testing_required': 'INTEGER',
-                     'test_type': 'TEXT',
-                     'test_standard': 'TEXT',
-                     'test_lab': 'TEXT',
-                     'test_sent_date': 'TEXT',
-                     'test_status': 'TEXT',
-                     'test_result': 'TEXT',
-                     'test_report_link': 'TEXT',
-                     'test_fee': 'REAL',
-                     'test_issue': 'TEXT',
-                     'sample_folder_link': 'TEXT',
-                     'sample_photo_link_1': 'TEXT',
-                     'sample_photo_link_2': 'TEXT',
-                     'sample_photo_link_3': 'TEXT',
-                     'courier_company': 'TEXT',
-                     'tracking_no': 'TEXT',
-                     'next_step': 'TEXT',
-                     'next_step_owner': 'TEXT',
-                     'target_date': 'TEXT',
-                     'remarks': 'TEXT',
-                     'last_updated_at': 'TEXT',
-                     'last_updated_by': 'TEXT'}}
-
-
-def _ensure_extension_module_columns(cur) -> None:
-    """Add missing extension-module columns for already-created Supabase tables.
-
-    CREATE TABLE IF NOT EXISTS does not update a table whose older shape already
-    exists. This is important for Index Snapshot / Client Quotation / Project Detail
-    tabs because earlier market-index builds may have created the same table names
-    with a smaller or different column set. The migration is additive only: it
-    never drops, renames, or overwrites existing business data.
-    """
-    for table_name, columns in EXTENSION_MODULE_COLUMN_MIGRATIONS.items():
-        if not _table_exists(cur, table_name):
-            continue
-        for column_name, column_sql in columns.items():
-            _ensure_column(cur, table_name, column_name, column_sql)
-
-
 SUPPLIER_DETAILS_EXTENSION_COLUMNS = {
     "company_type": "TEXT",
     "location_raw": "TEXT",
@@ -973,6 +652,56 @@ SUPPLIER_DETAILS_EXTENSION_COLUMNS = {
     "risk_summary": "TEXT",
     "created_at": "TEXT",
     "created_by": "TEXT",
+}
+
+# Additive compatibility columns for extension tables that may already exist in
+# Supabase from earlier trial builds. CREATE TABLE IF NOT EXISTS does not add
+# missing columns, so these migrations keep pages such as Client Quotation and
+# Project Detail History from failing with UndefinedColumn.
+EXTENSION_COMPAT_COLUMNS = {
+    "index_snapshots": {
+        "index_snapshot_id": "TEXT",
+        "client_quote_id": "TEXT",
+        "project_id": "TEXT",
+        "rfq_item_ref": "TEXT",
+        "quote_version": "TEXT",
+        "snapshot_date": "TEXT",
+        "material_index_name": "TEXT",
+        "material_index_value": "REAL",
+        "material_index_unit": "TEXT",
+        "freight_index_name": "TEXT",
+        "freight_index_value": "REAL",
+        "freight_route": "TEXT",
+        "freight_unit": "TEXT",
+        "exchange_rate_pair": "TEXT",
+        "exchange_rate_value": "REAL",
+        "exchange_rate_source": "TEXT",
+        "source_name": "TEXT",
+        "source_url": "TEXT",
+        "locked_at": "TEXT",
+        "locked_by": "TEXT",
+        "remarks": "TEXT",
+    },
+    "daily_market_indices": {
+        "daily_index_id": "TEXT",
+        "index_date": "TEXT",
+        "index_category": "TEXT",
+        "index_name": "TEXT",
+        "index_value": "REAL",
+        "unit": "TEXT",
+        "source_name": "TEXT",
+        "source_url": "TEXT",
+        "fetch_method": "TEXT",
+        "fetch_status": "TEXT",
+        "previous_value": "REAL",
+        "change_value": "REAL",
+        "change_percent": "REAL",
+        "error_message": "TEXT",
+        "confirmed_by_user": "INTEGER",
+        "confirmed_at": "TEXT",
+        "last_updated_at": "TEXT",
+        "updated_by": "TEXT",
+    },
 }
 
 
@@ -1040,20 +769,6 @@ def _ensure_column(cur, table_name: str, column_name: str, column_sql: str) -> N
     if _column_exists(cur, table_name, column_name):
         return
     execute(cur, f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
-
-
-def _extension_schema_quick_current(cur) -> bool:
-    """Fast readiness check for already-migrated extension schemas.
-
-    Running the full extension initialisation can be slow on Streamlit Cloud
-    because it performs many remote information_schema checks and index DDLs.
-    Once the critical v18 columns exist, normal pages do not need the full DDL
-    path on every reboot. This check is additive/read-only and never changes data.
-    """
-    try:
-        return all(_column_exists(cur, table_name, column_name) for table_name, column_name in _EXTENSION_CRITICAL_COLUMN_CHECKS)
-    except Exception:
-        return False
 
 
 
@@ -1197,6 +912,26 @@ def init_db(force: bool = False) -> None:
     _ensure_column(cur, "import_batches", "import_type", "TEXT")
     _ensure_column(cur, "import_file_archive", "content_type", "TEXT")
 
+    # Commercial lifecycle timeline metadata. These additive fields keep the
+    # original event log compatible while allowing Project Detail to show
+    # planned-vs-actual, waiting, risk and customer-impact dimensions.
+    for column_name, column_sql in {
+        "planned_date": "TEXT",
+        "actual_date": "TEXT",
+        "delay_days": "INTEGER",
+        "date_source": "TEXT",
+        "stage_from": "TEXT",
+        "stage_to": "TEXT",
+        "waiting_for": "TEXT",
+        "owner": "TEXT",
+        "risk_level": "TEXT",
+        "customer_impact": "TEXT",
+        "commercial_impact": "TEXT",
+        "source_module": "TEXT",
+        "source_record_id": "TEXT",
+    }.items():
+        _ensure_column(cur, "event_logs_v2", column_name, column_sql)
+
     # Meeting Mode reference links: fixed three link slots per Sales / Operation record.
     # Safe additive migrations only; existing business/data logic is not changed.
     for table_name in ["sales_projects", "operation_orders"]:
@@ -1236,29 +971,10 @@ def init_extension_db(force: bool = False) -> None:
     cur = conn.cursor()
     advisory_locked = False
     try:
-        # Fast path for the normal case: schema was already migrated by a prior
-        # deployment. This avoids making every extension page wait on full DDL.
-        if not force and _extension_schema_quick_current(cur):
-            _EXT_INIT_DONE = True
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return
-
         if using_postgres():
             # Serialise extension DDL across concurrent Streamlit sessions.
             execute(cur, f"SELECT pg_advisory_lock({_EXTENSION_LOCK_KEY})")
             advisory_locked = True
-            # Another Streamlit session may have completed migration while this
-            # session was waiting for the advisory lock. Re-check before DDL.
-            if not force and _extension_schema_quick_current(cur):
-                _EXT_INIT_DONE = True
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                return
 
         for sql in EXTENSION_TABLE_SQL:
             execute(cur, sql)
@@ -1266,11 +982,6 @@ def init_extension_db(force: bool = False) -> None:
         # v18 item reference naming migration. This keeps RFQ-stage refs separate
         # from actual order-stage item codes before any extension indexes are built.
         _apply_v18_item_reference_migrations(cur)
-
-        # Add missing columns for extension tables that may already exist in Supabase
-        # with an older or market-index-only shape. This prevents UndefinedColumn
-        # errors in Project Detail tabs and Client Quotation pages.
-        _ensure_extension_module_columns(cur)
 
         # Additive Supplier Details migrations. Existing databases may still have
         # the earlier short supplier table; these columns make the new tabbed
@@ -1300,6 +1011,10 @@ def init_extension_db(force: bool = False) -> None:
                     f"UPDATE supplier_details SET {new_column} = COALESCE({new_column}, {old_column}) "
                     f"WHERE {new_column} IS NULL AND {old_column} IS NOT NULL",
                 )
+
+        for table_name, columns in EXTENSION_COMPAT_COLUMNS.items():
+            for column_name, column_sql in columns.items():
+                _ensure_column(cur, table_name, column_name, column_sql)
 
         _create_extension_indexes(cur)
         conn.commit()

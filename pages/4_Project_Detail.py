@@ -34,6 +34,7 @@ from services.upgrade_service import (
 )
 from services.project_service import (
     get_record_detail,
+    get_record_lifecycle_view,
     get_record_snapshots,
     get_record_timeline,
     list_board_projects,
@@ -218,6 +219,76 @@ def _mini_item(label: str, value: object) -> str:
 def _is_url(value: object) -> bool:
     text = str(value or "").strip()
     return text.startswith("http://") or text.startswith("https://")
+
+
+def _render_time_control_cards(cards: dict[str, object]) -> None:
+    labels = [
+        "Project Age",
+        "Current Stage",
+        "Days in Current Stage",
+        "Waiting For",
+        "Waiting Days",
+        "Delay Days",
+        "Risk Age",
+        "Customer Waiting Days",
+    ]
+    st.markdown("### Management Time Control")
+    for start in range(0, len(labels), 4):
+        cols = st.columns(4)
+        for col, label in zip(cols, labels[start:start + 4]):
+            with col:
+                st.markdown(
+                    f"""
+                    <div class='zt-detail-mini-card'>
+                        <div class='zt-detail-mini-label'>{escape(label)}</div>
+                        <div class='zt-detail-mini-value'>{_clean(cards.get(label), 'Not recorded yet')}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+def _render_lifecycle_bar(milestones: list[dict[str, object]]) -> None:
+    status_class = {
+        "Done": "#188038",
+        "Current": "#b06000",
+        "Delayed": "#b3261e",
+        "Missing": "#6b7280",
+        "Pending": "#9ca3af",
+        "Not Applicable": "#d1d5db",
+    }
+    parts = []
+    for row in milestones:
+        status = str(row.get("Status") or "Pending")
+        colour = status_class.get(status, "#9ca3af")
+        parts.append(
+            f"""
+            <div style='min-width:120px;flex:1;border:1px solid #e5e7eb;border-radius:14px;padding:10px 12px;background:#fff;'>
+                <div style='font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:{colour};font-weight:800;'>{escape(status)}</div>
+                <div style='font-size:13px;font-weight:800;color:#111827;margin-top:4px;'>{escape(str(row.get('Milestone') or '-'))}</div>
+                <div style='font-size:11px;color:#6b7280;margin-top:4px;'>Actual: {escape(str(row.get('Actual Date') or '-'))}</div>
+                <div style='font-size:11px;color:#6b7280;'>Plan: {escape(str(row.get('Planned Date') or '-'))}</div>
+            </div>
+            """
+        )
+    st.markdown("### Lifecycle Bar")
+    st.markdown(
+        "<div style='display:flex;gap:8px;overflow-x:auto;padding:4px 2px 12px 2px;'>" + "".join(parts) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_lifecycle_view(lifecycle: dict[str, object]) -> None:
+    _render_time_control_cards(lifecycle.get("cards") or {})
+    _render_lifecycle_bar(lifecycle.get("milestones") or [])
+    with st.expander("Lifecycle milestone details", expanded=False):
+        rows = lifecycle.get("milestones") or []
+        render_project_table(
+            rows,
+            ["Sequence", "Milestone", "Status", "Planned Date", "Actual Date", "Delay Days", "Date Source"],
+            empty_message="No lifecycle milestones yet.",
+            enable_jump=False,
+        )
 
 
 def _has_meaningful_value(value: object) -> bool:
@@ -935,24 +1006,43 @@ else:
         )
 
 with timeline_tab:
-    st.markdown("<div class='zt-board-section-title'>Event Timeline</div>", unsafe_allow_html=True)
+    try:
+        lifecycle_view = get_record_lifecycle_view(selected_type, selected_record_id, detail)
+        _render_lifecycle_view(lifecycle_view)
+    except Exception as exc:
+        st.warning(f"Lifecycle summary is not available yet: {exc}")
+
+    st.markdown("<div class='zt-board-section-title' style='margin-top:1rem;'>Commercial / Management Timeline</div>", unsafe_allow_html=True)
+    try:
+        detailed_events = lifecycle_view.get("events", []) if 'lifecycle_view' in locals() else []
+    except Exception:
+        detailed_events = []
     render_project_table(
-        get_record_timeline(selected_type, selected_record_id),
-        [
-            "event_time",
-            "event_type",
-            "old_phase",
-            "new_phase",
-            "old_health",
-            "new_health",
-            "old_result",
-            "new_result",
-            "operator",
-            "event_note",
-        ],
-        empty_message="No event logs yet.",
+        detailed_events,
+        ["Date", "Group", "Event", "Owner", "Waiting For", "Delay", "Risk", "Customer Impact", "Note", "Source"],
+        empty_message="No commercial timeline events yet.",
         enable_jump=False,
     )
+
+    with st.expander("Original event logs", expanded=False):
+        render_project_table(
+            get_record_timeline(selected_type, selected_record_id),
+            [
+                "event_time",
+                "event_type",
+                "event_group",
+                "old_phase",
+                "new_phase",
+                "old_health",
+                "new_health",
+                "old_result",
+                "new_result",
+                "operator",
+                "event_note",
+            ],
+            empty_message="No event logs yet.",
+            enable_jump=False,
+        )
 
     st.markdown("<div class='zt-board-section-title' style='margin-top:1rem;'>Meeting Snapshots</div>", unsafe_allow_html=True)
     render_project_table(

@@ -1042,39 +1042,19 @@ def _recalculate_order_record(record: dict[str, Any], extra_cost: float | None =
 
 
 
-def _fetch_order_cost_rows_for_batch(order_rows: list[dict[str, Any]] | None = None, limit: int = 10000) -> list[dict[str, Any]]:
-    """Fetch relevant Order Costs once for batch order-detail decoration.
+def _fetch_order_cost_rows_for_batch(limit: int = 50000) -> list[dict[str, Any]]:
+    """Fetch Order Costs once for batch order-detail decoration.
 
-    Earlier versions fetched all Order Costs and then scanned them for each
-    Order Details row. That was safe for tiny local SQLite data, but too slow
-    on Streamlit Cloud + Supabase when the cost table grows or when a page is
-    re-run often. This version restricts the cost query to the order_no/project_id
-    values actually present in the current result set.
+    The Order Details page must not query Order Costs once per detail row.
+    On Streamlit Cloud + Supabase this N+1 pattern can make the page appear to
+    hang for minutes.  The cost table is expected to be modest, so one bounded
+    read is safer and much faster.
     """
     ensure_ready()
-    order_nos: list[str] = []
-    project_ids: list[str] = []
-    if order_rows:
-        order_nos = sorted({str(v) for row in order_rows if (v := _normalize_text(row.get("order_no")))})[:500]
-        project_ids = sorted({str(v) for row in order_rows if (v := _normalize_text(row.get("project_id")))})[:500]
-
-    clauses: list[str] = []
-    params: list[Any] = []
-    sub_clauses: list[str] = []
-    if order_nos:
-        sub_clauses.append("order_no IN (" + ", ".join(["?"] * len(order_nos)) + ")")
-        params.extend(order_nos)
-    if project_ids:
-        sub_clauses.append("project_id IN (" + ", ".join(["?"] * len(project_ids)) + ")")
-        params.extend(project_ids)
-    if sub_clauses:
-        clauses.append("(" + " OR ".join(sub_clauses) + ")")
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
-
     conn = get_connection()
     cur = conn.cursor()
     try:
-        execute(cur, f"SELECT * FROM order_costs{where} LIMIT ?", tuple(params + [int(limit)]))
+        execute(cur, "SELECT * FROM order_costs LIMIT ?", (int(limit),))
         return _rows_to_dicts(cur.fetchall())
     finally:
         conn.close()
@@ -1110,70 +1090,6 @@ def _cost_row_matches_order(cost_row: dict[str, Any], order_no: Any, project_id:
     return True
 
 
-def _add_sum(target: dict[Any, float], key: Any, amount: float) -> None:
-    if not key:
-        return
-    target[key] = target.get(key, 0.0) + amount
-
-
-def _build_order_cost_summary(cost_rows: list[dict[str, Any]]) -> dict[str, dict[Any, float]]:
-    """Pre-aggregate Order Costs so each Order Details row is O(1), not O(N)."""
-    summary: dict[str, dict[Any, float]] = {
-        "both_all": {},
-        "both_item": {},
-        "order_all": {},
-        "order_item": {},
-        "project_all": {},
-        "project_item": {},
-    }
-    for cost_row in cost_rows:
-        amount = _amount_to_usd(cost_row.get("cost_amount"), cost_row.get("currency")) or 0.0
-        if not amount:
-            continue
-        order_no = _normalize_text(cost_row.get("order_no"))
-        project_id = _normalize_text(cost_row.get("project_id"))
-        item_code = _normalize_text(cost_row.get("order_item_code")) or ""
-        if order_no and project_id:
-            _add_sum(summary["both_all"], (order_no, project_id), amount)
-            _add_sum(summary["both_item"], (order_no, project_id, item_code), amount)
-        if order_no:
-            _add_sum(summary["order_all"], order_no, amount)
-            _add_sum(summary["order_item"], (order_no, item_code), amount)
-        if project_id:
-            _add_sum(summary["project_all"], project_id, amount)
-            _add_sum(summary["project_item"], (project_id, item_code), amount)
-    return summary
-
-
-def _extra_cost_from_summary(order_no: Any, project_id: Any, order_item_code: Any, summary: dict[str, dict[Any, float]]) -> float:
-    order_no_text = _normalize_text(order_no)
-    project_id_text = _normalize_text(project_id)
-    item_code_text = _normalize_text(order_item_code)
-
-    if not order_no_text and not project_id_text:
-        return 0.0
-
-    if order_no_text and project_id_text:
-        if item_code_text:
-            return (
-                summary["both_item"].get((order_no_text, project_id_text, ""), 0.0)
-                + summary["both_item"].get((order_no_text, project_id_text, item_code_text), 0.0)
-            )
-        return summary["both_all"].get((order_no_text, project_id_text), 0.0)
-
-    if order_no_text:
-        if item_code_text:
-            return summary["order_item"].get((order_no_text, ""), 0.0) + summary["order_item"].get((order_no_text, item_code_text), 0.0)
-        return summary["order_all"].get(order_no_text, 0.0)
-
-    if project_id_text:
-        if item_code_text:
-            return summary["project_item"].get((project_id_text, ""), 0.0) + summary["project_item"].get((project_id_text, item_code_text), 0.0)
-        return summary["project_all"].get(project_id_text, 0.0)
-
-    return 0.0
-
-
 def _extra_cost_for_order_from_rows(
     order_no: Any,
     project_id: Any,
@@ -1181,11 +1097,6 @@ def _extra_cost_for_order_from_rows(
     cost_rows: list[dict[str, Any]],
     cache: dict[tuple[str | None, str | None, str | None], float] | None = None,
 ) -> float:
-    """Backward-compatible helper kept for older call sites.
-
-    New display paths use _build_order_cost_summary() + _extra_cost_from_summary()
-    to avoid scanning all cost rows per detail row.
-    """
     key = (_normalize_text(order_no), _normalize_text(project_id), _normalize_text(order_item_code))
     if cache is not None and key in cache:
         return cache[key]
@@ -1203,20 +1114,120 @@ def _decorate_order_details_many(rows: list[dict[str, Any]]) -> list[dict[str, A
     if not rows:
         return rows
     try:
-        cost_rows = _fetch_order_cost_rows_for_batch(rows)
-        cost_summary = _build_order_cost_summary(cost_rows)
+        cost_rows = _fetch_order_cost_rows_for_batch()
     except Exception as exc:
         logger.warning("Order Details batch cost fetch failed; using zero extra cost for display: %s", exc)
-        cost_summary = _build_order_cost_summary([])
+        cost_rows = []
+    extra_cost_cache: dict[tuple[str | None, str | None, str | None], float] = {}
     for row in rows:
-        extra_cost = _extra_cost_from_summary(
+        extra_cost = _extra_cost_for_order_from_rows(
             row.get("order_no"),
             row.get("project_id"),
             row.get("order_item_code"),
-            cost_summary,
+            cost_rows,
+            extra_cost_cache,
         )
         _recalculate_order_record(row, extra_cost=extra_cost)
     return rows
+
+
+
+def _primary_entity_for_record(module_name: str, record: dict[str, Any]) -> tuple[str, str, str | None, str | None]:
+    """Return entity_type, entity_id, project_id and order_no for timeline logging."""
+    project_id = _normalize_text(record.get("project_id"))
+    order_no = _normalize_text(record.get("order_no"))
+    if order_no:
+        return "Operation", order_no, project_id, order_no
+    if project_id:
+        return "Sales", project_id, project_id, None
+    supplier_id = _normalize_text(record.get("supplier_id")) or _normalize_text(record.get("supplier_name")) or "supplier"
+    return "Supplier", supplier_id, project_id, None
+
+
+def _log_module_timeline_events(module_name: str, record: dict[str, Any], action: str, operator: str | None = None) -> None:
+    """Write commercial lifecycle events for extension modules.
+
+    This keeps the old Sales/Operation workflow unchanged while making new
+    commercial actions visible in Project Detail > History. Logging failures are
+    intentionally non-blocking so an import/update never fails just because the
+    timeline cannot be written.
+    """
+    try:
+        from services.timeline_service import log_commercial_event
+
+        entity_type, entity_id, project_id, order_no = _primary_entity_for_record(module_name, record)
+        source_id = None
+        spec = MODULES.get(module_name)
+        if spec and spec.id_field:
+            source_id = _normalize_text(record.get(spec.id_field))
+        note = f"{module_name} {action}."
+
+        def emit(event_type: str, group: str, actual_date: Any = None, planned_date: Any = None, risk_level: Any = None, customer_impact: Any = None, commercial_impact: Any = None, extra_note: str | None = None) -> None:
+            log_commercial_event(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                project_id=project_id,
+                order_no=order_no,
+                event_type=event_type,
+                event_group=group,
+                operator=operator,
+                event_note=extra_note or note,
+                source_page="Extension Module",
+                source_module=module_name,
+                source_record_id=source_id,
+                actual_date=_normalize_text(actual_date),
+                planned_date=_normalize_text(planned_date),
+                waiting_for=record.get("next_step_owner") or record.get("supplier_name"),
+                owner=operator or record.get("next_step_owner"),
+                risk_level=_normalize_text(risk_level),
+                customer_impact=_normalize_text(customer_impact),
+                commercial_impact=_normalize_text(commercial_impact),
+            )
+
+        if module_name == "Project Items":
+            emit("Project Item Added", "Project", record.get("created_at") or now_iso())
+
+        elif module_name == "Supplier Price Comparison":
+            if record.get("supplier_id") or record.get("supplier_name"):
+                emit("Supplier Added", "Supplier", record.get("quote_date") or record.get("imported_at"))
+            emit("Supplier Quote Received", "Quotation", record.get("quote_date") or record.get("imported_at"), risk_level=record.get("quotation_risk"), commercial_impact="Supplier quotation")
+            if str(record.get("comparison_status") or "").lower() == "completed" or bool(record.get("selected_supplier")) or bool(record.get("recommended_supplier")):
+                emit("Price Comparison Completed", "Quotation", record.get("quote_date") or record.get("imported_at"), risk_level=record.get("quotation_risk"), commercial_impact="Recommended/selected supplier available")
+
+        elif module_name == "Client Quotation Header":
+            version = record.get("quote_version") or ""
+            emit(f"Client Quotation {version} Created".strip(), "Client Quotation", record.get("quote_date") or record.get("created_at"), customer_impact="Quotation basis created", commercial_impact="Client quotation")
+            if str(record.get("quote_status") or "").lower() == "sent":
+                emit("Client Quotation Sent", "Client Quotation", record.get("quote_date") or record.get("last_updated_at") or record.get("created_at"), customer_impact="Client quoted", commercial_impact="Client quotation sent")
+
+        elif module_name == "Client Quotation Lines":
+            emit("Client Quotation Line Updated", "Client Quotation", now_iso(), commercial_impact="Quotation line updated")
+
+        elif module_name == "Index Snapshot":
+            emit("Index Snapshot Locked", "Index", record.get("locked_at") or record.get("snapshot_date"), commercial_impact="Quotation index snapshot locked")
+
+        elif module_name == "Order Details":
+            emit("Order Created", "Order", record.get("order_date") or record.get("imported_at"), planned_date=record.get("target_delivery_date"), customer_impact="Order received", commercial_impact="Order execution")
+            if _normalize_text(record.get("production_status")):
+                emit("Production Follow-up", "Order", record.get("actual_delivery_date") or record.get("imported_at") or record.get("order_date"), planned_date=record.get("target_delivery_date"), customer_impact="Delivery progress", commercial_impact="Production status")
+            if _normalize_text(record.get("inspection_date")) or any(token in str(record.get("inspection_status") or "").lower() for token in ["pass", "complete"]):
+                emit("Inspection Completed", "Order", record.get("inspection_date") or record.get("imported_at"), planned_date=record.get("target_delivery_date"), customer_impact="Quality evidence", commercial_impact="Inspection completed")
+            if _normalize_text(record.get("shipment_date")) or any(token in str(record.get("shipment_status") or "").lower() for token in ["complete", "shipped"]):
+                emit("Shipment Completed", "Order", record.get("shipment_date") or record.get("actual_delivery_date") or record.get("imported_at"), planned_date=record.get("target_delivery_date"), customer_impact="Shipment completed", commercial_impact="Order shipment")
+            if record.get("gross_profit") is not None:
+                emit("Gross Profit Confirmed", "Cost", record.get("imported_at") or now_iso(), commercial_impact="Gross profit calculated")
+
+        elif module_name == "Order Costs":
+            emit("Final Cost Updated", "Cost", record.get("cost_date") or record.get("created_at"), commercial_impact="Order cost updated")
+
+        elif module_name == "Sample Tracking":
+            emit("Sample Requested", "Sample", record.get("sample_request_date") or record.get("last_updated_at"), planned_date=record.get("target_sample_date") or record.get("target_date"), customer_impact="Sample process started")
+            if _normalize_text(record.get("sample_sent_to_client_date")):
+                emit("Sample Sent to Client", "Sample", record.get("sample_sent_to_client_date"), planned_date=record.get("target_sample_date") or record.get("target_date"), customer_impact="Sample sent to client")
+            if "approved" in str(record.get("sample_status") or "").lower():
+                emit("Client Approved Sample", "Sample", record.get("client_feedback_date") or record.get("last_updated_at"), customer_impact="Sample approved")
+    except Exception as exc:
+        logger.warning("Commercial timeline logging skipped for %s: %s", module_name, exc)
 
 def upsert_module_record(module_name: str, raw: dict[str, Any], operator: str | None = None) -> str:
     spec = MODULES[module_name]
@@ -1227,6 +1238,7 @@ def upsert_module_record(module_name: str, raw: dict[str, Any], operator: str | 
     action = _insert_or_update(spec.table, spec.id_field, spec.key_fields, record)
     if module_name in {"Order Costs", "Order Details"}:
         recalculate_order_details(record.get("order_no"), record.get("project_id"), record.get("order_item_code"))
+    _log_module_timeline_events(module_name, record, action, operator=operator)
     return action
 
 
@@ -1248,14 +1260,15 @@ def recalculate_order_details(order_no: str | None = None, project_id: str | Non
     cur = conn.cursor()
     execute(cur, f"SELECT * FROM order_details WHERE {where}", tuple(params))
     rows = _rows_to_dicts(cur.fetchall())
-    cost_rows = _fetch_order_cost_rows_for_batch(rows)
-    cost_summary = _build_order_cost_summary(cost_rows)
+    cost_rows = _fetch_order_cost_rows_for_batch()
+    extra_cost_cache: dict[tuple[str | None, str | None, str | None], float] = {}
     for row in rows:
-        extra_cost = _extra_cost_from_summary(
+        extra_cost = _extra_cost_for_order_from_rows(
             row.get("order_no"),
             row.get("project_id"),
             row.get("order_item_code"),
-            cost_summary,
+            cost_rows,
+            extra_cost_cache,
         )
         updated = _recalculate_order_record(row, extra_cost=extra_cost)
         execute(
@@ -1508,28 +1521,6 @@ def import_module_dataframe(mapped_df: pd.DataFrame, module_name: str, operator:
     return {"inserted": inserted, "updated": updated, "failed": failed, "errors_count": len(errors)}
 
 
-
-
-def _table_columns(cur, table_name: str) -> set[str]:
-    """Return existing column names for a table in PostgreSQL or SQLite."""
-    try:
-        if using_postgres():
-            execute(
-                cur,
-                "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
-                (table_name,),
-            )
-            return {str(row["column_name"] if isinstance(row, dict) else row[0]) for row in cur.fetchall()}
-        execute(cur, f"PRAGMA table_info({table_name})")
-        return {str(row["name"] if isinstance(row, dict) else row[1]) for row in cur.fetchall()}
-    except Exception:
-        return set()
-
-
-def _module_select_columns(spec: ModuleSpec, existing_columns: set[str]) -> list[str]:
-    cols = [field.name for field in spec.fields if field.name in existing_columns]
-    return cols or ["*"]
-
 # -----------------------------------------------------------------------------
 # Reads and summaries
 # -----------------------------------------------------------------------------
@@ -1538,55 +1529,46 @@ def list_module_records(module_name: str, limit: int = 500, filters: dict[str, A
     ensure_ready()
     spec = MODULES[module_name]
     filters = filters or {}
+    table_columns = _table_columns(spec.table)
+    clauses: list[str] = []
+    params: list[Any] = []
+    for field, value in filters.items():
+        if value in (None, ""):
+            continue
+        if field.endswith("__contains"):
+            field_name = field.replace("__contains", "")
+            if field_name not in table_columns:
+                continue
+            clauses.append(f"lower({field_name}) LIKE lower(?)")
+            params.append(f"%{value}%")
+        else:
+            if field not in table_columns:
+                continue
+            clauses.append(f"{field} = ?")
+            params.append(value)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    preferred_order_fields = [
+        "last_updated_at",
+        "created_at",
+        "imported_at",
+        "locked_at",
+        "snapshot_date",
+        "index_date",
+        spec.fields[0].name,
+    ]
+    order_field = next((field for field in preferred_order_fields if field in table_columns), None)
+    order_sql = f"ORDER BY {order_field} DESC" if order_field else ""
     conn = get_connection()
     cur = conn.cursor()
-    try:
-        existing_columns = _table_columns(cur, spec.table)
-        if not existing_columns:
-            conn.close()
-            return []
-
-        clauses: list[str] = []
-        params: list[Any] = []
-        for field, value in filters.items():
-            if value in (None, ""):
-                continue
-            if field.endswith("__contains"):
-                field_name = field.replace("__contains", "")
-                if field_name not in existing_columns:
-                    conn.close()
-                    return []
-                clauses.append(f"lower({field_name}) LIKE lower(?)")
-                params.append(f"%{value}%")
-            else:
-                if field not in existing_columns:
-                    conn.close()
-                    return []
-                clauses.append(f"{field} = ?")
-                params.append(value)
-
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        order_candidates = ["last_updated_at", "created_at", "imported_at", "locked_at", "snapshot_date", spec.fields[0].name]
-        order_field = next((field for field in order_candidates if field in existing_columns), None)
-        order_sql = f" ORDER BY {order_field} DESC" if order_field else ""
-        select_cols = _module_select_columns(spec, existing_columns)
-        select_sql = "*" if select_cols == ["*"] else ", ".join(select_cols)
-        execute(cur, f"SELECT {select_sql} FROM {spec.table} {where}{order_sql} LIMIT ?", tuple(params + [int(limit)]))
-        rows = _rows_to_dicts(cur.fetchall())
-    except Exception as exc:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        logger.warning("list_module_records failed for %s: %s", module_name, exc)
-        conn.close()
-        return []
+    execute(cur, f"SELECT * FROM {spec.table} {where} {order_sql} LIMIT ?", tuple(params + [int(limit)]))
+    rows = _rows_to_dicts(cur.fetchall())
     conn.close()
     if module_name == "Order Details":
         rows = _decorate_order_details_many(rows)
     if module_name == "Supplier Details":
         rows = _decorate_supplier_active_many(rows)
     return rows
+
 
 def _decorate_supplier_active_many(suppliers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not suppliers:
@@ -1758,28 +1740,36 @@ def _decorate_supplier_active(supplier: dict[str, Any]) -> dict[str, Any]:
     return supplier
 
 
+def _safe_list_module_records(module_name: str, limit: int = 500, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    try:
+        return list_module_records(module_name, limit=limit, filters=filters)
+    except Exception as exc:
+        logger.warning("Extension list skipped for %s: %s", module_name, exc)
+        return []
+
+
 def get_project_extension_rows(project_id: str) -> dict[str, list[dict[str, Any]]]:
     return {
-        "Project Items": list_module_records("Project Items", filters={"project_id": project_id}),
-        "Supplier Price Comparison": list_module_records("Supplier Price Comparison", filters={"project_id": project_id}),
-        "Client Quotation Header": list_module_records("Client Quotation Header", filters={"project_id": project_id}),
-        "Client Quotation Lines": list_module_records("Client Quotation Lines", filters={"project_id": project_id}),
-        "Index Snapshot": list_module_records("Index Snapshot", filters={"project_id": project_id}),
-        "Order Details": list_module_records("Order Details", filters={"project_id": project_id}),
-        "Order Costs": list_module_records("Order Costs", filters={"project_id": project_id}),
-        "Sample Tracking": list_module_records("Sample Tracking", filters={"project_id": project_id}),
+        "Project Items": _safe_list_module_records("Project Items", filters={"project_id": project_id}),
+        "Supplier Price Comparison": _safe_list_module_records("Supplier Price Comparison", filters={"project_id": project_id}),
+        "Client Quotation Header": _safe_list_module_records("Client Quotation Header", filters={"project_id": project_id}),
+        "Client Quotation Lines": _safe_list_module_records("Client Quotation Lines", filters={"project_id": project_id}),
+        "Index Snapshot": _safe_list_module_records("Index Snapshot", filters={"project_id": project_id}),
+        "Order Details": _safe_list_module_records("Order Details", filters={"project_id": project_id}),
+        "Order Costs": _safe_list_module_records("Order Costs", filters={"project_id": project_id}),
+        "Sample Tracking": _safe_list_module_records("Sample Tracking", filters={"project_id": project_id}),
     }
 
 
 def get_operation_extension_rows(order_no: str, project_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
     rows = {
-        "Order Details": list_module_records("Order Details", filters={"order_no": order_no}),
-        "Order Costs": list_module_records("Order Costs", filters={"order_no": order_no}),
+        "Order Details": _safe_list_module_records("Order Details", filters={"order_no": order_no}),
+        "Order Costs": _safe_list_module_records("Order Costs", filters={"order_no": order_no}),
     }
     if project_id:
-        rows["Client Quotation Header"] = list_module_records("Client Quotation Header", filters={"project_id": project_id})
-        rows["Client Quotation Lines"] = list_module_records("Client Quotation Lines", filters={"project_id": project_id})
-        rows["Index Snapshot"] = list_module_records("Index Snapshot", filters={"project_id": project_id})
+        rows["Client Quotation Header"] = _safe_list_module_records("Client Quotation Header", filters={"project_id": project_id})
+        rows["Client Quotation Lines"] = _safe_list_module_records("Client Quotation Lines", filters={"project_id": project_id})
+        rows["Index Snapshot"] = _safe_list_module_records("Index Snapshot", filters={"project_id": project_id})
     return rows
 
 
@@ -1800,17 +1790,8 @@ def get_related_suppliers(record_type: str, record_id: str, project_id: str | No
     if record_type == "Operation":
         queries.append(("SELECT supplier_id, supplier_name FROM order_details WHERE order_no = ?", (record_id,)))
     for sql, params in queries:
-        try:
-            execute(cur, sql, params)
-            fetched_rows = cur.fetchall()
-        except Exception as exc:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            logger.warning("related supplier lookup skipped because query failed: %s", exc)
-            continue
-        for raw_row in fetched_rows:
+        execute(cur, sql, params)
+        for raw_row in cur.fetchall():
             row = dict(raw_row)
             if row.get("supplier_id"):
                 supplier_ids.add(str(row["supplier_id"]))
