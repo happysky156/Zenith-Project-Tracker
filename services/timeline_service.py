@@ -76,6 +76,14 @@ def _days_between(start: Any, end: Any | None = None) -> int | None:
     return max((end_dt.date() - start_dt.date()).days, 0)
 
 
+def _date_is_before(value: Any, reference: Any) -> bool:
+    value_date = _date_text(value)
+    reference_date = _date_text(reference)
+    if not value_date or not reference_date:
+        return False
+    return date.fromisoformat(value_date) < date.fromisoformat(reference_date)
+
+
 def _earliest(*values: Any) -> str | None:
     dates = [_date_text(v) for v in values if _date_text(v)]
     return min(dates) if dates else None
@@ -253,9 +261,11 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
         event_date(["Gross Profit Confirmed"]),
         _latest_date(order_details, ["imported_at", "order_date"], lambda r: not _is_blank(r.get("gross_profit"))),
     )
+    result_status_normalized = str(base.get("result_status") or "").strip().lower()
+    explicit_closed = result_status_normalized in CLOSED_RESULTS
     closed = _earliest(
-        event_date(["Project Closed", "Record Archived"]),
-        base.get("last_status_update_at") if str(base.get("result_status") or "").strip().lower() in CLOSED_RESULTS else None,
+        event_date(["Project Closed"]),
+        base.get("last_status_update_at") if explicit_closed else None,
     )
 
     actual_by_code = {
@@ -279,20 +289,36 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
         "project_closed": closed,
     }
 
-    done_sequences = [seq for seq, code, _ in MILESTONES if actual_by_code.get(code)]
+    need_review_by_code: dict[str, str] = {}
+    for seq, code, label in MILESTONES:
+        actual = actual_by_code.get(code)
+        if code != "project_created" and actual and project_created and _date_is_before(actual, project_created):
+            need_review_by_code[code] = f"Actual date is earlier than Project Created ({project_created})."
+
+    valid_actual_by_code = {
+        code: actual
+        for code, actual in actual_by_code.items()
+        if actual and code not in need_review_by_code
+    }
+    done_sequences = [seq for seq, code, _ in MILESTONES if valid_actual_by_code.get(code)]
     last_done_seq = max(done_sequences) if done_sequences else 0
     current_seq = min((seq for seq, _, _ in MILESTONES if seq > last_done_seq), default=None)
 
     milestones: list[dict[str, Any]] = []
     for seq, code, label in MILESTONES:
         actual = actual_by_code.get(code)
-        status = "Done" if actual else ("Current" if current_seq == seq else "Pending")
-        if not actual and last_done_seq > seq:
-            status = "Missing"
+        need_review_note = need_review_by_code.get(code)
+        if need_review_note:
+            status = "Need Review"
+        else:
+            status = "Done" if actual else ("Current" if current_seq == seq else "Pending")
+            if not actual and last_done_seq > seq:
+                status = "Missing"
         if code.startswith("sample_") or code == "client_approved_sample":
             # If an order exists and no sample record exists, many trading cases do not need sample tracking.
             if order_created and not samples and not actual:
                 status = "Not Applicable"
+                need_review_note = None
         planned = None
         if code in {"sample_requested", "sample_sent_to_client"}:
             planned = _first_date(samples, ["target_sample_date", "target_date"])
@@ -302,12 +328,15 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
             planned = _date_text(base.get("target_date")) if status == "Current" else None
         delay = None
         if planned:
-            if actual:
+            if actual and not need_review_note:
                 delay = max(_days_between(planned, actual) or 0, 0)
             elif date.fromisoformat(planned) < date.today():
                 delay = _days_between(planned)
                 if status in {"Current", "Pending"}:
                     status = "Delayed"
+        date_source = "Auto" if actual else ("Manual Target" if planned else "Not recorded")
+        if need_review_note:
+            date_source = "Auto / Need review"
         milestones.append(
             {
                 "Sequence": seq,
@@ -316,15 +345,21 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
                 "Planned Date": planned or "-",
                 "Actual Date": actual or "-",
                 "Delay Days": delay if delay is not None else "-",
-                "Date Source": "Auto" if actual else ("Manual Target" if planned else "Not recorded"),
+                "Date Source": date_source,
+                "Need Review": need_review_note or "-",
             }
         )
 
-    stage = next((m for m in milestones if m["Status"] in {"Current", "Delayed"}), None)
-    current_stage = stage["Milestone"] if stage else ("Closed" if closed else "Not classified yet")
-    previous_done_dates = [m["Actual Date"] for m in milestones if m["Actual Date"] != "-"]
+    stage = next((m for m in milestones if m["Status"] in {"Current", "Delayed", "Need Review"}), None)
+    if explicit_closed:
+        current_stage = "Project Closed"
+    elif stage:
+        current_stage = stage["Milestone"]
+    else:
+        current_stage = "Not classified yet"
+    previous_done_dates = [m["Actual Date"] for m in milestones if m["Actual Date"] != "-" and m["Status"] == "Done"]
     current_stage_start = max(previous_done_dates) if previous_done_dates else project_created
-    days_in_stage = _days_between(current_stage_start) if current_stage_start and current_stage != "Closed" else None
+    days_in_stage = _days_between(current_stage_start) if current_stage_start and current_stage != "Project Closed" else None
 
     target_date = _date_text(base.get("target_date"))
     delay_days = None

@@ -249,33 +249,63 @@ def _render_time_control_cards(cards: dict[str, object]) -> None:
 
 
 def _render_lifecycle_bar(milestones: list[dict[str, object]]) -> None:
+    """Render lifecycle milestones with Streamlit-native columns.
+
+    Do not render one large HTML string here. Streamlit's markdown parser can
+    occasionally treat indented HTML fragments as literal code blocks, which
+    makes raw <div> code appear in the UI. Rendering each card separately keeps
+    the lifecycle bar stable across Streamlit versions.
+    """
     status_class = {
         "Done": "#188038",
         "Current": "#b06000",
         "Delayed": "#b3261e",
         "Missing": "#6b7280",
         "Pending": "#9ca3af",
-        "Not Applicable": "#d1d5db",
+        "Not Applicable": "#6b7280",
+        "Need Review": "#b3261e",
     }
-    parts = []
-    for row in milestones:
-        status = str(row.get("Status") or "Pending")
-        colour = status_class.get(status, "#9ca3af")
-        parts.append(
-            f"""
-            <div style='min-width:120px;flex:1;border:1px solid #e5e7eb;border-radius:14px;padding:10px 12px;background:#fff;'>
-                <div style='font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:{colour};font-weight:800;'>{escape(status)}</div>
-                <div style='font-size:13px;font-weight:800;color:#111827;margin-top:4px;'>{escape(str(row.get('Milestone') or '-'))}</div>
-                <div style='font-size:11px;color:#6b7280;margin-top:4px;'>Actual: {escape(str(row.get('Actual Date') or '-'))}</div>
-                <div style='font-size:11px;color:#6b7280;'>Plan: {escape(str(row.get('Planned Date') or '-'))}</div>
-            </div>
-            """
-        )
+    background_class = {
+        "Done": "#f0f7f2",
+        "Current": "#fff7ed",
+        "Delayed": "#fef2f2",
+        "Missing": "#f9fafb",
+        "Pending": "#f9fafb",
+        "Not Applicable": "#f3f4f6",
+        "Need Review": "#fff1f2",
+    }
+
     st.markdown("### Lifecycle Bar")
-    st.markdown(
-        "<div style='display:flex;gap:8px;overflow-x:auto;padding:4px 2px 12px 2px;'>" + "".join(parts) + "</div>",
-        unsafe_allow_html=True,
-    )
+    if not milestones:
+        st.info("No lifecycle milestones yet.")
+        return
+
+    cards_per_row = 6
+    for start in range(0, len(milestones), cards_per_row):
+        row_items = milestones[start:start + cards_per_row]
+        cols = st.columns(len(row_items))
+        for col, item in zip(cols, row_items):
+            status = str(item.get("Status") or "Pending")
+            colour = status_class.get(status, "#9ca3af")
+            background = background_class.get(status, "#fff")
+            milestone = escape(str(item.get("Milestone") or "-"))
+            actual = escape(str(item.get("Actual Date") or "-"))
+            planned = escape(str(item.get("Planned Date") or "-"))
+            review = str(item.get("Need Review") or "-")
+            review_html = ""
+            if review and review != "-":
+                review_html = f"<div style='font-size:10px;color:#b3261e;margin-top:4px;'>Review needed</div>"
+            with col:
+                st.markdown(
+                    f"<div style='border:1px solid #e5e7eb;border-radius:14px;padding:10px 12px;background:{background};min-height:112px;'>"
+                    f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:{colour};font-weight:800;'>{escape(status)}</div>"
+                    f"<div style='font-size:13px;font-weight:800;color:#111827;margin-top:4px;'>{milestone}</div>"
+                    f"<div style='font-size:11px;color:#6b7280;margin-top:4px;'>Actual: {actual}</div>"
+                    f"<div style='font-size:11px;color:#6b7280;'>Plan: {planned}</div>"
+                    f"{review_html}"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
 
 
 def _render_lifecycle_view(lifecycle: dict[str, object]) -> None:
@@ -285,7 +315,7 @@ def _render_lifecycle_view(lifecycle: dict[str, object]) -> None:
         rows = lifecycle.get("milestones") or []
         render_project_table(
             rows,
-            ["Sequence", "Milestone", "Status", "Planned Date", "Actual Date", "Delay Days", "Date Source"],
+            ["Sequence", "Milestone", "Status", "Planned Date", "Actual Date", "Delay Days", "Date Source", "Need Review"],
             empty_message="No lifecycle milestones yet.",
             enable_jump=False,
         )
