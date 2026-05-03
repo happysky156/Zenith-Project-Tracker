@@ -395,8 +395,8 @@ DEFAULT_INDEX_CONFIG = [
 # -----------------------------------------------------------------------------
 
 def ensure_ready() -> None:
-    from database.schema import init_db
-    init_db()
+    from database.schema import init_extension_db
+    init_extension_db()
 
 
 def field_names(module_name: str, include_system: bool = True) -> list[str]:

@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from database.schema import init_db
+from database.schema import init_extension_db
 from services.upgrade_service import carry_forward_daily_indices, list_module_records, seed_default_index_config, upsert_module_record
 
 
@@ -47,7 +47,7 @@ def main() -> None:
     if not os.getenv("DATABASE_URL") and not os.getenv("database_url"):
         print("WARNING: DATABASE_URL is not set. The script will use local SQLite if run locally.")
 
-    init_db(force=True)
+    init_extension_db(force=True)
     seed_default_index_config()
     target_date = date.today().isoformat()
 
