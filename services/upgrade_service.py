@@ -1421,6 +1421,28 @@ def import_module_dataframe(mapped_df: pd.DataFrame, module_name: str, operator:
     return {"inserted": inserted, "updated": updated, "failed": failed, "errors_count": len(errors)}
 
 
+
+
+def _table_columns(cur, table_name: str) -> set[str]:
+    """Return existing column names for a table in PostgreSQL or SQLite."""
+    try:
+        if using_postgres():
+            execute(
+                cur,
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
+                (table_name,),
+            )
+            return {str(row["column_name"] if isinstance(row, dict) else row[0]) for row in cur.fetchall()}
+        execute(cur, f"PRAGMA table_info({table_name})")
+        return {str(row["name"] if isinstance(row, dict) else row[1]) for row in cur.fetchall()}
+    except Exception:
+        return set()
+
+
+def _module_select_columns(spec: ModuleSpec, existing_columns: set[str]) -> list[str]:
+    cols = [field.name for field in spec.fields if field.name in existing_columns]
+    return cols or ["*"]
+
 # -----------------------------------------------------------------------------
 # Reads and summaries
 # -----------------------------------------------------------------------------
@@ -1429,31 +1451,55 @@ def list_module_records(module_name: str, limit: int = 500, filters: dict[str, A
     ensure_ready()
     spec = MODULES[module_name]
     filters = filters or {}
-    clauses: list[str] = []
-    params: list[Any] = []
-    for field, value in filters.items():
-        if value in (None, ""):
-            continue
-        if field.endswith("__contains"):
-            field_name = field.replace("__contains", "")
-            clauses.append(f"lower({field_name}) LIKE lower(?)")
-            params.append(f"%{value}%")
-        else:
-            clauses.append(f"{field} = ?")
-            params.append(value)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    order_field = "last_updated_at" if any(f.name == "last_updated_at" for f in spec.fields) else "created_at" if any(f.name == "created_at" for f in spec.fields) else spec.fields[0].name
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, f"SELECT * FROM {spec.table} {where} ORDER BY {order_field} DESC LIMIT ?", tuple(params + [int(limit)]))
-    rows = _rows_to_dicts(cur.fetchall())
+    try:
+        existing_columns = _table_columns(cur, spec.table)
+        if not existing_columns:
+            conn.close()
+            return []
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        for field, value in filters.items():
+            if value in (None, ""):
+                continue
+            if field.endswith("__contains"):
+                field_name = field.replace("__contains", "")
+                if field_name not in existing_columns:
+                    conn.close()
+                    return []
+                clauses.append(f"lower({field_name}) LIKE lower(?)")
+                params.append(f"%{value}%")
+            else:
+                if field not in existing_columns:
+                    conn.close()
+                    return []
+                clauses.append(f"{field} = ?")
+                params.append(value)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        order_candidates = ["last_updated_at", "created_at", "imported_at", "locked_at", "snapshot_date", spec.fields[0].name]
+        order_field = next((field for field in order_candidates if field in existing_columns), None)
+        order_sql = f" ORDER BY {order_field} DESC" if order_field else ""
+        select_cols = _module_select_columns(spec, existing_columns)
+        select_sql = "*" if select_cols == ["*"] else ", ".join(select_cols)
+        execute(cur, f"SELECT {select_sql} FROM {spec.table} {where}{order_sql} LIMIT ?", tuple(params + [int(limit)]))
+        rows = _rows_to_dicts(cur.fetchall())
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning("list_module_records failed for %s: %s", module_name, exc)
+        conn.close()
+        return []
     conn.close()
     if module_name == "Order Details":
         rows = _decorate_order_details_many(rows)
     if module_name == "Supplier Details":
         rows = _decorate_supplier_active_many(rows)
     return rows
-
 
 def _decorate_supplier_active_many(suppliers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not suppliers:
@@ -1667,8 +1713,17 @@ def get_related_suppliers(record_type: str, record_id: str, project_id: str | No
     if record_type == "Operation":
         queries.append(("SELECT supplier_id, supplier_name FROM order_details WHERE order_no = ?", (record_id,)))
     for sql, params in queries:
-        execute(cur, sql, params)
-        for raw_row in cur.fetchall():
+        try:
+            execute(cur, sql, params)
+            fetched_rows = cur.fetchall()
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning("related supplier lookup skipped because query failed: %s", exc)
+            continue
+        for raw_row in fetched_rows:
             row = dict(raw_row)
             if row.get("supplier_id"):
                 supplier_ids.add(str(row["supplier_id"]))
