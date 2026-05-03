@@ -5,6 +5,8 @@ from core.dictionaries import PEOPLE_EMAIL_MAP
 
 
 _INIT_DONE = False
+_EXT_INIT_DONE = False
+_EXTENSION_LOCK_KEY = 90218001
 
 
 SALES_CORE_COLUMNS_SQL = """
@@ -777,48 +779,79 @@ def init_db(force: bool = False) -> None:
 def init_extension_db(force: bool = False) -> None:
     """Initialise additive extension tables only when extension modules are used.
 
-    The core app calls init_db() during login/session checks. Keeping extension
-    schema work out of that startup path makes Streamlit Cloud cold starts safer
-    and preserves the original Sales/Operation behaviour.
+    The function is intentionally idempotent per Streamlit process and serialised
+    with a PostgreSQL advisory lock. Streamlit Cloud can open multiple sessions
+    at the same time; without this guard, two sessions may try to create the same
+    extension indexes concurrently and Supabase/PostgreSQL can report a deadlock.
     """
+    global _EXT_INIT_DONE
+    if _EXT_INIT_DONE and not force:
+        return
+
     # Ensure the original core schema exists first, but do not force it unless
     # explicitly requested.
     init_db(force=force)
 
     conn = get_connection()
     cur = conn.cursor()
-    for sql in EXTENSION_TABLE_SQL:
-        execute(cur, sql)
+    advisory_locked = False
+    try:
+        if using_postgres():
+            # Serialise extension DDL across concurrent Streamlit sessions.
+            execute(cur, f"SELECT pg_advisory_lock({_EXTENSION_LOCK_KEY})")
+            advisory_locked = True
 
-    # Additive Supplier Details migrations. Existing databases may still have the
-    # earlier short supplier table; these columns make the new tabbed supplier
-    # detail page and import template available without dropping any old data.
-    for column_name, column_sql in SUPPLIER_DETAILS_EXTENSION_COLUMNS.items():
-        _ensure_column(cur, "supplier_details", column_name, column_sql)
+        for sql in EXTENSION_TABLE_SQL:
+            execute(cur, sql)
 
-    # One-time safe copy from the earlier short Supplier Details fields into the
-    # new structured fields. Old columns are intentionally not dropped, so no
-    # existing data is destroyed. These updates only fill blank new fields.
-    supplier_copy_pairs = [
-        ("contact_person", "primary_contact_name"),
-        ("phone", "primary_contact_mobile"),
-        ("email", "primary_contact_email"),
-        ("address", "location_raw"),
-        ("address", "address_standardised"),
-        ("certification", "certificate"),
-        ("supplier_source", "source_channel"),
-        ("remarks", "remark_internal"),
-    ]
-    for old_column, new_column in supplier_copy_pairs:
-        if _column_exists(cur, "supplier_details", old_column) and _column_exists(cur, "supplier_details", new_column):
-            execute(
-                cur,
-                f"UPDATE supplier_details SET {new_column} = COALESCE({new_column}, {old_column}) "
-                f"WHERE {new_column} IS NULL AND {old_column} IS NOT NULL",
-            )
+        # Additive Supplier Details migrations. Existing databases may still have
+        # the earlier short supplier table; these columns make the new tabbed
+        # supplier detail page and import template available without dropping any
+        # old data.
+        for column_name, column_sql in SUPPLIER_DETAILS_EXTENSION_COLUMNS.items():
+            _ensure_column(cur, "supplier_details", column_name, column_sql)
 
-    for sql in EXTENSION_INDEX_SQL:
-        execute(cur, sql)
-    conn.commit()
-    conn.close()
+        # One-time safe copy from the earlier short Supplier Details fields into
+        # the new structured fields. Old columns are intentionally not dropped,
+        # so no existing data is destroyed. These updates only fill blank new
+        # fields.
+        supplier_copy_pairs = [
+            ("contact_person", "primary_contact_name"),
+            ("phone", "primary_contact_mobile"),
+            ("email", "primary_contact_email"),
+            ("address", "location_raw"),
+            ("address", "address_standardised"),
+            ("certification", "certificate"),
+            ("supplier_source", "source_channel"),
+            ("remarks", "remark_internal"),
+        ]
+        for old_column, new_column in supplier_copy_pairs:
+            if _column_exists(cur, "supplier_details", old_column) and _column_exists(cur, "supplier_details", new_column):
+                execute(
+                    cur,
+                    f"UPDATE supplier_details SET {new_column} = COALESCE({new_column}, {old_column}) "
+                    f"WHERE {new_column} IS NULL AND {old_column} IS NOT NULL",
+                )
+
+        for sql in EXTENSION_INDEX_SQL:
+            execute(cur, sql)
+        conn.commit()
+        _EXT_INIT_DONE = True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        if advisory_locked:
+            try:
+                execute(cur, f"SELECT pg_advisory_unlock({_EXTENSION_LOCK_KEY})")
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        conn.close()
 

@@ -394,6 +394,27 @@ if import_mode == "Extension Import":
         ),
         unsafe_allow_html=True,
     )
+    completed = st.session_state.get("extension_import_completed")
+    if completed:
+        st.success(
+            f"{completed.get('module')} import completed. "
+            f"Inserted: {completed.get('inserted', 0)} | "
+            f"Updated: {completed.get('updated', 0)} | "
+            f"Failed: {completed.get('failed', 0)}"
+        )
+        with st.expander("Import result details", expanded=False):
+            st.write({
+                "Module": completed.get("module"),
+                "Source file": completed.get("source_file"),
+                "Inserted": completed.get("inserted", 0),
+                "Updated": completed.get("updated", 0),
+                "Failed": completed.get("failed", 0),
+            })
+        if st.button("Start another Extension Import"):
+            st.session_state.pop("extension_import_completed", None)
+            st.rerun()
+        st.stop()
+
     meta_col1, meta_col2, meta_col3 = st.columns([1.15, 1, 1.25])
     with meta_col1:
         v18_module = st.selectbox("Module", options=list(V18_MODULES.keys()))
@@ -492,10 +513,15 @@ if import_mode == "Extension Import":
             archive_uploaded_import_file(v18_uploaded_file, import_type=v18_module, uploaded_by=operator)
         except Exception as exc:
             st.warning(f"Import data saved, but the source file could not be archived: {exc}")
-        st.success(
-            f"{v18_module} import completed. Inserted: {result.get('inserted', 0)} | "
-            f"Updated: {result.get('updated', 0)} | Failed: {result.get('failed', 0)}"
-        )
+        st.session_state["extension_import_completed"] = {
+            "module": v18_module,
+            "source_file": v18_uploaded_file.name,
+            "inserted": result.get("inserted", 0),
+            "updated": result.get("updated", 0),
+            "failed": result.get("failed", 0),
+            "errors_count": result.get("errors_count", 0),
+        }
+        st.rerun()
     st.stop()
 
 meta_col1, meta_col2, meta_col3 = st.columns([1, 1, 1])

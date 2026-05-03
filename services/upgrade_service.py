@@ -15,6 +15,8 @@ from utils.ids import new_batch_id
 from utils.logger import get_logger
 
 logger = get_logger("upgrade_service")
+_EXTENSION_READY = False
+
 
 
 # -----------------------------------------------------------------------------
@@ -423,9 +425,19 @@ DEFAULT_INDEX_CONFIG = [
 # Generic helpers
 # -----------------------------------------------------------------------------
 
-def ensure_ready() -> None:
+def ensure_ready(force: bool = False) -> None:
+    """Initialise extension schema once per Streamlit process.
+
+    The database layer also uses a PostgreSQL advisory lock. This lightweight
+    service-level flag avoids running schema checks on every page read, every
+    supplier decoration and every import row.
+    """
+    global _EXTENSION_READY
+    if _EXTENSION_READY and not force:
+        return
     from database.schema import init_extension_db
-    init_extension_db()
+    init_extension_db(force=force)
+    _EXTENSION_READY = True
 
 
 def field_names(module_name: str, include_system: bool = True) -> list[str]:
@@ -992,7 +1004,140 @@ def validate_import_dataframe(mapped_df: pd.DataFrame, module_name: str) -> dict
     }
 
 
+def _next_supplier_sequence_start(cur) -> int:
+    execute(cur, "SELECT supplier_id FROM supplier_details WHERE supplier_id LIKE ? ORDER BY supplier_id DESC LIMIT 1", ("SUP-%",))
+    row = cur.fetchone()
+    if row:
+        match = re.search(r"(\d+)$", str(row["supplier_id"] or ""))
+        if match:
+            return int(match.group(1)) + 1
+    return 1
+
+
+def _import_supplier_details_dataframe_bulk(mapped_df: pd.DataFrame, operator: str | None = None, source_file: str | None = None) -> dict[str, int]:
+    """Fast Supplier Details import with the agreed safe upsert rules.
+
+    Matching priority is kept exactly as designed:
+    1) supplier_code when present;
+    2) supplier_name when supplier_code is blank or not found;
+    3) otherwise insert a new supplier.
+
+    Empty cells do not overwrite existing data. This allows the user to upload
+    the same file repeatedly after editing only a few fields.
+    """
+    ensure_ready()
+    inserted = 0
+    updated = 0
+    failed = 0
+    errors: list[str] = []
+    now = now_iso()
+    spec = MODULES["Supplier Details"]
+    all_fields = [f.name for f in spec.fields]
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        execute(cur, "SELECT * FROM supplier_details")
+        existing_rows = _rows_to_dicts(cur.fetchall())
+        by_id = {str(r.get("supplier_id") or ""): r for r in existing_rows if r.get("supplier_id")}
+        by_code = {str(r.get("supplier_code") or "").strip().lower(): r for r in existing_rows if _normalize_text(r.get("supplier_code"))}
+        by_name = {str(r.get("supplier_name") or "").strip().lower(): r for r in existing_rows if _normalize_text(r.get("supplier_name"))}
+        next_seq = _next_supplier_sequence_start(cur)
+
+        for _, row in mapped_df.iterrows():
+            try:
+                raw = {field: row.get(field) for field in all_fields}
+                record = {field: _normalize_for_module("Supplier Details", field, raw.get(field)) for field in all_fields}
+                supplier_code = _normalize_text(record.get("supplier_code"))
+                supplier_name = _normalize_text(record.get("supplier_name"))
+                if not supplier_name:
+                    raise ValueError("Missing required field: supplier_name")
+
+                existing = None
+                if supplier_code:
+                    existing = by_code.get(str(supplier_code).lower())
+                if existing is None and supplier_name:
+                    existing = by_name.get(str(supplier_name).lower())
+
+                if existing:
+                    supplier_id = existing.get("supplier_id")
+                    record["supplier_id"] = supplier_id
+                    record["last_updated_at"] = now
+                    record["last_updated_by"] = operator
+                    # Never clear old values by importing blank cells. Also keep
+                    # created_at/created_by and system-calculated display fields
+                    # unless new non-empty values are explicitly present.
+                    protected_fields = {"supplier_id", "created_at", "created_by"}
+                    fields = [
+                        f for f, v in record.items()
+                        if v is not None and f not in protected_fields
+                    ]
+                    if fields:
+                        assignments = ", ".join(f"{field} = ?" for field in fields)
+                        values = [record.get(field) for field in fields] + [supplier_id]
+                        execute(cur, f"UPDATE supplier_details SET {assignments} WHERE supplier_id = ?", values)
+                    updated += 1
+                    merged = dict(existing)
+                    merged.update({k: v for k, v in record.items() if v is not None})
+                    if supplier_code:
+                        by_code[str(supplier_code).lower()] = merged
+                    if supplier_name:
+                        by_name[str(supplier_name).lower()] = merged
+                    if supplier_id:
+                        by_id[str(supplier_id)] = merged
+                else:
+                    supplier_id = record.get("supplier_id") or f"SUP-{next_seq:06d}"
+                    next_seq += 1
+                    record["supplier_id"] = supplier_id
+                    record["created_at"] = record.get("created_at") or now
+                    record["created_by"] = record.get("created_by") or operator
+                    record["last_updated_at"] = now
+                    record["last_updated_by"] = operator
+                    fields = [f for f, v in record.items() if v is not None]
+                    placeholders = ", ".join(["?"] * len(fields))
+                    execute(cur, f"INSERT INTO supplier_details ({', '.join(fields)}) VALUES ({placeholders})", [record.get(f) for f in fields])
+                    inserted += 1
+                    cached = {k: v for k, v in record.items() if v is not None}
+                    by_id[str(supplier_id)] = cached
+                    if supplier_code:
+                        by_code[str(supplier_code).lower()] = cached
+                    if supplier_name:
+                        by_name[str(supplier_name).lower()] = cached
+            except Exception as exc:
+                failed += 1
+                errors.append(f"Row {int(row.get('_source_row_number') or 0)}: {exc}")
+
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+    _clear_cache()
+    write_import_batch(
+        {
+            "batch_id": new_batch_id(),
+            "source_file": source_file or "extension_import.xlsx",
+            "import_time": now_iso(),
+            "imported_by": operator,
+            "import_type": "Supplier Details",
+            "new_count": inserted,
+            "update_count": updated,
+            "failed_count": failed,
+            "notes": "; ".join(errors[:5]) if errors else "supplier details bulk import",
+        }
+    )
+    return {"inserted": inserted, "updated": updated, "failed": failed, "errors_count": len(errors)}
+
+
 def import_module_dataframe(mapped_df: pd.DataFrame, module_name: str, operator: str | None = None, source_file: str | None = None) -> dict[str, int]:
+    if module_name == "Supplier Details":
+        return _import_supplier_details_dataframe_bulk(mapped_df, operator=operator, source_file=source_file)
+
     inserted = 0
     updated = 0
     failed = 0
@@ -1055,8 +1200,113 @@ def list_module_records(module_name: str, limit: int = 500, filters: dict[str, A
         for row in rows:
             _recalculate_order_record(row)
     if module_name == "Supplier Details":
-        rows = [_decorate_supplier_active(row) for row in rows]
+        rows = _decorate_supplier_active_many(rows)
     return rows
+
+
+def _decorate_supplier_active_many(suppliers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not suppliers:
+        return suppliers
+
+    supplier_ids = {str(row.get("supplier_id")) for row in suppliers if row.get("supplier_id")}
+    supplier_codes = {str(row.get("supplier_code")).strip().lower() for row in suppliers if _normalize_text(row.get("supplier_code"))}
+    supplier_names = {str(row.get("supplier_name")).strip().lower() for row in suppliers if _normalize_text(row.get("supplier_name"))}
+
+    def _query_linked(table: str, select_fields: str) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if supplier_ids:
+            placeholders = ", ".join(["?"] * len(supplier_ids))
+            clauses.append(f"supplier_id IN ({placeholders})")
+            params.extend(sorted(supplier_ids))
+        if supplier_codes:
+            placeholders = ", ".join(["?"] * len(supplier_codes))
+            clauses.append(f"lower(supplier_code) IN ({placeholders})")
+            params.extend(sorted(supplier_codes))
+        if supplier_names:
+            placeholders = ", ".join(["?"] * len(supplier_names))
+            clauses.append(f"lower(supplier_name) IN ({placeholders})")
+            params.extend(sorted(supplier_names))
+        if not clauses:
+            return []
+        conn = get_connection()
+        cur = conn.cursor()
+        execute(cur, f"SELECT {select_fields} FROM {table} WHERE " + " OR ".join(f"({c})" for c in clauses), tuple(params))
+        result = _rows_to_dicts(cur.fetchall())
+        conn.close()
+        return result
+
+    linked_orders = _query_linked(
+        "order_details",
+        "order_no, project_id, shipment_status, payment_status, production_status, imported_at, supplier_id, supplier_code, supplier_name",
+    )
+    linked_quotes = _query_linked(
+        "supplier_price_comparisons",
+        "supplier_quote_id, supplier_id, supplier_code, supplier_name",
+    )
+
+    def _keys(row: dict[str, Any]) -> set[tuple[str, str]]:
+        keys: set[tuple[str, str]] = set()
+        if row.get("supplier_id"):
+            keys.add(("id", str(row.get("supplier_id"))))
+        if _normalize_text(row.get("supplier_code")):
+            keys.add(("code", str(row.get("supplier_code")).strip().lower()))
+        if _normalize_text(row.get("supplier_name")):
+            keys.add(("name", str(row.get("supplier_name")).strip().lower()))
+        return keys
+
+    order_buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for order in linked_orders:
+        for key in _keys(order):
+            order_buckets.setdefault(key, []).append(order)
+
+    quote_buckets: dict[tuple[str, str], set[str]] = {}
+    for quote in linked_quotes:
+        quote_id = str(quote.get("supplier_quote_id") or id(quote))
+        for key in _keys(quote):
+            quote_buckets.setdefault(key, set()).add(quote_id)
+
+    closed_tokens = {"paid", "closed", "cancelled", "canceled", "shipped complete", "complete"}
+    decorated: list[dict[str, Any]] = []
+    for supplier in suppliers:
+        keys = _keys(supplier)
+        linked_map: dict[str, dict[str, Any]] = {}
+        for key in keys:
+            for order in order_buckets.get(key, []):
+                order_key = "|".join(str(order.get(k) or "") for k in ["order_no", "project_id", "imported_at"])
+                linked_map[order_key] = order
+        linked = sorted(linked_map.values(), key=lambda r: str(r.get("imported_at") or ""), reverse=True)
+
+        quote_ids: set[str] = set()
+        for key in keys:
+            quote_ids.update(quote_buckets.get(key, set()))
+
+        active_orders = []
+        for row in linked:
+            status_text = " ".join(str(row.get(k) or "") for k in ["shipment_status", "payment_status", "production_status"]).lower()
+            if not any(token in status_text for token in closed_tokens):
+                active_orders.append(row)
+
+        supplier = dict(supplier)
+        supplier["active_status"] = "Active" if active_orders else "Inactive"
+        supplier["active_reason"] = ", ".join(row.get("order_no") or "" for row in active_orders[:3]) if active_orders else "No open linked order"
+        supplier["last_order_no"] = linked[0].get("order_no") if linked else supplier.get("last_order_no")
+        supplier["last_project_id"] = linked[0].get("project_id") if linked else supplier.get("last_project_id")
+        supplier["price_comparison_count"] = len(quote_ids)
+        supplier["order_count"] = len(linked)
+
+        risk_parts = []
+        if supplier.get("quality_risk"):
+            risk_parts.append(f"Quality: {supplier.get('quality_risk')}")
+        if supplier.get("commercial_risk"):
+            risk_parts.append(f"Commercial: {supplier.get('commercial_risk')}")
+        if len(quote_ids) == 0:
+            risk_parts.append("No supplier quotation yet")
+        if active_orders:
+            risk_parts.append(f"Open orders: {len(active_orders)}")
+        supplier["risk_summary"] = "; ".join(risk_parts) if risk_parts else "No major risk flag"
+        decorated.append(supplier)
+    return decorated
 
 
 def _decorate_supplier_active(supplier: dict[str, Any]) -> dict[str, Any]:
