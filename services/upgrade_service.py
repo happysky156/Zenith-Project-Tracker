@@ -1042,19 +1042,39 @@ def _recalculate_order_record(record: dict[str, Any], extra_cost: float | None =
 
 
 
-def _fetch_order_cost_rows_for_batch(limit: int = 50000) -> list[dict[str, Any]]:
-    """Fetch Order Costs once for batch order-detail decoration.
+def _fetch_order_cost_rows_for_batch(order_rows: list[dict[str, Any]] | None = None, limit: int = 10000) -> list[dict[str, Any]]:
+    """Fetch relevant Order Costs once for batch order-detail decoration.
 
-    The Order Details page must not query Order Costs once per detail row.
-    On Streamlit Cloud + Supabase this N+1 pattern can make the page appear to
-    hang for minutes.  The cost table is expected to be modest, so one bounded
-    read is safer and much faster.
+    Earlier versions fetched all Order Costs and then scanned them for each
+    Order Details row. That was safe for tiny local SQLite data, but too slow
+    on Streamlit Cloud + Supabase when the cost table grows or when a page is
+    re-run often. This version restricts the cost query to the order_no/project_id
+    values actually present in the current result set.
     """
     ensure_ready()
+    order_nos: list[str] = []
+    project_ids: list[str] = []
+    if order_rows:
+        order_nos = sorted({str(v) for row in order_rows if (v := _normalize_text(row.get("order_no")))})[:500]
+        project_ids = sorted({str(v) for row in order_rows if (v := _normalize_text(row.get("project_id")))})[:500]
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    sub_clauses: list[str] = []
+    if order_nos:
+        sub_clauses.append("order_no IN (" + ", ".join(["?"] * len(order_nos)) + ")")
+        params.extend(order_nos)
+    if project_ids:
+        sub_clauses.append("project_id IN (" + ", ".join(["?"] * len(project_ids)) + ")")
+        params.extend(project_ids)
+    if sub_clauses:
+        clauses.append("(" + " OR ".join(sub_clauses) + ")")
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
     conn = get_connection()
     cur = conn.cursor()
     try:
-        execute(cur, "SELECT * FROM order_costs LIMIT ?", (int(limit),))
+        execute(cur, f"SELECT * FROM order_costs{where} LIMIT ?", tuple(params + [int(limit)]))
         return _rows_to_dicts(cur.fetchall())
     finally:
         conn.close()
@@ -1090,6 +1110,70 @@ def _cost_row_matches_order(cost_row: dict[str, Any], order_no: Any, project_id:
     return True
 
 
+def _add_sum(target: dict[Any, float], key: Any, amount: float) -> None:
+    if not key:
+        return
+    target[key] = target.get(key, 0.0) + amount
+
+
+def _build_order_cost_summary(cost_rows: list[dict[str, Any]]) -> dict[str, dict[Any, float]]:
+    """Pre-aggregate Order Costs so each Order Details row is O(1), not O(N)."""
+    summary: dict[str, dict[Any, float]] = {
+        "both_all": {},
+        "both_item": {},
+        "order_all": {},
+        "order_item": {},
+        "project_all": {},
+        "project_item": {},
+    }
+    for cost_row in cost_rows:
+        amount = _amount_to_usd(cost_row.get("cost_amount"), cost_row.get("currency")) or 0.0
+        if not amount:
+            continue
+        order_no = _normalize_text(cost_row.get("order_no"))
+        project_id = _normalize_text(cost_row.get("project_id"))
+        item_code = _normalize_text(cost_row.get("order_item_code")) or ""
+        if order_no and project_id:
+            _add_sum(summary["both_all"], (order_no, project_id), amount)
+            _add_sum(summary["both_item"], (order_no, project_id, item_code), amount)
+        if order_no:
+            _add_sum(summary["order_all"], order_no, amount)
+            _add_sum(summary["order_item"], (order_no, item_code), amount)
+        if project_id:
+            _add_sum(summary["project_all"], project_id, amount)
+            _add_sum(summary["project_item"], (project_id, item_code), amount)
+    return summary
+
+
+def _extra_cost_from_summary(order_no: Any, project_id: Any, order_item_code: Any, summary: dict[str, dict[Any, float]]) -> float:
+    order_no_text = _normalize_text(order_no)
+    project_id_text = _normalize_text(project_id)
+    item_code_text = _normalize_text(order_item_code)
+
+    if not order_no_text and not project_id_text:
+        return 0.0
+
+    if order_no_text and project_id_text:
+        if item_code_text:
+            return (
+                summary["both_item"].get((order_no_text, project_id_text, ""), 0.0)
+                + summary["both_item"].get((order_no_text, project_id_text, item_code_text), 0.0)
+            )
+        return summary["both_all"].get((order_no_text, project_id_text), 0.0)
+
+    if order_no_text:
+        if item_code_text:
+            return summary["order_item"].get((order_no_text, ""), 0.0) + summary["order_item"].get((order_no_text, item_code_text), 0.0)
+        return summary["order_all"].get(order_no_text, 0.0)
+
+    if project_id_text:
+        if item_code_text:
+            return summary["project_item"].get((project_id_text, ""), 0.0) + summary["project_item"].get((project_id_text, item_code_text), 0.0)
+        return summary["project_all"].get(project_id_text, 0.0)
+
+    return 0.0
+
+
 def _extra_cost_for_order_from_rows(
     order_no: Any,
     project_id: Any,
@@ -1097,6 +1181,11 @@ def _extra_cost_for_order_from_rows(
     cost_rows: list[dict[str, Any]],
     cache: dict[tuple[str | None, str | None, str | None], float] | None = None,
 ) -> float:
+    """Backward-compatible helper kept for older call sites.
+
+    New display paths use _build_order_cost_summary() + _extra_cost_from_summary()
+    to avoid scanning all cost rows per detail row.
+    """
     key = (_normalize_text(order_no), _normalize_text(project_id), _normalize_text(order_item_code))
     if cache is not None and key in cache:
         return cache[key]
@@ -1114,18 +1203,17 @@ def _decorate_order_details_many(rows: list[dict[str, Any]]) -> list[dict[str, A
     if not rows:
         return rows
     try:
-        cost_rows = _fetch_order_cost_rows_for_batch()
+        cost_rows = _fetch_order_cost_rows_for_batch(rows)
+        cost_summary = _build_order_cost_summary(cost_rows)
     except Exception as exc:
         logger.warning("Order Details batch cost fetch failed; using zero extra cost for display: %s", exc)
-        cost_rows = []
-    extra_cost_cache: dict[tuple[str | None, str | None, str | None], float] = {}
+        cost_summary = _build_order_cost_summary([])
     for row in rows:
-        extra_cost = _extra_cost_for_order_from_rows(
+        extra_cost = _extra_cost_from_summary(
             row.get("order_no"),
             row.get("project_id"),
             row.get("order_item_code"),
-            cost_rows,
-            extra_cost_cache,
+            cost_summary,
         )
         _recalculate_order_record(row, extra_cost=extra_cost)
     return rows
@@ -1160,15 +1248,14 @@ def recalculate_order_details(order_no: str | None = None, project_id: str | Non
     cur = conn.cursor()
     execute(cur, f"SELECT * FROM order_details WHERE {where}", tuple(params))
     rows = _rows_to_dicts(cur.fetchall())
-    cost_rows = _fetch_order_cost_rows_for_batch()
-    extra_cost_cache: dict[tuple[str | None, str | None, str | None], float] = {}
+    cost_rows = _fetch_order_cost_rows_for_batch(rows)
+    cost_summary = _build_order_cost_summary(cost_rows)
     for row in rows:
-        extra_cost = _extra_cost_for_order_from_rows(
+        extra_cost = _extra_cost_from_summary(
             row.get("order_no"),
             row.get("project_id"),
             row.get("order_item_code"),
-            cost_rows,
-            extra_cost_cache,
+            cost_summary,
         )
         updated = _recalculate_order_record(row, extra_cost=extra_cost)
         execute(

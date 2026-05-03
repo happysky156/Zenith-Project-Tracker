@@ -8,6 +8,20 @@ _INIT_DONE = False
 _EXT_INIT_DONE = False
 _EXTENSION_LOCK_KEY = 90218001
 
+# Minimal column checks used to skip heavy extension DDL on Streamlit reruns/reboots.
+# If these critical columns exist, the additive v18 compatibility migrations have
+# already been applied and pages can read safely without running many remote
+# information_schema checks or CREATE INDEX statements again.
+_EXTENSION_CRITICAL_COLUMN_CHECKS = [
+    ("supplier_details", "supplier_name"),
+    ("supplier_price_comparisons", "rfq_item_ref"),
+    ("order_details", "order_item_code"),
+    ("order_costs", "order_item_code"),
+    ("client_quotation_headers", "project_id"),
+    ("client_quotation_lines", "rfq_item_ref"),
+    ("index_snapshots", "project_id"),
+]
+
 
 SALES_CORE_COLUMNS_SQL = """
     project_id TEXT PRIMARY KEY,
@@ -1028,6 +1042,20 @@ def _ensure_column(cur, table_name: str, column_name: str, column_sql: str) -> N
     execute(cur, f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
 
 
+def _extension_schema_quick_current(cur) -> bool:
+    """Fast readiness check for already-migrated extension schemas.
+
+    Running the full extension initialisation can be slow on Streamlit Cloud
+    because it performs many remote information_schema checks and index DDLs.
+    Once the critical v18 columns exist, normal pages do not need the full DDL
+    path on every reboot. This check is additive/read-only and never changes data.
+    """
+    try:
+        return all(_column_exists(cur, table_name, column_name) for table_name, column_name in _EXTENSION_CRITICAL_COLUMN_CHECKS)
+    except Exception:
+        return False
+
+
 
 
 
@@ -1208,10 +1236,29 @@ def init_extension_db(force: bool = False) -> None:
     cur = conn.cursor()
     advisory_locked = False
     try:
+        # Fast path for the normal case: schema was already migrated by a prior
+        # deployment. This avoids making every extension page wait on full DDL.
+        if not force and _extension_schema_quick_current(cur):
+            _EXT_INIT_DONE = True
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return
+
         if using_postgres():
             # Serialise extension DDL across concurrent Streamlit sessions.
             execute(cur, f"SELECT pg_advisory_lock({_EXTENSION_LOCK_KEY})")
             advisory_locked = True
+            # Another Streamlit session may have completed migration while this
+            # session was waiting for the advisory lock. Re-check before DDL.
+            if not force and _extension_schema_quick_current(cur):
+                _EXT_INIT_DONE = True
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return
 
         for sql in EXTENSION_TABLE_SQL:
             execute(cur, sql)
