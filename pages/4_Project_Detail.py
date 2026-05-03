@@ -905,7 +905,7 @@ else:
             ext_rows.get("Order Details", []),
             key_prefix=f"detail_order_details_{record_key}",
             summary_field="shipment_status",
-            preview_columns=["order_no", "project_id", "order_item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"],
+            preview_columns=["order_no", "project_id", "order_item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "currency", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"],
         )
 
     with tab_map["Order Costs"]:

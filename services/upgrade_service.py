@@ -18,6 +18,12 @@ logger = get_logger("upgrade_service")
 _EXTENSION_READY = False
 
 
+# Fixed business exchange-rate rule for v18 commercial/order calculations.
+# No live FX is used here: 1 USD = 6.80 RMB/CNY.
+FIXED_USD_CNY_RATE = 6.80
+USD_CURRENCY_ALIASES = {"USD", "US$", "$", "DOLLAR", "DOLLARS", "US DOLLAR", "US DOLLARS"}
+CNY_CURRENCY_ALIASES = {"CNY", "RMB", "CN¥", "RMB¥", "¥", "YUAN", "CHINESE YUAN", "人民币"}
+
 
 # -----------------------------------------------------------------------------
 # Field specifications
@@ -138,8 +144,8 @@ SUPPLIER_PRICE_FIELDS = (
     FieldSpec("supplier_name", "Supplier Name", "Supplier name.", True),
     FieldSpec("quote_round", "Quote Round", "Supplier quote round."),
     FieldSpec("quote_date", "Quote Date", "Supplier quote date."),
-    FieldSpec("supplier_unit_cost", "Supplier Unit Cost", "Supplier unit cost.", numeric=True),
-    FieldSpec("currency", "Currency", "Currency."),
+    FieldSpec("supplier_unit_cost", "Supplier Unit Cost (USD)", "Supplier unit cost stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", numeric=True),
+    FieldSpec("currency", "Currency", "Stored calculation currency. RMB/CNY input is converted to USD using fixed rate 1 USD = 6.80 CNY."),
     FieldSpec("moq", "MOQ", "Minimum order quantity."),
     FieldSpec("lead_time", "Lead Time", "Mass production lead time."),
     FieldSpec("sample_lead_time", "Sample Lead Time", "Sample lead time."),
@@ -192,17 +198,17 @@ CLIENT_QUOTE_LINE_FIELDS = (
     FieldSpec("item_name", "Item Name", "Item name."),
     FieldSpec("selected_supplier_id", "Selected Supplier ID", "Selected supplier ID."),
     FieldSpec("supplier_quote_id", "Supplier Quote ID", "Linked supplier quote ID."),
-    FieldSpec("supplier_unit_cost", "Supplier Unit Cost", "Supplier unit cost.", numeric=True),
-    FieldSpec("client_unit_price", "Client Unit Price", "Client selling unit price.", numeric=True),
+    FieldSpec("supplier_unit_cost", "Supplier Unit Cost (USD)", "Supplier unit cost stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", numeric=True),
+    FieldSpec("client_unit_price", "Client Unit Price (USD)", "Client selling unit price stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", numeric=True),
     FieldSpec("quantity_basis", "Quantity Basis", "Quotation quantity basis.", numeric=True),
-    FieldSpec("currency", "Currency", "Currency."),
+    FieldSpec("currency", "Currency", "Stored calculation currency. RMB/CNY input is converted to USD using fixed rate 1 USD = 6.80 CNY."),
     FieldSpec("price_term", "Price Term", "FOB / CIF / DDP / etc."),
     FieldSpec("material_index_used", "Material Index Used", "Whether material index is used."),
     FieldSpec("freight_used", "Freight Used", "Whether freight is included."),
-    FieldSpec("estimated_revenue", "Estimated Revenue", "Auto-calculated: client unit price × quantity.", numeric=True),
-    FieldSpec("estimated_supplier_cost", "Estimated Supplier Cost", "Auto-calculated: supplier unit cost × quantity.", numeric=True),
-    FieldSpec("estimated_extra_cost", "Estimated Extra Cost", "Estimated extra cost.", numeric=True),
-    FieldSpec("estimated_gp", "Estimated Gross Profit", "Auto-calculated estimated gross profit.", numeric=True),
+    FieldSpec("estimated_revenue", "Estimated Sales Revenue (USD)", "Auto-calculated sales revenue in USD: client unit price × quantity.", numeric=True),
+    FieldSpec("estimated_supplier_cost", "Estimated Supplier Cost (USD)", "Auto-calculated supplier cost in USD: supplier unit cost × quantity.", numeric=True),
+    FieldSpec("estimated_extra_cost", "Estimated Extra Cost (USD)", "Estimated extra cost stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", numeric=True),
+    FieldSpec("estimated_gp", "Estimated Gross Profit (USD)", "Auto-calculated estimated gross profit in USD.", numeric=True),
     FieldSpec("estimated_gp_percent", "Estimated GP %", "Auto-calculated estimated GP percentage.", numeric=True),
     FieldSpec("remarks", "Remarks", "Free text notes."),
 )
@@ -300,13 +306,13 @@ ORDER_DETAIL_FIELDS = (
     FieldSpec("supplier_item_no", "Supplier Item No.", "Supplier item number."),
     FieldSpec("order_qty", "Order Qty", "Order quantity.", numeric=True),
     FieldSpec("unit", "Unit", "Unit of measure."),
-    FieldSpec("client_unit_price", "Client Unit Price", "Client selling unit price.", numeric=True),
-    FieldSpec("supplier_unit_cost", "Supplier Unit Cost", "Supplier cost unit price.", numeric=True),
-    FieldSpec("currency", "Currency", "Currency."),
-    FieldSpec("sales_revenue", "Sales Revenue", "Auto-calculated sales revenue.", numeric=True),
-    FieldSpec("supplier_cost", "Supplier Cost", "Auto-calculated supplier cost.", numeric=True),
-    FieldSpec("extra_cost", "Extra Cost", "Auto-calculated extra cost from Order Costs.", numeric=True),
-    FieldSpec("gross_profit", "Gross Profit", "Auto-calculated gross profit.", numeric=True),
+    FieldSpec("client_unit_price", "Client Unit Price (USD)", "Client selling unit price stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", numeric=True),
+    FieldSpec("supplier_unit_cost", "Supplier Unit Cost (USD)", "Supplier cost unit price stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", numeric=True),
+    FieldSpec("currency", "Currency", "Stored calculation currency. RMB/CNY input is converted to USD using fixed rate 1 USD = 6.80 CNY."),
+    FieldSpec("sales_revenue", "Sales Revenue (USD)", "Auto-calculated sales revenue in USD.", numeric=True),
+    FieldSpec("supplier_cost", "Supplier Cost (USD)", "Auto-calculated supplier cost in USD.", numeric=True),
+    FieldSpec("extra_cost", "Extra Cost (USD)", "Auto-calculated extra cost from Order Costs in USD.", numeric=True),
+    FieldSpec("gross_profit", "Gross Profit (USD)", "Auto-calculated gross profit in USD.", numeric=True),
     FieldSpec("gross_profit_percent", "Gross Profit %", "Auto-calculated GP percentage.", numeric=True),
     FieldSpec("payment_status", "Payment Status", "Payment status."),
     FieldSpec("production_status", "Production Status", "Production status."),
@@ -336,8 +342,8 @@ ORDER_COST_FIELDS = (
     FieldSpec("order_item_code", "Order Item Code", "Actual order-stage item code if available. Optional."),
     FieldSpec("cost_type", "Cost Type", "Testing / Courier / Inspection / Freight / Other.", True),
     FieldSpec("cost_description", "Cost Description", "Cost description."),
-    FieldSpec("cost_amount", "Cost Amount", "Cost amount.", True, numeric=True),
-    FieldSpec("currency", "Currency", "Currency."),
+    FieldSpec("cost_amount", "Cost Amount (USD)", "Cost amount stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", True, numeric=True),
+    FieldSpec("currency", "Currency", "Stored calculation currency. RMB/CNY input is converted to USD using fixed rate 1 USD = 6.80 CNY."),
     FieldSpec("paid_by", "Paid By", "Zenith / Client / Supplier."),
     FieldSpec("charge_to_client", "Charge to Client", "Yes / No.", boolean=True),
     FieldSpec("cost_date", "Cost Date", "Cost date."),
@@ -551,6 +557,52 @@ def _to_float(value: Any) -> float | None:
         return float(str(text).replace(",", ""))
     except Exception:
         return None
+
+
+def _normalize_currency_code(value: Any) -> str | None:
+    text = _normalize_text(value)
+    if text is None:
+        return None
+    upper = text.strip().upper()
+    compact = re.sub(r"\s+", " ", upper)
+    if compact in USD_CURRENCY_ALIASES:
+        return "USD"
+    if compact in CNY_CURRENCY_ALIASES or "RMB" in compact or "CNY" in compact or "人民币" in text:
+        return "CNY"
+    return compact
+
+
+def _amount_to_usd(value: Any, currency: Any) -> float | None:
+    amount = _to_float(value)
+    if amount is None:
+        return None
+    currency_code = _normalize_currency_code(currency)
+    if currency_code == "CNY":
+        return round(amount / FIXED_USD_CNY_RATE, 6)
+    return amount
+
+
+def _normalise_money_fields_to_usd(record: dict[str, Any], money_fields: Iterable[str], currency_field: str = "currency") -> None:
+    """Convert RMB/CNY monetary inputs to USD in-place and standardise currency.
+
+    This intentionally uses the fixed business rate only: 1 USD = 6.80 CNY.
+    """
+    currency_code = _normalize_currency_code(record.get(currency_field))
+    has_amount = False
+    for field in money_fields:
+        if field not in record:
+            continue
+        converted = _amount_to_usd(record.get(field), currency_code)
+        if converted is not None:
+            record[field] = converted
+            has_amount = True
+    if has_amount:
+        if currency_code in {"CNY", "USD"}:
+            record[currency_field] = "USD"
+        elif currency_code:
+            record[currency_field] = currency_code
+        else:
+            record[currency_field] = record.get(currency_field) or "USD"
 
 
 def _to_bool(value: Any) -> int | None:
@@ -824,6 +876,7 @@ def _prepare_record(module_name: str, raw: dict[str, Any], operator: str | None 
         record["supplier_id"] = record.get("supplier_id") or ensure_supplier(record.get("supplier_name"), record.get("supplier_code"), operator)
         if not record.get("supplier_quote_id"):
             record["supplier_quote_id"] = _new_id("SPQ")
+        _normalise_money_fields_to_usd(record, ("supplier_unit_cost", "tooling_cost", "sample_cost", "packing_cost"))
         selected = bool(record.get("selected_supplier"))
         recommended = bool(record.get("recommended_supplier"))
         record["comparison_status"] = "Completed" if selected or recommended else "In Progress"
@@ -844,6 +897,7 @@ def _prepare_record(module_name: str, raw: dict[str, Any], operator: str | None 
     elif module_name == "Client Quotation Lines":
         if not record.get("client_quote_line_id"):
             record["client_quote_line_id"] = _new_id("CQL")
+        _normalise_money_fields_to_usd(record, ("client_unit_price", "supplier_unit_cost", "estimated_extra_cost"))
         qty = _to_float(record.get("quantity_basis")) or 0
         client_price = _to_float(record.get("client_unit_price")) or 0
         supplier_cost = _to_float(record.get("supplier_unit_cost")) or 0
@@ -897,6 +951,7 @@ def _prepare_record(module_name: str, raw: dict[str, Any], operator: str | None 
     elif module_name == "Order Costs":
         if not record.get("cost_id"):
             record["cost_id"] = _new_id("COST")
+        _normalise_money_fields_to_usd(record, ("cost_amount",))
         record["created_at"] = record.get("created_at") or now
         record["created_by"] = record.get("created_by") or operator
 
@@ -954,13 +1009,17 @@ def _extra_cost_for_order(order_no: str | None, project_id: str | None, order_it
     where = " AND ".join(clauses) if clauses else "1=0"
     conn = get_connection()
     cur = conn.cursor()
-    execute(cur, f"SELECT cost_amount FROM order_costs WHERE {where}", tuple(params))
-    total = sum(_to_float(row["cost_amount"]) or 0 for row in cur.fetchall())
+    execute(cur, f"SELECT cost_amount, currency FROM order_costs WHERE {where}", tuple(params))
+    total = 0.0
+    for row in cur.fetchall():
+        row_dict = dict(row)
+        total += _amount_to_usd(row_dict.get("cost_amount"), row_dict.get("currency")) or 0
     conn.close()
     return total
 
 
 def _recalculate_order_record(record: dict[str, Any]) -> dict[str, Any]:
+    _normalise_money_fields_to_usd(record, ("client_unit_price", "supplier_unit_cost"))
     qty = _to_float(record.get("order_qty")) or 0
     client_unit = _to_float(record.get("client_unit_price")) or 0
     supplier_unit = _to_float(record.get("supplier_unit_cost")) or 0
@@ -1015,10 +1074,13 @@ def recalculate_order_details(order_no: str | None = None, project_id: str | Non
             cur,
             """
             UPDATE order_details
-            SET sales_revenue = ?, supplier_cost = ?, extra_cost = ?, gross_profit = ?, gross_profit_percent = ?
+            SET client_unit_price = ?, supplier_unit_cost = ?, currency = ?, sales_revenue = ?, supplier_cost = ?, extra_cost = ?, gross_profit = ?, gross_profit_percent = ?
             WHERE order_detail_id = ?
             """,
             (
+                updated.get("client_unit_price"),
+                updated.get("supplier_unit_cost"),
+                updated.get("currency"),
                 updated.get("sales_revenue"),
                 updated.get("supplier_cost"),
                 updated.get("extra_cost"),

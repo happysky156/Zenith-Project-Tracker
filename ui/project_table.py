@@ -23,6 +23,19 @@ SALES_DETAIL_FIELDS = [
 
 
 COLUMN_LABELS_COMMON = {
+    "sales_revenue": "Sales Revenue (USD)",
+    "estimated_revenue": "Estimated Sales Revenue (USD)",
+    "supplier_cost": "Supplier Cost (USD)",
+    "estimated_supplier_cost": "Estimated Supplier Cost (USD)",
+    "extra_cost": "Extra Cost (USD)",
+    "estimated_extra_cost": "Estimated Extra Cost (USD)",
+    "gross_profit": "Gross Profit (USD)",
+    "estimated_gp": "Estimated Gross Profit (USD)",
+    "gross_profit_percent": "Gross Profit %",
+    "estimated_gp_percent": "Estimated GP %",
+    "client_unit_price": "Client Unit Price (USD)",
+    "supplier_unit_cost": "Supplier Unit Cost (USD)",
+    "cost_amount": "Cost Amount (USD)",
     "project_id": "Project ID",
     "project_name": "Project Name",
     "client_code": "Client Code",
