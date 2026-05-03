@@ -11,7 +11,7 @@ apply_theme()
 render_upgrade_css()
 current_user = require_login()
 operator = current_user["display_name"]
-render_page_header("Price Comparison", "Supplier-side cost quotations by Project ID + Item Code + Supplier.")
+render_page_header("Price Comparison", "Supplier-side cost quotations by Project ID + RFQ Item Ref + Supplier.")
 render_upgrade_intro(
     "Supplier Price Comparison",
     "This page records supplier prices only. Client quotation is managed separately so margin and index snapshots can be traced clearly.",
@@ -27,7 +27,7 @@ with st.expander("Add supplier quote", expanded=False):
     with st.form("supplier_quote_form"):
         c1, c2, c3 = st.columns(3)
         project_id = c1.text_input("Project ID")
-        item_code = c2.text_input("Item Code")
+        rfq_item_ref = c2.text_input("RFQ Item Ref")
         quote_round = c3.text_input("Quote Round", value="1")
         c1, c2, c3 = st.columns(3)
         supplier_code = c1.text_input("Supplier Code")
@@ -49,14 +49,14 @@ with st.expander("Add supplier quote", expanded=False):
         remarks = st.text_area("Remarks", height=80)
         submitted = st.form_submit_button("Save Supplier Quote", type="primary")
         if submitted:
-            if not project_id.strip() or not item_code.strip() or not supplier_name.strip():
-                st.error("Project ID, Item Code and Supplier Name are required.")
+            if not project_id.strip() or not rfq_item_ref.strip() or not supplier_name.strip():
+                st.error("Project ID, RFQ Item Ref and Supplier Name are required.")
             else:
                 upsert_module_record(
                     "Supplier Price Comparison",
                     {
                         "project_id": project_id,
-                        "item_code": item_code,
+                        "rfq_item_ref": rfq_item_ref,
                         "supplier_code": supplier_code,
                         "supplier_name": supplier_name,
                         "quote_round": quote_round,
@@ -84,5 +84,5 @@ render_layered_records(
     filtered,
     key_prefix="price_page",
     summary_field="comparison_status",
-    preview_columns=["project_id", "item_code", "supplier_code", "supplier_name", "quote_round", "supplier_unit_cost", "currency", "recommended_supplier", "selected_supplier", "comparison_status"],
+    preview_columns=["project_id", "rfq_item_ref", "supplier_code", "supplier_name", "quote_round", "supplier_unit_cost", "currency", "recommended_supplier", "selected_supplier", "comparison_status"],
 )

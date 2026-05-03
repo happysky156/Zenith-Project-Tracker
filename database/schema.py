@@ -291,7 +291,7 @@ EXTENSION_TABLE_SQL = [
     """
     CREATE TABLE IF NOT EXISTS project_items (
         project_id TEXT NOT NULL,
-        item_code TEXT NOT NULL,
+        rfq_item_ref TEXT NOT NULL,
         item_name TEXT,
         item_description TEXT,
         client_item_no TEXT,
@@ -307,14 +307,14 @@ EXTENSION_TABLE_SQL = [
         created_by TEXT,
         last_updated_at TEXT,
         last_updated_by TEXT,
-        PRIMARY KEY (project_id, item_code)
+        PRIMARY KEY (project_id, rfq_item_ref)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS supplier_price_comparisons (
         supplier_quote_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
-        item_code TEXT NOT NULL,
+        rfq_item_ref TEXT NOT NULL,
         supplier_id TEXT,
         supplier_code TEXT,
         supplier_name TEXT NOT NULL,
@@ -372,7 +372,7 @@ EXTENSION_TABLE_SQL = [
         client_quote_line_id TEXT PRIMARY KEY,
         client_quote_id TEXT NOT NULL,
         project_id TEXT NOT NULL,
-        item_code TEXT NOT NULL,
+        rfq_item_ref TEXT NOT NULL,
         item_name TEXT,
         selected_supplier_id TEXT,
         supplier_quote_id TEXT,
@@ -434,7 +434,7 @@ EXTENSION_TABLE_SQL = [
         index_snapshot_id TEXT PRIMARY KEY,
         client_quote_id TEXT,
         project_id TEXT NOT NULL,
-        item_code TEXT,
+        rfq_item_ref TEXT,
         quote_version TEXT,
         snapshot_date TEXT,
         material_index_name TEXT,
@@ -476,7 +476,7 @@ EXTENSION_TABLE_SQL = [
         order_detail_id TEXT PRIMARY KEY,
         order_no TEXT NOT NULL,
         project_id TEXT NOT NULL,
-        item_code TEXT NOT NULL,
+        order_item_code TEXT,
         client_quote_id TEXT,
         client_quote_line_id TEXT,
         supplier_quote_id TEXT,
@@ -523,7 +523,7 @@ EXTENSION_TABLE_SQL = [
         cost_id TEXT PRIMARY KEY,
         order_no TEXT NOT NULL,
         project_id TEXT,
-        item_code TEXT,
+        order_item_code TEXT,
         cost_type TEXT NOT NULL,
         cost_description TEXT,
         cost_amount REAL,
@@ -541,7 +541,7 @@ EXTENSION_TABLE_SQL = [
     CREATE TABLE IF NOT EXISTS sample_tracking (
         sample_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
-        item_code TEXT,
+        rfq_item_ref TEXT,
         supplier_id TEXT,
         supplier_code TEXT,
         supplier_name TEXT,
@@ -650,10 +650,10 @@ EXTENSION_INDEX_DEFINITIONS = [
     ("supplier_details", "idx_supplier_details_code", ["supplier_code"]),
     ("supplier_details", "idx_supplier_details_name", ["supplier_name"]),
     ("project_items", "idx_project_items_project", ["project_id"]),
-    ("supplier_price_comparisons", "idx_supplier_price_project_item", ["project_id", "item_code"]),
+    ("supplier_price_comparisons", "idx_supplier_price_project_rfq", ["project_id", "rfq_item_ref"]),
     ("supplier_price_comparisons", "idx_supplier_price_supplier", ["supplier_id"]),
     ("client_quotation_headers", "idx_client_quote_project", ["project_id"]),
-    ("client_quotation_lines", "idx_client_quote_lines_project", ["project_id", "item_code"]),
+    ("client_quotation_lines", "idx_client_quote_lines_project", ["project_id", "rfq_item_ref"]),
     ("freight_indices", "idx_freight_indices_date_dest", ["index_date", "destination_country"]),
     ("order_details", "idx_order_details_project", ["project_id"]),
     ("order_details", "idx_order_details_order", ["order_no"]),
@@ -709,6 +709,63 @@ def _ensure_column(cur, table_name: str, column_name: str, column_sql: str) -> N
 
 
 
+
+
+def _rename_column_if_needed(cur, table_name: str, old_column: str, new_column: str) -> None:
+    """Rename old v18 item-code columns to their explicit business meaning.
+
+    This is safe for already-created extension tables because it is only applied
+    when the old column exists and the new column does not exist.
+    """
+    if not _table_exists(cur, table_name):
+        return
+    if _column_exists(cur, table_name, old_column) and not _column_exists(cur, table_name, new_column):
+        execute(cur, f"ALTER TABLE {table_name} RENAME COLUMN {old_column} TO {new_column}")
+
+
+def _copy_column_if_blank(cur, table_name: str, old_column: str, new_column: str) -> None:
+    """Backfill the new explicit column if both old and new columns exist."""
+    if not _table_exists(cur, table_name):
+        return
+    if not (_column_exists(cur, table_name, old_column) and _column_exists(cur, table_name, new_column)):
+        return
+    execute(
+        cur,
+        f"""
+        UPDATE {table_name}
+        SET {new_column} = {old_column}
+        WHERE ({new_column} IS NULL OR {new_column} = '')
+          AND {old_column} IS NOT NULL
+          AND {old_column} <> ''
+        """,
+    )
+
+
+def _apply_v18_item_reference_migrations(cur) -> None:
+    """Separate RFQ-stage references from order-stage item codes.
+
+    Previous draft schemas used a generic item_code in several extension tables.
+    From this version:
+    - RFQ / quotation / sample stages use rfq_item_ref.
+    - Order stage uses order_item_code.
+    The old column is not created in the new schema. Existing empty/development
+    databases are renamed in place rather than dropped.
+    """
+    rfq_tables = [
+        "project_items",
+        "supplier_price_comparisons",
+        "client_quotation_lines",
+        "index_snapshots",
+        "sample_tracking",
+    ]
+    for table_name in rfq_tables:
+        _rename_column_if_needed(cur, table_name, "item_code", "rfq_item_ref")
+        _copy_column_if_blank(cur, table_name, "item_code", "rfq_item_ref")
+
+    order_tables = ["order_details", "order_costs"]
+    for table_name in order_tables:
+        _rename_column_if_needed(cur, table_name, "item_code", "order_item_code")
+        _copy_column_if_blank(cur, table_name, "item_code", "order_item_code")
 
 def _create_index_if_columns_exist(cur, table_name: str, index_name: str, columns: list[str]) -> None:
     """Create an index only when the table shape matches the expected columns.
@@ -838,6 +895,10 @@ def init_extension_db(force: bool = False) -> None:
 
         for sql in EXTENSION_TABLE_SQL:
             execute(cur, sql)
+
+        # v18 item reference naming migration. This keeps RFQ-stage refs separate
+        # from actual order-stage item codes before any extension indexes are built.
+        _apply_v18_item_reference_migrations(cur)
 
         # Additive Supplier Details migrations. Existing databases may still have
         # the earlier short supplier table; these columns make the new tabbed

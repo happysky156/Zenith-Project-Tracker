@@ -28,7 +28,7 @@ with st.expander("Add order cost", expanded=False):
         c1, c2, c3 = st.columns(3)
         order_no = c1.text_input("Order No")
         project_id = c2.text_input("Project ID")
-        item_code = c3.text_input("Item Code")
+        order_item_code = c3.text_input("Order Item Code")
         c1, c2, c3 = st.columns(3)
         cost_type = c1.selectbox("Cost Type", ["Testing Fee", "Courier Fee", "Internal Inspection Fee", "Third-party Inspection Fee", "Freight Fee", "Bank Charge", "Packaging Extra Cost", "Tooling Cost", "Sample Cost", "Other Cost"])
         cost_amount = c2.number_input("Cost Amount", min_value=0.0, step=0.01)
@@ -39,14 +39,14 @@ with st.expander("Add order cost", expanded=False):
             if not order_no.strip() or not cost_type.strip():
                 st.error("Order No and Cost Type are required.")
             else:
-                upsert_module_record("Order Costs", {"order_no": order_no, "project_id": project_id, "item_code": item_code, "cost_type": cost_type, "cost_amount": cost_amount, "currency": currency, "remarks": remarks}, operator=operator)
+                upsert_module_record("Order Costs", {"order_no": order_no, "project_id": project_id, "order_item_code": order_item_code, "cost_type": cost_type, "cost_amount": cost_amount, "currency": currency, "remarks": remarks}, operator=operator)
                 st.success("Order cost saved and GP recalculated.")
                 st.rerun()
 
 view = st.radio("View", ["Order Details", "Order Costs"], horizontal=True)
 if view == "Order Details":
     filtered = render_simple_filter_bar("Order Details", order_rows)
-    render_layered_records("Order Details", filtered, key_prefix="order_detail_page", summary_field="shipment_status", preview_columns=["order_no", "project_id", "item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"])
+    render_layered_records("Order Details", filtered, key_prefix="order_detail_page", summary_field="shipment_status", preview_columns=["order_no", "project_id", "order_item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"])
 else:
     filtered = render_simple_filter_bar("Order Costs", cost_rows)
-    render_layered_records("Order Costs", filtered, key_prefix="order_cost_page", summary_field="cost_type", preview_columns=["order_no", "project_id", "item_code", "cost_type", "cost_amount", "currency", "paid_by", "charge_to_client", "cost_date"])
+    render_layered_records("Order Costs", filtered, key_prefix="order_cost_page", summary_field="cost_type", preview_columns=["order_no", "project_id", "order_item_code", "cost_type", "cost_amount", "currency", "paid_by", "charge_to_client", "cost_date"])

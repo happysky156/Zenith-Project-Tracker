@@ -854,7 +854,7 @@ if selected_type == "Sales":
             ext_rows.get("Project Items", []),
             key_prefix=f"detail_items_{record_key}",
             summary_field="item_status",
-            preview_columns=["project_id", "item_code", "item_name", "client_item_no", "material", "surface_treatment", "estimated_qty", "unit", "item_status"],
+            preview_columns=["project_id", "rfq_item_ref", "item_name", "client_item_no", "material", "surface_treatment", "estimated_qty", "unit", "item_status"],
         )
 
     with tab_map["Price Comparison"]:
@@ -863,7 +863,7 @@ if selected_type == "Sales":
             ext_rows.get("Supplier Price Comparison", []),
             key_prefix=f"detail_price_{record_key}",
             summary_field="comparison_status",
-            preview_columns=["project_id", "item_code", "supplier_code", "supplier_name", "quote_round", "supplier_unit_cost", "currency", "recommended_supplier", "selected_supplier", "comparison_status"],
+            preview_columns=["project_id", "rfq_item_ref", "supplier_code", "supplier_name", "quote_round", "supplier_unit_cost", "currency", "recommended_supplier", "selected_supplier", "comparison_status"],
         )
 
     with tab_map["Client Quotation"]:
@@ -880,14 +880,14 @@ if selected_type == "Sales":
             "Client Quotation Lines",
             ext_rows.get("Client Quotation Lines", []),
             key_prefix=f"detail_client_lines_{record_key}",
-            preview_columns=["client_quote_id", "project_id", "item_code", "client_unit_price", "supplier_unit_cost", "quantity_basis", "estimated_gp", "estimated_gp_percent"],
+            preview_columns=["client_quote_id", "project_id", "rfq_item_ref", "client_unit_price", "supplier_unit_cost", "quantity_basis", "estimated_gp", "estimated_gp_percent"],
         )
         st.markdown("### Locked Index Snapshots")
         render_layered_records(
             "Index Snapshot",
             ext_rows.get("Index Snapshot", []),
             key_prefix=f"detail_index_snapshots_{record_key}",
-            preview_columns=["project_id", "item_code", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
+            preview_columns=["project_id", "rfq_item_ref", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
         )
 
     with tab_map["Sample Tracking"]:
@@ -896,7 +896,7 @@ if selected_type == "Sales":
             ext_rows.get("Sample Tracking", []),
             key_prefix=f"detail_sample_{record_key}",
             summary_field="sample_status",
-            preview_columns=["project_id", "item_code", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"],
+            preview_columns=["project_id", "rfq_item_ref", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"],
         )
 else:
     with tab_map["Order Details"]:
@@ -905,7 +905,7 @@ else:
             ext_rows.get("Order Details", []),
             key_prefix=f"detail_order_details_{record_key}",
             summary_field="shipment_status",
-            preview_columns=["order_no", "project_id", "item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"],
+            preview_columns=["order_no", "project_id", "order_item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"],
         )
 
     with tab_map["Order Costs"]:
@@ -914,7 +914,7 @@ else:
             ext_rows.get("Order Costs", []),
             key_prefix=f"detail_order_costs_{record_key}",
             summary_field="cost_type",
-            preview_columns=["order_no", "project_id", "item_code", "cost_type", "cost_amount", "currency", "paid_by", "charge_to_client", "cost_date"],
+            preview_columns=["order_no", "project_id", "order_item_code", "cost_type", "cost_amount", "currency", "paid_by", "charge_to_client", "cost_date"],
         )
 
     with tab_map["Client Quotation"]:
@@ -931,7 +931,7 @@ else:
             "Index Snapshot",
             ext_rows.get("Index Snapshot", []),
             key_prefix=f"detail_op_snapshots_{record_key}",
-            preview_columns=["project_id", "item_code", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
+            preview_columns=["project_id", "rfq_item_ref", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
         )
 
 with timeline_tab:

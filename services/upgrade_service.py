@@ -8,7 +8,7 @@ import uuid
 
 import pandas as pd
 
-from database.connection import execute, get_connection
+from database.connection import execute, get_connection, using_postgres
 from database.repositories import write_import_batch
 from utils.dates import now_iso
 from utils.ids import new_batch_id
@@ -111,7 +111,7 @@ SUPPLIER_FIELDS = (
 
 PROJECT_ITEM_FIELDS = (
     FieldSpec("project_id", "Project ID", "Linked Sales Project ID.", True),
-    FieldSpec("item_code", "Item Code", "Project-level item code, e.g. ITEM-001.", True),
+    FieldSpec("rfq_item_ref", "RFQ Item Ref", "Temporary RFQ-stage item reference for supplier price comparison, e.g. RFQ-001.", True),
     FieldSpec("item_name", "Item Name", "Product/item name."),
     FieldSpec("item_description", "Item Description", "Product/item description."),
     FieldSpec("client_item_no", "Client Item No.", "Customer item number."),
@@ -132,7 +132,7 @@ PROJECT_ITEM_FIELDS = (
 SUPPLIER_PRICE_FIELDS = (
     FieldSpec("supplier_quote_id", "Supplier Quote ID", "System-generated supplier quotation ID."),
     FieldSpec("project_id", "Project ID", "Linked Project ID.", True),
-    FieldSpec("item_code", "Item Code", "Linked Item Code.", True),
+    FieldSpec("rfq_item_ref", "RFQ Item Ref", "Temporary RFQ-stage item reference used for quote comparison.", True),
     FieldSpec("supplier_id", "Supplier ID", "Linked Supplier ID. Auto-created from supplier name/code when possible."),
     FieldSpec("supplier_code", "Supplier Code", "Internal supplier code, optional."),
     FieldSpec("supplier_name", "Supplier Name", "Supplier name.", True),
@@ -188,7 +188,7 @@ CLIENT_QUOTE_LINE_FIELDS = (
     FieldSpec("client_quote_line_id", "Client Quote Line ID", "System-generated quotation line ID."),
     FieldSpec("client_quote_id", "Client Quote ID", "Linked client quotation header ID.", True),
     FieldSpec("project_id", "Project ID", "Linked Project ID.", True),
-    FieldSpec("item_code", "Item Code", "Linked Item Code.", True),
+    FieldSpec("rfq_item_ref", "RFQ Item Ref", "Temporary RFQ-stage item reference used for quote comparison.", True),
     FieldSpec("item_name", "Item Name", "Item name."),
     FieldSpec("selected_supplier_id", "Selected Supplier ID", "Selected supplier ID."),
     FieldSpec("supplier_quote_id", "Supplier Quote ID", "Linked supplier quote ID."),
@@ -247,7 +247,7 @@ INDEX_SNAPSHOT_FIELDS = (
     FieldSpec("index_snapshot_id", "Index Snapshot ID", "System-generated snapshot ID."),
     FieldSpec("client_quote_id", "Client Quote ID", "Linked client quotation."),
     FieldSpec("project_id", "Project ID", "Linked project.", True),
-    FieldSpec("item_code", "Item Code", "Linked item."),
+    FieldSpec("rfq_item_ref", "RFQ Item Ref", "Temporary RFQ-stage item reference used for index snapshots."),
     FieldSpec("quote_version", "Quote Version", "Linked client quote version."),
     FieldSpec("snapshot_date", "Snapshot Date", "Index snapshot date."),
     FieldSpec("material_index_name", "Material Index Name", "Stainless Steel 304 / Carbon Steel / Zinc / PP / ABS / PVC."),
@@ -287,7 +287,7 @@ ORDER_DETAIL_FIELDS = (
     FieldSpec("order_detail_id", "Order Detail ID", "System-generated order detail ID."),
     FieldSpec("order_no", "Order No", "Linked operation order number.", True),
     FieldSpec("project_id", "Project ID", "Linked Project ID.", True),
-    FieldSpec("item_code", "Item Code", "Linked Item Code.", True),
+    FieldSpec("order_item_code", "Order Item Code", "Actual order-stage item code if available. Optional because some orders do not have one."),
     FieldSpec("client_quote_id", "Client Quote ID", "Linked client quotation."),
     FieldSpec("client_quote_line_id", "Client Quote Line ID", "Linked client quotation line."),
     FieldSpec("supplier_quote_id", "Supplier Quote ID", "Linked supplier quotation."),
@@ -333,7 +333,7 @@ ORDER_COST_FIELDS = (
     FieldSpec("cost_id", "Cost ID", "System-generated cost ID."),
     FieldSpec("order_no", "Order No", "Linked order number.", True),
     FieldSpec("project_id", "Project ID", "Project ID."),
-    FieldSpec("item_code", "Item Code", "Item Code, optional."),
+    FieldSpec("order_item_code", "Order Item Code", "Actual order-stage item code if available. Optional."),
     FieldSpec("cost_type", "Cost Type", "Testing / Courier / Inspection / Freight / Other.", True),
     FieldSpec("cost_description", "Cost Description", "Cost description."),
     FieldSpec("cost_amount", "Cost Amount", "Cost amount.", True, numeric=True),
@@ -350,7 +350,7 @@ ORDER_COST_FIELDS = (
 SAMPLE_TRACKING_FIELDS = (
     FieldSpec("sample_id", "Sample ID", "System-generated sample ID."),
     FieldSpec("project_id", "Project ID", "Linked Project ID.", True),
-    FieldSpec("item_code", "Item Code", "Linked Item Code."),
+    FieldSpec("rfq_item_ref", "RFQ Item Ref", "Temporary RFQ-stage item reference used for sample tracking."),
     FieldSpec("supplier_id", "Supplier ID", "Linked Supplier ID."),
     FieldSpec("supplier_code", "Supplier Code", "Supplier code, display only."),
     FieldSpec("supplier_name", "Supplier Name", "Supplier name."),
@@ -394,7 +394,7 @@ SAMPLE_TRACKING_FIELDS = (
 
 MODULES: dict[str, ModuleSpec] = {
     "Supplier Details": ModuleSpec("Supplier Details", "supplier_details", "supplier_id", ("supplier_id",), SUPPLIER_FIELDS, "Supplier Details", "Supplier master data shared by Sales and Operation."),
-    "Project Items": ModuleSpec("Project Items", "project_items", None, ("project_id", "item_code"), PROJECT_ITEM_FIELDS, "Project Items", "Products/items under one Project ID."),
+    "Project Items": ModuleSpec("Project Items", "project_items", None, ("project_id", "rfq_item_ref"), PROJECT_ITEM_FIELDS, "Project Items", "Products/items under one Project ID."),
     "Supplier Price Comparison": ModuleSpec("Supplier Price Comparison", "supplier_price_comparisons", "supplier_quote_id", ("supplier_quote_id",), SUPPLIER_PRICE_FIELDS, "Supplier Price Comparison", "Supplier-side cost quotations."),
     "Client Quotation Header": ModuleSpec("Client Quotation Header", "client_quotation_headers", "client_quote_id", ("client_quote_id",), CLIENT_QUOTE_HEADER_FIELDS, "Client Quotation Header", "One client quotation version per Project ID."),
     "Client Quotation Lines": ModuleSpec("Client Quotation Lines", "client_quotation_lines", "client_quote_line_id", ("client_quote_line_id",), CLIENT_QUOTE_LINE_FIELDS, "Client Quotation Lines", "Item-level quotation lines."),
@@ -470,6 +470,35 @@ IMPORT_EXCLUDED_FIELDS: dict[str, set[str]] = {
         "last_updated_at",
         "last_updated_by",
     }
+}
+
+
+# Import aliases keep the new database names clear while still allowing users to
+# upload older Excel headers during the transition. The module context removes
+# ambiguity: "Item Code" maps to RFQ Item Ref in quote-stage modules, and to
+# Order Item Code in order-stage modules.
+IMPORT_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "Project Items": {
+        "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
+    },
+    "Supplier Price Comparison": {
+        "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
+    },
+    "Client Quotation Lines": {
+        "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
+    },
+    "Index Snapshot": {
+        "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
+    },
+    "Sample Tracking": {
+        "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
+    },
+    "Order Details": {
+        "order_item_code": ("Order Item Code", "Actual Item Code", "Item Code"),
+    },
+    "Order Costs": {
+        "order_item_code": ("Order Item Code", "Actual Item Code", "Item Code"),
+    },
 }
 
 
@@ -572,10 +601,64 @@ def _clear_cache() -> None:
         pass
 
 
+
+RFQ_STAGE_TABLES = {
+    "project_items",
+    "supplier_price_comparisons",
+    "client_quotation_lines",
+    "index_snapshots",
+    "sample_tracking",
+}
+ORDER_STAGE_TABLES = {"order_details", "order_costs"}
+
+
+def _table_columns(table: str) -> set[str]:
+    """Return actual DB columns so writes stay compatible with additive migrations."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if using_postgres():
+            execute(
+                cur,
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = ?
+                """,
+                (table,),
+            )
+            return {str(row["column_name"]) for row in cur.fetchall()}
+        execute(cur, f"PRAGMA table_info({table})")
+        return {str(row[1]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def _with_legacy_item_reference_columns(table: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Mirror new explicit item-reference fields into old item_code if needed.
+
+    New schemas do not create item_code in these extension tables. This mirror is
+    only for safety if an already-created development database still contains an
+    old NOT NULL item_code column during the first rerun after deployment.
+    """
+    record = dict(record)
+    if table in RFQ_STAGE_TABLES and record.get("rfq_item_ref") is not None:
+        record.setdefault("item_code", record.get("rfq_item_ref"))
+    if table in ORDER_STAGE_TABLES:
+        if table == "order_details" and record.get("order_item_code") is None:
+            record["order_item_code"] = ""
+        if record.get("order_item_code") is not None:
+            record.setdefault("item_code", record.get("order_item_code"))
+    return record
+
+
 def _insert_or_update(table: str, id_field: str | None, key_fields: tuple[str, ...], record: dict[str, Any]) -> str:
     ensure_ready()
     conn = get_connection()
     cur = conn.cursor()
+    record = _with_legacy_item_reference_columns(table, record)
+    table_columns = _table_columns(table)
+    record = {k: v for k, v in record.items() if k in table_columns}
 
     existing = None
     if id_field and record.get(id_field):
@@ -802,6 +885,10 @@ def _prepare_record(module_name: str, raw: dict[str, Any], operator: str | None 
     elif module_name == "Order Details":
         if not record.get("order_detail_id"):
             record["order_detail_id"] = _new_id("OD")
+        # Order Item Code is optional in the business process. Use a blank string
+        # instead of None so databases created from the earlier draft schema
+        # with NOT NULL still accept rows with missing order item codes.
+        record["order_item_code"] = record.get("order_item_code") or ""
         record["supplier_id"] = record.get("supplier_id") or ensure_supplier(record.get("supplier_name"), record.get("supplier_code"), operator)
         record["imported_at"] = record.get("imported_at") or now
         record["imported_by"] = record.get("imported_by") or operator
@@ -849,7 +936,7 @@ def _apply_previous_index_values(record: dict[str, Any]) -> None:
         record["change_percent"] = ((value - previous) / previous * 100) if previous else None
 
 
-def _extra_cost_for_order(order_no: str | None, project_id: str | None, item_code: str | None) -> float:
+def _extra_cost_for_order(order_no: str | None, project_id: str | None, order_item_code: str | None) -> float:
     if not order_no and not project_id:
         return 0.0
     ensure_ready()
@@ -861,9 +948,9 @@ def _extra_cost_for_order(order_no: str | None, project_id: str | None, item_cod
     if project_id:
         clauses.append("project_id = ?")
         params.append(project_id)
-    if item_code:
-        clauses.append("(item_code = ? OR item_code IS NULL OR item_code = '')")
-        params.append(item_code)
+    if order_item_code:
+        clauses.append("(order_item_code = ? OR order_item_code IS NULL OR order_item_code = '')")
+        params.append(order_item_code)
     where = " AND ".join(clauses) if clauses else "1=0"
     conn = get_connection()
     cur = conn.cursor()
@@ -879,7 +966,7 @@ def _recalculate_order_record(record: dict[str, Any]) -> dict[str, Any]:
     supplier_unit = _to_float(record.get("supplier_unit_cost")) or 0
     sales_revenue = client_unit * qty if qty or client_unit else _to_float(record.get("sales_revenue"))
     supplier_cost = supplier_unit * qty if qty or supplier_unit else _to_float(record.get("supplier_cost"))
-    extra_cost = _extra_cost_for_order(record.get("order_no"), record.get("project_id"), record.get("item_code"))
+    extra_cost = _extra_cost_for_order(record.get("order_no"), record.get("project_id"), record.get("order_item_code"))
     if sales_revenue is not None:
         record["sales_revenue"] = sales_revenue
     if supplier_cost is not None:
@@ -900,11 +987,11 @@ def upsert_module_record(module_name: str, raw: dict[str, Any], operator: str | 
             raise ValueError(f"Missing required field: {field}")
     action = _insert_or_update(spec.table, spec.id_field, spec.key_fields, record)
     if module_name in {"Order Costs", "Order Details"}:
-        recalculate_order_details(record.get("order_no"), record.get("project_id"), record.get("item_code"))
+        recalculate_order_details(record.get("order_no"), record.get("project_id"), record.get("order_item_code"))
     return action
 
 
-def recalculate_order_details(order_no: str | None = None, project_id: str | None = None, item_code: str | None = None) -> None:
+def recalculate_order_details(order_no: str | None = None, project_id: str | None = None, order_item_code: str | None = None) -> None:
     ensure_ready()
     clauses = []
     params: list[Any] = []
@@ -914,9 +1001,9 @@ def recalculate_order_details(order_no: str | None = None, project_id: str | Non
     if project_id:
         clauses.append("project_id = ?")
         params.append(project_id)
-    if item_code:
-        clauses.append("item_code = ?")
-        params.append(item_code)
+    if order_item_code:
+        clauses.append("order_item_code = ?")
+        params.append(order_item_code)
     where = " AND ".join(clauses) if clauses else "1=1"
     conn = get_connection()
     cur = conn.cursor()
@@ -958,6 +1045,8 @@ def guess_mapping(columns: list[str], module_name: str) -> dict[str, str | None]
             re.sub(r"[^a-z0-9]", "", field.lower()),
             re.sub(r"[^a-z0-9]", "", display_map.get(field, field).lower()),
         }
+        for alias in IMPORT_FIELD_ALIASES.get(module_name, {}).get(field, ()):  # module-aware transition aliases
+            keys.add(re.sub(r"[^a-z0-9]", "", alias.lower()))
         match = None
         for key in keys:
             if key in normalized:

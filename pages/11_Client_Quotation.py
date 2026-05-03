@@ -65,7 +65,7 @@ if view == "Headers":
     render_layered_records("Client Quotation Header", filtered, key_prefix="client_header_page", summary_field="quote_status", preview_columns=["client_quote_id", "project_id", "quote_version", "quote_date", "client_code", "quote_status", "price_term", "quote_currency"])
 elif view == "Lines":
     filtered = render_simple_filter_bar("Client Quotation Lines", lines)
-    render_layered_records("Client Quotation Lines", filtered, key_prefix="client_line_page", preview_columns=["client_quote_id", "project_id", "item_code", "client_unit_price", "supplier_unit_cost", "quantity_basis", "estimated_gp", "estimated_gp_percent"])
+    render_layered_records("Client Quotation Lines", filtered, key_prefix="client_line_page", preview_columns=["client_quote_id", "project_id", "rfq_item_ref", "client_unit_price", "supplier_unit_cost", "quantity_basis", "estimated_gp", "estimated_gp_percent"])
 else:
     filtered = render_simple_filter_bar("Index Snapshot", snapshots)
-    render_layered_records("Index Snapshot", filtered, key_prefix="snapshot_page", preview_columns=["project_id", "item_code", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"])
+    render_layered_records("Index Snapshot", filtered, key_prefix="snapshot_page", preview_columns=["project_id", "rfq_item_ref", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"])

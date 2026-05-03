@@ -24,7 +24,7 @@ with st.expander("Add sample tracking record", expanded=False):
     with st.form("sample_form"):
         c1, c2, c3 = st.columns(3)
         project_id = c1.text_input("Project ID")
-        item_code = c2.text_input("Item Code")
+        rfq_item_ref = c2.text_input("RFQ Item Ref")
         supplier_name = c3.text_input("Supplier Name")
         c1, c2, c3 = st.columns(3)
         sample_type = c1.selectbox("Sample Type", ["", "Initial Sample", "Revised Sample", "Approved Sample", "Testing Sample", "Pre-production Sample", "Mass Production Sample", "Reference Sample"])
@@ -48,7 +48,7 @@ with st.expander("Add sample tracking record", expanded=False):
                     "Sample Tracking",
                     {
                         "project_id": project_id,
-                        "item_code": item_code,
+                        "rfq_item_ref": rfq_item_ref,
                         "supplier_name": supplier_name,
                         "sample_type": sample_type,
                         "sample_round": sample_round,
@@ -67,4 +67,4 @@ with st.expander("Add sample tracking record", expanded=False):
                 st.rerun()
 
 filtered = render_simple_filter_bar("Sample Tracking", rows)
-render_layered_records("Sample Tracking", filtered, key_prefix="sample_page", summary_field="sample_status", preview_columns=["project_id", "item_code", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"])
+render_layered_records("Sample Tracking", filtered, key_prefix="sample_page", summary_field="sample_status", preview_columns=["project_id", "rfq_item_ref", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"])
