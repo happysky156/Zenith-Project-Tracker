@@ -163,6 +163,31 @@ def apply_theme() -> None:
     [data-testid="stSidebarNav"] a svg {{
         fill: currentColor;
     }}
+    /* Streamlit collapses long multipage menus behind a "View more" button.
+       Style that native button so additional extension pages are easy to find. */
+    [data-testid="stSidebarNav"] button {{
+        width: 100% !important;
+        min-height: 2.45rem !important;
+        padding: 0.55rem 0.85rem !important;
+        margin-top: 0.18rem !important;
+        border-radius: 14px !important;
+        background: rgba(255,255,255,0.06) !important;
+        border: 1px solid rgba(255,255,255,0.12) !important;
+        color: #F6F7F9 !important;
+        font-weight: 700 !important;
+        text-align: left !important;
+    }}
+    [data-testid="stSidebarNav"] button:hover {{
+        background: rgba(197,22,29,0.18) !important;
+        border-color: rgba(197,22,29,0.35) !important;
+        color: #FFFFFF !important;
+    }}
+    [data-testid="stSidebarNav"] button *,
+    [data-testid="stSidebarNav"] button span,
+    [data-testid="stSidebarNav"] button p {{
+        color: #F6F7F9 !important;
+        font-weight: 700 !important;
+    }}
     .zt-sidebar-top-space {{
         height: 0.35rem;
     }}
