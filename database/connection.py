@@ -53,6 +53,41 @@ def get_database_url() -> str | None:
     return _read_database_url()
 
 
+
+
+def _read_setting(name: str, default: str | None = None) -> str | None:
+    """Read a runtime setting from env or Streamlit secrets."""
+    env_value = os.getenv(name) or os.getenv(name.lower())
+    if env_value is not None:
+        return str(env_value).strip()
+    if st is not None:
+        try:
+            if name in st.secrets:
+                return str(st.secrets[name]).strip()
+            lower_name = name.lower()
+            if lower_name in st.secrets:
+                return str(st.secrets[lower_name]).strip()
+        except Exception:
+            pass
+    return default
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def postgres_pool_enabled() -> bool:
+    """Client-side psycopg pool is optional.
+
+    Streamlit Cloud is already connecting to Supabase's own pooler in production.
+    Keeping another small app-side pool can exhaust available connections when
+    multiple pages rerun or schema checks happen at the same time.  Therefore the
+    safer default is direct short-lived psycopg connections.  Set
+    ENABLE_POSTGRES_POOL=true only if you intentionally want app-side pooling.
+    """
+    return _truthy(_read_setting("ENABLE_POSTGRES_POOL", "false"))
+
+
 # Backward compatibility for older imports. New logic calls get_database_url().
 DATABASE_URL = get_database_url()
 
@@ -121,6 +156,13 @@ class _PooledPostgresConnection:
         if self._returned:
             return
         self._returned = True
+        # Always leave pooled connections in a clean IDLE state.
+        # Many read-only SELECT calls still open a transaction in psycopg;
+        # returning an INTRANS connection can flood Streamlit logs and delay reuse.
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
         try:
             self._pool.putconn(self._conn)
         except Exception:
@@ -143,15 +185,15 @@ class _PooledPostgresConnection:
 
 
 def _create_pool(conninfo: str):
-    if ConnectionPool is None:
+    if ConnectionPool is None or not postgres_pool_enabled():
         return None
     return ConnectionPool(
         conninfo=conninfo,
         min_size=0,
-        max_size=5,
+        max_size=int(_read_setting("POSTGRES_POOL_MAX_SIZE", "4") or "4"),
         open=True,
         kwargs={"row_factory": dict_row},
-        timeout=20,
+        timeout=int(_read_setting("POSTGRES_POOL_TIMEOUT_SECONDS", "30") or "30"),
     )
 
 
@@ -177,7 +219,13 @@ def get_connection():
         conninfo = str(get_database_url())
         pool = _get_postgres_pool_cached(conninfo)
         if pool is not None:
-            return _PooledPostgresConnection(pool, pool.getconn())
+            try:
+                return _PooledPostgresConnection(pool, pool.getconn())
+            except Exception:
+                # Do not bring down the app because the optional client-side pool
+                # is temporarily exhausted. Fall back to a direct short-lived
+                # connection. The caller's conn.close() will close it normally.
+                pass
         return psycopg.connect(conninfo, row_factory=dict_row)
 
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
