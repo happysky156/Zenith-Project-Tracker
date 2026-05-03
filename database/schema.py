@@ -642,21 +642,33 @@ SUPPLIER_DETAILS_EXTENSION_COLUMNS = {
 }
 
 
-EXTENSION_INDEX_SQL = [
-    "CREATE INDEX IF NOT EXISTS idx_supplier_details_code ON supplier_details(supplier_code)",
-    "CREATE INDEX IF NOT EXISTS idx_supplier_details_name ON supplier_details(supplier_name)",
-    "CREATE INDEX IF NOT EXISTS idx_project_items_project ON project_items(project_id)",
-    "CREATE INDEX IF NOT EXISTS idx_supplier_price_project_item ON supplier_price_comparisons(project_id, item_code)",
-    "CREATE INDEX IF NOT EXISTS idx_supplier_price_supplier ON supplier_price_comparisons(supplier_id)",
-    "CREATE INDEX IF NOT EXISTS idx_client_quote_project ON client_quotation_headers(project_id)",
-    "CREATE INDEX IF NOT EXISTS idx_client_quote_lines_project ON client_quotation_lines(project_id, item_code)",
-    "CREATE INDEX IF NOT EXISTS idx_daily_indices_date_name ON daily_market_indices(index_date, index_name)",
-    "CREATE INDEX IF NOT EXISTS idx_index_snapshots_project ON index_snapshots(project_id, quote_version)",
-    "CREATE INDEX IF NOT EXISTS idx_freight_indices_date_dest ON freight_indices(index_date, destination_country)",
-    "CREATE INDEX IF NOT EXISTS idx_order_details_project ON order_details(project_id)",
-    "CREATE INDEX IF NOT EXISTS idx_order_details_order ON order_details(order_no)",
-    "CREATE INDEX IF NOT EXISTS idx_order_costs_order ON order_costs(order_no)",
-    "CREATE INDEX IF NOT EXISTS idx_sample_tracking_project ON sample_tracking(project_id)",
+# Extension indexes are created only when the target table and columns exist.
+# This keeps the app compatible with both the earlier v18 extension schema
+# (index_name / index_value) and the newer market-index schema
+# (index_code / value) already created in Supabase.
+EXTENSION_INDEX_DEFINITIONS = [
+    ("supplier_details", "idx_supplier_details_code", ["supplier_code"]),
+    ("supplier_details", "idx_supplier_details_name", ["supplier_name"]),
+    ("project_items", "idx_project_items_project", ["project_id"]),
+    ("supplier_price_comparisons", "idx_supplier_price_project_item", ["project_id", "item_code"]),
+    ("supplier_price_comparisons", "idx_supplier_price_supplier", ["supplier_id"]),
+    ("client_quotation_headers", "idx_client_quote_project", ["project_id"]),
+    ("client_quotation_lines", "idx_client_quote_lines_project", ["project_id", "item_code"]),
+    ("freight_indices", "idx_freight_indices_date_dest", ["index_date", "destination_country"]),
+    ("order_details", "idx_order_details_project", ["project_id"]),
+    ("order_details", "idx_order_details_order", ["order_no"]),
+    ("order_costs", "idx_order_costs_order", ["order_no"]),
+    ("sample_tracking", "idx_sample_tracking_project", ["project_id"]),
+]
+
+MARKET_INDEX_INDEX_DEFINITIONS = [
+    # New market-index schema from the automatic fetch pipeline.
+    ("daily_market_indices", "idx_daily_indices_date_code", ["index_date", "index_code"]),
+    ("index_snapshots", "idx_index_snapshots_ref", ["snapshot_ref_type", "snapshot_ref_id", "index_code"]),
+    # Earlier v18 extension schema. These are skipped automatically when the
+    # columns do not exist, so they will not break the new Supabase tables.
+    ("daily_market_indices", "idx_daily_indices_date_name", ["index_date", "index_name"]),
+    ("index_snapshots", "idx_index_snapshots_project", ["project_id", "quote_version"]),
 ]
 
 
@@ -695,6 +707,29 @@ def _ensure_column(cur, table_name: str, column_name: str, column_sql: str) -> N
         return
     execute(cur, f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
 
+
+
+
+def _create_index_if_columns_exist(cur, table_name: str, index_name: str, columns: list[str]) -> None:
+    """Create an index only when the table shape matches the expected columns.
+
+    Some deployed Supabase databases already use the newer market-index tables
+    created from SQL Editor, while older local/dev databases may still use the
+    extension schema. A static CREATE INDEX can therefore fail with
+    UndefinedColumn. This guard keeps schema initialisation additive and safe.
+    """
+    if not _table_exists(cur, table_name):
+        return
+    for column_name in columns:
+        if not _column_exists(cur, table_name, column_name):
+            return
+    column_sql = ", ".join(columns)
+    execute(cur, f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name}({column_sql})")
+
+
+def _create_extension_indexes(cur) -> None:
+    for table_name, index_name, columns in EXTENSION_INDEX_DEFINITIONS + MARKET_INDEX_INDEX_DEFINITIONS:
+        _create_index_if_columns_exist(cur, table_name, index_name, columns)
 
 
 
@@ -833,8 +868,7 @@ def init_extension_db(force: bool = False) -> None:
                     f"WHERE {new_column} IS NULL AND {old_column} IS NOT NULL",
                 )
 
-        for sql in EXTENSION_INDEX_SQL:
-            execute(cur, sql)
+        _create_extension_indexes(cur)
         conn.commit()
         _EXT_INIT_DONE = True
     except Exception:
