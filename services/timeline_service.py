@@ -16,24 +16,24 @@ except Exception:  # pragma: no cover
 
 
 MILESTONES = [
-    (1, "project_created", "Project Created"),
-    (2, "supplier_added", "Supplier Added"),
+    (1, "project_created", "Project Record Created"),
+    (2, "supplier_added", "Supplier Linked"),
     (3, "rfq_sent", "RFQ Sent"),
     (4, "supplier_quote_received", "Supplier Quote Received"),
     (5, "price_comparison_completed", "Price Comparison Completed"),
-    (6, "client_quotation_created", "Client Quotation V1 Created"),
+    (6, "client_quotation_created", "Client Quote Created (V1)"),
     (7, "index_snapshot_locked", "Index Snapshot Locked"),
-    (8, "client_quotation_sent", "Client Quotation Sent"),
+    (8, "client_quotation_sent", "Client Quote Sent"),
     (9, "sample_requested", "Sample Requested"),
     (10, "sample_sent_to_client", "Sample Sent to Client"),
-    (11, "client_approved_sample", "Client Approved Sample"),
-    (12, "order_created", "Order Created"),
+    (11, "client_approved_sample", "Sample Approved by Client"),
+    (12, "order_created", "Order Record Created"),
     (13, "production_followup", "Production Follow-up"),
     (14, "inspection_completed", "Inspection Completed"),
     (15, "shipment_completed", "Shipment Completed"),
     (16, "final_cost_updated", "Final Cost Updated"),
     (17, "gross_profit_confirmed", "Gross Profit Confirmed"),
-    (18, "project_closed", "Project Closed"),
+    (18, "project_closed", "Ready for Closure Review"),
 ]
 
 CLOSED_RESULTS = {"won", "lost", "paid closed", "cancelled", "canceled", "closed", "complete", "completed"}
@@ -332,7 +332,7 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
     for seq, code, label in MILESTONES:
         actual = actual_by_code.get(code)
         if code != "project_created" and actual and project_created and _date_is_before(actual, project_created):
-            need_review_by_code[code] = f"Actual date is earlier than Project Created ({project_created})."
+            need_review_by_code[code] = f"Actual date is earlier than Project Record Created ({project_created})."
 
     valid_actual_by_code = {
         code: actual
@@ -440,14 +440,14 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
 
     stage = next((m for m in milestones if m["Status"] in {"Current", "Delayed", "Need Review"}), None)
     if explicit_closed:
-        current_stage = "Project Closed"
+        current_stage = "Ready for Closure Review"
     elif stage:
         current_stage = stage["Milestone"]
     else:
         current_stage = "Not classified yet"
     previous_done_dates = [m["Actual Date"] for m in milestones if m["Actual Date"] != "-" and m["Status"] == "Done"]
     current_stage_start = max(previous_done_dates) if previous_done_dates else project_created
-    days_in_stage = _days_between(current_stage_start) if current_stage_start and current_stage != "Project Closed" else None
+    days_in_stage = _days_between(current_stage_start) if current_stage_start and current_stage != "Ready for Closure Review" else None
 
     target_date = _date_text(base.get("target_date"))
     delay_days = None

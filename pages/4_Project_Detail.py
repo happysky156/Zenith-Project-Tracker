@@ -280,6 +280,15 @@ def _render_lifecycle_bar(milestones: list[dict[str, object]]) -> None:
         "Not Applicable": "#f3f4f6",
         "Need Review": "#fff1f2",
     }
+    status_display = {
+        "Done": "Completed",
+        "Current": "Current Step",
+        "Delayed": "Delayed",
+        "Missing": "Not Recorded",
+        "Pending": "Pending",
+        "Not Applicable": "N/A",
+        "Need Review": "Review Needed",
+    }
 
     st.markdown("### Lifecycle Bar")
     if not milestones:
@@ -292,6 +301,7 @@ def _render_lifecycle_bar(milestones: list[dict[str, object]]) -> None:
         cols = st.columns(len(row_items))
         for col, item in zip(cols, row_items):
             status = str(item.get("Status") or "Pending")
+            display_status = status_display.get(status, status)
             colour = status_class.get(status, "#9ca3af")
             background = background_class.get(status, "#fff")
             milestone = escape(str(item.get("Milestone") or "-"))
@@ -300,14 +310,14 @@ def _render_lifecycle_bar(milestones: list[dict[str, object]]) -> None:
             review = str(item.get("Need Review") or "-")
             review_html = ""
             if review and review != "-":
-                review_html = f"<div style='font-size:10px;color:#b3261e;margin-top:4px;'>Review needed</div>"
+                review_html = f"<div style='font-size:10px;color:#b3261e;margin-top:4px;'>Review: date check needed</div>"
             with col:
                 st.markdown(
                     f"<div style='border:1px solid #e5e7eb;border-radius:14px;padding:10px 12px;background:{background};min-height:112px;'>"
-                    f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:{colour};font-weight:800;'>{escape(status)}</div>"
+                    f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:{colour};font-weight:800;'>{escape(display_status)}</div>"
                     f"<div style='font-size:13px;font-weight:800;color:#111827;margin-top:4px;'>{milestone}</div>"
                     f"<div style='font-size:11px;color:#6b7280;margin-top:4px;'>Actual: {actual}</div>"
-                    f"<div style='font-size:11px;color:#6b7280;'>Plan: {planned}</div>"
+                    f"<div style='font-size:11px;color:#6b7280;'>Target: {planned}</div>"
                     f"{review_html}"
                     "</div>",
                     unsafe_allow_html=True,
@@ -319,8 +329,22 @@ def _render_lifecycle_view(lifecycle: dict[str, object]) -> None:
     _render_lifecycle_bar(lifecycle.get("milestones") or [])
     with st.expander("Lifecycle milestone details", expanded=False):
         rows = lifecycle.get("milestones") or []
+        status_display = {
+            "Done": "Completed",
+            "Current": "Current Step",
+            "Delayed": "Delayed",
+            "Missing": "Not Recorded",
+            "Pending": "Pending",
+            "Not Applicable": "N/A",
+            "Need Review": "Review Needed",
+        }
+        display_rows = []
+        for row in rows:
+            copied = dict(row)
+            copied["Status"] = status_display.get(str(copied.get("Status") or ""), copied.get("Status"))
+            display_rows.append(copied)
         render_project_table(
-            rows,
+            display_rows,
             ["Sequence", "Milestone", "Status", "Planned Date", "Actual Date", "Delay Days", "Date Source", "Need Review", "Manual Supplement"],
             empty_message="No lifecycle milestones yet.",
             enable_jump=False,
