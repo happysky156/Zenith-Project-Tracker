@@ -429,6 +429,14 @@ def _daily_key_columns(cols: set[str]) -> tuple[str, str]:
     return name_col, value_col
 
 
+def _read_daily_numeric_value(row: dict[str, Any]) -> Any:
+    """Return the first non-empty daily index numeric value across schemas."""
+    for key in ("value", "index_value"):
+        if key in row and row.get(key) not in (None, ""):
+            return row.get(key)
+    return row.get("index_value") if "index_value" in row else row.get("value")
+
+
 def _daily_order_column(cols: set[str]) -> str:
     if "updated_at" in cols:
         return "updated_at"
@@ -445,14 +453,21 @@ def get_previous_daily_value(conn, cols: set[str], config: dict[str, Any], targe
     key_value = config["index_name"] if name_col == "index_name" else config["index_code"]
 
     cur = conn.cursor()
+    if "value" in cols and "index_value" in cols:
+        value_expr = "COALESCE(value, index_value)"
+        not_null_expr = "(value is not null or index_value is not null)"
+    else:
+        value_expr = value_col
+        not_null_expr = f"{value_col} is not null"
+
     execute(
         cur,
         f"""
-        select {value_col} as previous_value
+        select {value_expr} as previous_value
         from daily_market_indices
         where {name_col} = ?
           and index_date < ?
-          and {value_col} is not null
+          and {not_null_expr}
         order by index_date desc, {order_col} desc
         limit 1
         """,
@@ -552,7 +567,6 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
                 "index_code": config["index_code"],
                 "index_category": config.get("index_category"),
                 "display_name": config.get("display_name") or config.get("index_name"),
-                "value": _safe_float(value),
                 "unit": config.get("unit"),
                 "source_name": config.get("source_name") or ("Bank of China" if str(config.get("index_category") or "").upper() == "FX" else ""),
                 "source_url": config.get("source_url") or (BOC_EXCHANGE_RATE_URL if str(config.get("index_category") or "").upper() == "FX" else ""),
@@ -568,6 +582,21 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
                 "updated_at": now,
             }
         )
+        # Keep both possible numeric columns in sync. Some Supabase upgrade
+        # paths have index_code + index_value, some have index_code + value,
+        # and some have both. If only one is populated, the UI can show
+        # fetch_status=Success but value=None.
+        if "value" in cols:
+            row["value"] = _safe_float(value)
+        if "index_value" in cols:
+            row["index_value"] = _safe_float(value)
+        if "confirmed_by_user" in cols:
+            row["confirmed_by_user"] = 1 if status == "Success" and not config.get("need_manual_confirm") else 0
+        if "updated_by" in cols:
+            row["updated_by"] = operator
+        if "last_updated_at" in cols:
+            row["last_updated_at"] = now
+
         if "raw_payload" in cols:
             payload = result.raw_payload or {}
             row["raw_payload"] = Jsonb(payload) if using_postgres() and Jsonb is not None else payload
@@ -700,7 +729,7 @@ def list_daily_indices(limit: int = 2000) -> list[dict[str, Any]]:
 def normalise_daily_row(row: dict[str, Any]) -> dict[str, Any]:
     index_code = row.get("index_code") or row.get("index_name") or row.get("display_name")
     display_name = row.get("display_name") or row.get("index_name") or row.get("index_code")
-    value = row.get("index_value") if "index_value" in row else row.get("value")
+    value = _read_daily_numeric_value(row)
     return {
         "index_date": row.get("index_date"),
         "index_code": _normalise_code(index_code),
