@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 from io import BytesIO
 from typing import Any
 
@@ -71,6 +71,59 @@ def _build_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return df[cols]
 
 
+
+
+def _excel_safe_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy that is safe for pandas/openpyxl Excel export.
+
+    PostgreSQL/Supabase rows can contain timezone-aware datetimes, Decimal
+    values, dictionaries, lists, or mixed object columns. Pandas Excel export
+    raises ValueError for timezone-aware datetimes. This helper only affects the
+    downloadable workbook; it does not change any database data or page logic.
+    """
+    if df.empty:
+        return df.copy()
+
+    safe = df.copy()
+
+    def clean_value(value: Any) -> Any:
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+
+        if isinstance(value, pd.Timestamp):
+            if value.tzinfo is not None:
+                value = value.tz_convert(None)
+            return value.strftime("%Y-%m-%d %H:%M:%S")
+
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                value = value.replace(tzinfo=None)
+            return value.strftime("%Y-%m-%d %H:%M:%S")
+
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value.isoformat()
+
+        if isinstance(value, time):
+            return value.strftime("%H:%M:%S")
+
+        if isinstance(value, (dict, list, tuple, set)):
+            return str(value)
+
+        return value
+
+    for col in safe.columns:
+        if pd.api.types.is_datetime64_any_dtype(safe[col]):
+            safe[col] = safe[col].astype("string").fillna("")
+        else:
+            safe[col] = safe[col].map(clean_value)
+
+    return safe
+
 def _build_index_history_export(
     all_rows: list[dict[str, Any]],
     latest_rows: list[dict[str, Any]],
@@ -112,6 +165,13 @@ def _build_index_history_export(
         {"Field": "Config Rows", "Value": len(config_df)},
         {"Field": "Note", "Value": "Daily Market Indices can change every day. Locked Index Snapshots for quotations are managed separately."},
     ])
+
+    # Excel export only: normalise values that pandas/openpyxl cannot write,
+    # especially timezone-aware datetime values from PostgreSQL.
+    readme_df = _excel_safe_dataframe(readme_df)
+    history_df = _excel_safe_dataframe(history_df)
+    latest_df = _excel_safe_dataframe(latest_df)
+    config_df = _excel_safe_dataframe(config_df)
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         readme_df.to_excel(writer, sheet_name="Read Me", index=False)
@@ -157,14 +217,17 @@ c5.metric("Need Check", sum(1 for r in today_rows if _status_label(r.get("fetch_
 st.caption(f"FX automatic source: Bank of China exchange-rate page. The script stores BOC middle rate / 100 as 1 foreign currency = CNY. Source URL: {BOC_EXCHANGE_RATE_URL}")
 
 if all_daily_rows:
-    export_bytes = _build_index_history_export(all_daily_rows, latest_rows, configs)
-    st.download_button(
-        "Export All Index History to Excel",
-        data=export_bytes,
-        file_name=f"zenith_index_history_{today}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="Download all Daily Market Indices history, latest summary and index configuration. This export is read-only and does not change system data.",
-    )
+    try:
+        export_bytes = _build_index_history_export(all_daily_rows, latest_rows, configs)
+        st.download_button(
+            "Export All Index History to Excel",
+            data=export_bytes,
+            file_name=f"zenith_index_history_{today}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Download all Daily Market Indices history, latest summary and index configuration. This export is read-only and does not change system data.",
+        )
+    except Exception as exc:
+        st.warning(f"Index history export is temporarily unavailable: {type(exc).__name__}: {exc}")
 else:
     st.caption("Export will be available after at least one Daily Market Indices record exists.")
 
