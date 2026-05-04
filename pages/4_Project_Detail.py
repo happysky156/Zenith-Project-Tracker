@@ -328,29 +328,46 @@ def _render_lifecycle_view(lifecycle: dict[str, object]) -> None:
 
 
 
-def _date_input_text(label: str, value: object = None, *, disabled: bool = False, help_text: str | None = None, key: str | None = None) -> str:
-    """Use text input for optional dates to avoid forcing a default date.
-
-    The accepted format is YYYY-MM-DD. Empty means no manual supplement.
-    """
-    initial = ""
-    if value:
-        try:
-            initial = date.fromisoformat(str(value)[:10]).isoformat()
-        except Exception:
-            initial = str(value or "")
-    return st.text_input(label, value=initial, disabled=disabled, help=help_text, key=key)
-
-
-def _valid_optional_date(value: str, label: str) -> str | None:
-    text = str(value or "").strip()
-    if not text:
+def _parse_optional_date(value: object) -> date | None:
+    if not value:
         return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
     try:
-        return date.fromisoformat(text).isoformat()
+        return date.fromisoformat(str(value)[:10])
     except Exception:
-        st.error(f"{label} must use YYYY-MM-DD format.")
-        return "__INVALID__"
+        return None
+
+
+def _date_picker_optional(
+    label: str,
+    value: object = None,
+    *,
+    disabled: bool = False,
+    help_text: str | None = None,
+    key: str | None = None,
+) -> date | None:
+    """Optional date picker for manual timeline supplements.
+
+    Empty means no manual supplement. Automatic actual dates remain locked by
+    disabling the picker in the calling form.
+    """
+    parsed = _parse_optional_date(value)
+    return st.date_input(
+        label,
+        value=parsed,
+        disabled=disabled,
+        help=help_text,
+        key=key,
+        format="YYYY-MM-DD",
+    )
+
+
+def _date_to_iso(value: object) -> str | None:
+    parsed = _parse_optional_date(value)
+    return parsed.isoformat() if parsed else None
 
 
 def _render_manual_timeline_supplement(
@@ -373,13 +390,28 @@ def _render_manual_timeline_supplement(
 
     milestone_labels = [f"{seq}. {label}" for seq, code, label in MILESTONES]
     label_to_code = {f"{seq}. {label}": code for seq, code, label in MILESTONES}
-    label_to_name = {f"{seq}. {label}": label for seq, code, label in MILESTONES}
-    selected_label = st.selectbox("Milestone", milestone_labels, key=f"manual_timeline_milestone_{record_type}_{record_id}")
+    selected_label = st.selectbox(
+        "Milestone",
+        milestone_labels,
+        key=f"manual_timeline_milestone_{record_type}_{record_id}",
+    )
     milestone_code = label_to_code[selected_label]
 
+    # Use the already-calculated lifecycle data for milestone display. Do not
+    # re-read timeline/event data when the user switches milestones.
     milestone_rows = lifecycle.get("milestones") or []
     current_row = next((row for row in milestone_rows if row.get("Milestone Code") == milestone_code), {})
-    existing = get_manual_timeline_input(str(project_id), milestone_code, record_id=str(record_id)) or {}
+
+    # Read manual supplements once for this project, then select the row in memory.
+    manual_rows = list_manual_timeline_inputs(str(project_id))
+    existing = next(
+        (
+            row for row in manual_rows
+            if row.get("milestone_code") == milestone_code
+            and (not row.get("record_id") or str(row.get("record_id")) == str(record_id))
+        ),
+        {},
+    )
 
     auto_actual = current_row.get("Actual Date") if current_row.get("Actual Date") != "-" and str(current_row.get("Date Source") or "").startswith("Auto") else None
     auto_planned = current_row.get("Planned Date") if current_row.get("Planned Date") != "-" and "Manual" not in str(current_row.get("Date Source") or "") else None
@@ -390,10 +422,10 @@ def _render_manual_timeline_supplement(
     status_cols[2].metric("Auto Planned", str(auto_planned or "No target"))
     status_cols[3].metric("Date Source", str(current_row.get("Date Source") or "-"))
 
-    with st.form(f"manual_timeline_form_{record_type}_{record_id}_{milestone_code}"):
+    with st.form(f"manual_timeline_form_{record_type}_{record_id}_{milestone_code}", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            manual_planned = _date_input_text(
+            manual_planned = _date_picker_optional(
                 "Manual Planned Date",
                 existing.get("manual_planned_date"),
                 disabled=bool(auto_planned),
@@ -407,16 +439,23 @@ def _render_manual_timeline_supplement(
                     disabled=True,
                     help="Automatic actual dates are locked and cannot be overwritten.",
                 )
-                manual_actual = ""
+                manual_actual = None
             else:
-                manual_actual = _date_input_text(
+                manual_actual = _date_picker_optional(
                     "Manual Actual Date",
                     existing.get("manual_actual_date"),
                     help_text="Only used when no system actual date exists.",
                     key=f"manual_actual_{record_type}_{record_id}_{milestone_code}",
                 )
-            manual_waiting_for = st.text_input("Manual Waiting For", value=str(existing.get("manual_waiting_for") or ""))
-            manual_waiting_since = _date_input_text("Manual Waiting Since", existing.get("manual_waiting_since"))
+            manual_waiting_for = st.text_input(
+                "Manual Waiting For",
+                value=str(existing.get("manual_waiting_for") or ""),
+            )
+            manual_waiting_since = _date_picker_optional(
+                "Manual Waiting Since",
+                existing.get("manual_waiting_since"),
+                key=f"manual_waiting_since_{record_type}_{record_id}_{milestone_code}",
+            )
         with col2:
             owner_options = [""] + PEOPLE
             owner_value = existing.get("manual_owner") or ""
@@ -435,33 +474,27 @@ def _render_manual_timeline_supplement(
 
         submitted = st.form_submit_button("Save Manual Timeline Supplement", type="primary")
         if submitted:
-            planned = _valid_optional_date(manual_planned, "Manual Planned Date")
-            actual = _valid_optional_date(manual_actual, "Manual Actual Date")
-            waiting_since = _valid_optional_date(manual_waiting_since, "Manual Waiting Since")
-            if "__INVALID__" in {planned, actual, waiting_since}:
-                st.stop()
             result = save_manual_timeline_input(
                 project_id=str(project_id),
                 record_type=record_type,
                 record_id=str(record_id),
                 order_no=order_no,
                 milestone_code=milestone_code,
-                manual_planned_date=planned,
-                manual_actual_date=actual,
+                manual_planned_date=_date_to_iso(manual_planned),
+                manual_actual_date=None if auto_actual else _date_to_iso(manual_actual),
                 manual_waiting_for=manual_waiting_for.strip() or None,
-                manual_waiting_since=waiting_since,
+                manual_waiting_since=_date_to_iso(manual_waiting_since),
                 manual_owner=manual_owner or None,
                 manual_status_override=manual_status or None,
                 manual_note=manual_note.strip() or None,
                 operator=operator,
             )
             if result.get("saved"):
-                st.success(result.get("message") or "Manual timeline supplement saved.")
+                st.session_state[f"manual_timeline_saved_message_{record_type}_{record_id}"] = result.get("message") or "Manual timeline supplement saved."
                 st.rerun()
             else:
                 st.warning(result.get("message") or "Manual timeline supplement was not saved.")
 
-    manual_rows = list_manual_timeline_inputs(str(project_id))
     if manual_rows:
         with st.expander("Existing manual supplements", expanded=False):
             display_rows = []
@@ -1205,7 +1238,12 @@ with timeline_tab:
     try:
         lifecycle_view = get_record_lifecycle_view(selected_type, selected_record_id, detail)
         _render_lifecycle_view(lifecycle_view)
-        with st.expander("Manual Timeline Supplement", expanded=False):
+        flash_key = f"manual_timeline_saved_message_{selected_type}_{selected_record_id}"
+        saved_message = st.session_state.pop(flash_key, None)
+        if saved_message:
+            st.success(saved_message)
+        expander_label = "Manual Timeline Supplement" + (" ✓ Saved" if saved_message else "")
+        with st.expander(expander_label, expanded=False):
             _render_manual_timeline_supplement(
                 lifecycle=lifecycle_view,
                 record_type=selected_type,
