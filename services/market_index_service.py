@@ -35,40 +35,55 @@ from database.connection import execute, get_connection, using_postgres
 
 BOC_EXCHANGE_RATE_URL = "https://www.bankofchina.com/sourcedb/whpj/enindex_1619.html"
 SUPPORTED_BOC_CURRENCIES = {"USD", "HKD", "GBP"}
-SINA_FUTURES_QUOTE_PAGE = "https://finance.sina.com.cn/futures/quotes/"
-SINA_FUTURES_QUOTES_URL_TEMPLATE = "https://hq.sinajs.cn/list={symbols}"
-EASTMONEY_FUTURES_API = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+SMM_BASE_URL = "https://hq.smm.cn"
+SMM_STEEL_URL = "https://steel.smm.cn/steel/107"
+CCMN_BASE_URL = "https://m.ccmn.cn"
 
 # Metal index policy:
-# - Primary auto source: Sina Finance Futures
-# - Fallback auto source: Eastmoney Futures
-# - Official reference kept in payload/remarks as SHFE, so the business meaning
-#   remains aligned with the exchange product while avoiding SHFE website/WAF
-#   instability in Streamlit Cloud / GitHub Actions.
+# - Primary auto source: Shanghai Metals Market (SMM / 上海有色网).
+# - Fallback auto source: Changjiang Nonferrous Metals Network (CCMN / 长江有色金属网).
+# - Each index uses its own page/keywords and an expected value range so a
+#   wrong field cannot be written as a false Success.
 METAL_INDEX_MAP: dict[str, dict[str, Any]] = {
     "STAINLESS_STEEL_304": {
-        "sina_symbols": ["nf_SS0", "nf_SS"],
-        "eastmoney_secids": ["113.SS0", "142.SS0", "103.SS0"],
-        "official_reference": "SHFE Stainless Steel reference",
-        "source_label": "Sina Finance Futures Stainless Steel quote; official reference: SHFE Stainless Steel",
+        "smm_url": "https://hq.smm.cn/h5/sus-304sus-price",
+        "smm_keywords": ["304/2B卷不锈钢全国均价", "304/2B卷-毛边无锡不锈钢价格", "304/NO.1卷不锈钢价格", "304/No.1卷无锡不锈钢价格"],
+        "ccmn_url": "https://m.ccmn.cn/mbxg/304/",
+        "ccmn_keywords": ["304", "不锈钢"],
+        "expected_min": Decimal("8000"),
+        "expected_max": Decimal("40000"),
+        "source_label": "SMM 304 stainless steel spot reference; fallback: Changjiang Nonferrous Metals Network",
+        "official_reference": "SMM / Changjiang 304 stainless steel spot reference",
     },
     "CARBON_STEEL": {
-        "sina_symbols": ["nf_HC0", "nf_RB0", "nf_HC", "nf_RB"],
-        "eastmoney_secids": ["113.HC0", "113.RB0", "142.HC0", "142.RB0", "103.HC0", "103.RB0"],
-        "official_reference": "SHFE Hot-Rolled Coil / Rebar reference",
-        "source_label": "Sina Finance Futures Hot-Rolled Coil quote; official reference: SHFE HRC/Rebar",
+        "smm_url": "https://steel.smm.cn/steel/107",
+        "smm_keywords": ["SMM中国热轧板卷价格指数", "全国热卷均价", "热轧板卷"],
+        "ccmn_url": "https://m.ccmn.cn/mzhuanti/jinsjy/",
+        "ccmn_keywords": ["热轧卷板", "热轧板卷", "热卷"],
+        "expected_min": Decimal("1500"),
+        "expected_max": Decimal("10000"),
+        "source_label": "SMM hot-rolled coil / carbon steel spot reference; fallback: Changjiang Nonferrous Metals Network",
+        "official_reference": "SMM hot-rolled coil / carbon steel reference",
     },
     "ZINC": {
-        "sina_symbols": ["nf_ZN0", "nf_ZN"],
-        "eastmoney_secids": ["113.ZN0", "142.ZN0", "103.ZN0"],
-        "official_reference": "SHFE Zinc reference",
-        "source_label": "Sina Finance Futures Zinc quote; official reference: SHFE Zinc",
+        "smm_url": "https://hq.smm.cn/h5/zn",
+        "smm_keywords": ["长江现货锌锭价格0#", "上海现货锌锭价格0#", "0#"],
+        "ccmn_url": "https://m.ccmn.cn/xin/",
+        "ccmn_keywords": ["长江现货", "0#锌", "锌"],
+        "expected_min": Decimal("10000"),
+        "expected_max": Decimal("60000"),
+        "source_label": "SMM zinc spot reference; fallback: Changjiang Nonferrous Metals Network",
+        "official_reference": "SMM / Changjiang zinc spot reference",
     },
     "ALUMINIUM": {
-        "sina_symbols": ["nf_AL0", "nf_AL"],
-        "eastmoney_secids": ["113.AL0", "142.AL0", "103.AL0"],
-        "official_reference": "SHFE Aluminium reference",
-        "source_label": "Sina Finance Futures Aluminium quote; official reference: SHFE Aluminium",
+        "smm_url": "https://hq.smm.cn/h5/alu",
+        "smm_keywords": ["上海铝锭价格", "长江铝锭价格", "A00铝"],
+        "ccmn_url": "https://m.ccmn.cn/al/",
+        "ccmn_keywords": ["长江现货", "A00铝", "铝"],
+        "expected_min": Decimal("10000"),
+        "expected_max": Decimal("60000"),
+        "source_label": "SMM aluminium spot reference; fallback: Changjiang Nonferrous Metals Network",
+        "official_reference": "SMM / Changjiang aluminium spot reference",
     },
 }
 LOCAL_TZ = ZoneInfo("Asia/Singapore")
@@ -77,10 +92,10 @@ DEFAULT_INDEX_CONFIGS: list[dict[str, Any]] = [
     {"index_code": "USD_CNY", "index_name": "USD/CNY", "display_name": "USD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "HKD_CNY", "index_name": "HKD/CNY", "display_name": "HKD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "GBP_CNY", "index_name": "GBP/CNY", "display_name": "GBP/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "STAINLESS_STEEL_304", "index_name": "Stainless Steel 304", "display_name": "Stainless Steel 304", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "STAINLESS_STEEL_304", "index_name": "Stainless Steel 304", "display_name": "Stainless Steel 304", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SMM / Changjiang Nonferrous", "source_url": "https://hq.smm.cn", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SMM / Changjiang Nonferrous", "source_url": "https://hq.smm.cn", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SMM / Changjiang Nonferrous", "source_url": "https://hq.smm.cn", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SMM / Changjiang Nonferrous", "source_url": "https://hq.smm.cn", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "PP", "index_name": "PP", "display_name": "PP", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "PVC", "index_name": "PVC", "display_name": "PVC", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "ABS", "index_name": "ABS", "display_name": "ABS", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "Third-party / Manual Confirm", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
@@ -406,139 +421,154 @@ def _extract_source_pub_time_from_fields(fields: list[str]) -> str | None:
         return f"{date_match.group(0)} {time_match.group(0)}"
     if date_match:
         return date_match.group(0)
+    short_date = re.search(r"\b\d{1,2}[-/]\d{1,2}\b", text)
+    if short_date:
+        return short_date.group(0)
     return None
 
 
-def _first_plausible_metal_price(fields: list[str]) -> Decimal | None:
-    """Return a plausible CNY/ton futures quote from a Sina/Eastmoney row.
-
-    Domestic metal futures prices should be much larger than small change/
-    percentage fields, so using a threshold avoids accidentally picking price
-    movement or percent columns when a provider changes field order.
-    """
-    for item in fields:
-        value = _safe_decimal(item)
-        if value is not None and value > Decimal("100"):
-            return value
-    return None
+def _normalise_web_text(html: str) -> str:
+    soup = BeautifulSoup(html or "", "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    text = soup.get_text("\n", strip=True)
+    text = text.replace("\xa0", " ").replace("—", "-").replace("－", "-")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text
 
 
-def _parse_sina_futures_response(text: str) -> dict[str, dict[str, Any]]:
-    """Parse Sina Finance futures quote response.
+def _metal_expected_range(meta: dict[str, Any]) -> tuple[Decimal, Decimal]:
+    return Decimal(str(meta.get("expected_min") or "0")), Decimal(str(meta.get("expected_max") or "999999999"))
 
-    Typical response format is a group of JavaScript assignments, for example:
-    ``var hq_str_nf_AL0="...";``. The exact field order may vary, so this
-    parser deliberately uses a defensive strategy: find the first plausible
-    CNY/ton numeric quote and keep the raw fields for audit/debugging.
-    """
-    parsed: dict[str, dict[str, Any]] = {}
-    if not text:
-        return parsed
 
-    pattern = re.compile(r"var\s+hq_str_(?P<symbol>[^=]+)=\"(?P<data>.*?)\";", re.S)
-    for match in pattern.finditer(text):
-        symbol = match.group("symbol").strip()
-        data = match.group("data") or ""
-        if not data.strip():
+def _extract_price_candidates(text: str, expected_min: Decimal, expected_max: Decimal) -> list[Decimal]:
+    # Remove dates and percentage fields first so year/month/day and percent
+    # changes cannot be selected as prices.
+    cleaned = re.sub(r"20\d{2}[-/]\d{1,2}[-/]\d{1,2}", " ", text)
+    cleaned = re.sub(r"\b\d{1,2}[-/]\d{1,2}\b", " ", cleaned)
+    cleaned = re.sub(r"[+-]?\d+(?:\.\d+)?\s*%", " ", cleaned)
+    candidates: list[Decimal] = []
+    for raw in re.findall(r"(?<![A-Za-z])[-+]?\d[\d,]*(?:\.\d+)?(?![A-Za-z])", cleaned):
+        # Price changes are often explicit +50 / -90. They are far below the
+        # metal price range, but skip signed values anyway for extra safety.
+        if raw.strip().startswith(("+", "-")):
             continue
-        fields = [field.strip() for field in data.split(",")]
-        value = _first_plausible_metal_price(fields[1:] if len(fields) > 1 else fields)
-        if value is None:
+        value = _safe_decimal(raw)
+        if value is not None and expected_min <= value <= expected_max:
+            candidates.append(value)
+    return candidates
+
+
+def _select_representative_price(candidates: list[Decimal]) -> Decimal | None:
+    if not candidates:
+        return None
+    # For spot-price rows, a common pattern is: low, high, average. Prefer the
+    # average when it appears as the third value and sits between low/high.
+    if len(candidates) >= 3:
+        low, high, avg = candidates[0], candidates[1], candidates[2]
+        if min(low, high) <= avg <= max(low, high):
+            return avg
+        # Some SMM index rows repeat the same value three times.
+        if low == high == avg:
+            return avg
+    return candidates[0]
+
+
+def _extract_price_from_keyword_context(text: str, keywords: list[str], meta: dict[str, Any]) -> tuple[Decimal | None, str | None, str | None]:
+    expected_min, expected_max = _metal_expected_range(meta)
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    joined = "\n".join(lines)
+
+    for keyword in keywords:
+        if not keyword:
             continue
-        parsed[symbol] = {
-            "value": value,
-            "name": fields[0] if fields else symbol,
-            "source_pub_time": _extract_source_pub_time_from_fields(fields),
-            "fields": fields,
-        }
-    return parsed
+        # First try line-based context, which works for both SMM mobile pages
+        # and CCMN mobile pages.
+        for idx, line in enumerate(lines):
+            if keyword in line:
+                context = " ".join(lines[idx: idx + 10])
+                candidates = _extract_price_candidates(context, expected_min, expected_max)
+                value = _select_representative_price(candidates)
+                if value is not None:
+                    return value, _extract_source_pub_time_from_fields([context]), context[:500]
+
+        # Fallback to a regex window around the keyword for pages where the
+        # text is minified into one long line.
+        pos = joined.find(keyword)
+        if pos >= 0:
+            context = joined[pos: pos + 900]
+            candidates = _extract_price_candidates(context, expected_min, expected_max)
+            value = _select_representative_price(candidates)
+            if value is not None:
+                return value, _extract_source_pub_time_from_fields([context]), context[:500]
+
+    return None, None, None
 
 
-def _fetch_sina_metal_quotes() -> dict[str, FetchResult]:
-    """Fetch metal quote values from Sina Finance Futures.
+def _validate_metal_value(index_code: str, value: Decimal | None) -> tuple[bool, str | None]:
+    if value is None:
+        return False, "No value parsed."
+    meta = METAL_INDEX_MAP.get(index_code, {})
+    expected_min, expected_max = _metal_expected_range(meta)
+    if not (expected_min <= value <= expected_max):
+        return False, f"Parsed value {value} outside expected range {expected_min}-{expected_max} CNY/ton."
+    return True, None
 
-    This function is intentionally safe: any network, decoding, or parser
-    failure returns Failed results for metal indices only. FX and freight logic
-    remain independent.
-    """
-    requested = set(METAL_INDEX_MAP.keys())
-    results: dict[str, FetchResult] = {}
 
-    symbols: list[str] = []
-    for meta in METAL_INDEX_MAP.values():
-        for symbol in meta.get("sina_symbols", []):
-            if symbol not in symbols:
-                symbols.append(symbol)
-
-    if not symbols:
-        return {}
-
-    url = SINA_FUTURES_QUOTES_URL_TEMPLATE.format(symbols=",".join(symbols))
+def _http_get_text(url: str) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ZenithProjectTracker/1.0",
-        "Accept": "*/*",
-        "Referer": SINA_FUTURES_QUOTE_PAGE,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
     }
+    response = requests.get(url, headers=headers, timeout=25)
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or "utf-8"
+    return response.text
 
-    try:
-        response = requests.get(url, headers=headers, timeout=20)
-        response.raise_for_status()
+
+def _fetch_smm_metal_quotes() -> dict[str, FetchResult]:
+    """Fetch metal spot-reference values from Shanghai Metals Market (SMM).
+
+    The parser is intentionally conservative. It searches for an index-specific
+    row keyword and validates the parsed price against a broad expected range.
+    A wrong field or page-change therefore becomes Failed/Carry Forward instead
+    of a false Success.
+    """
+    results: dict[str, FetchResult] = {}
+    for index_code, meta in METAL_INDEX_MAP.items():
+        url = str(meta.get("smm_url") or "")
         try:
-            text = response.content.decode("gbk", errors="ignore")
-        except Exception:
-            response.encoding = response.apparent_encoding or "utf-8"
-            text = response.text
-        quote_map = _parse_sina_futures_response(text)
-        if not quote_map:
-            raise RuntimeError("Sina Finance response did not contain parsable futures quotes.")
-
-        for index_code, meta in METAL_INDEX_MAP.items():
-            for symbol in meta.get("sina_symbols", []):
-                quote = quote_map.get(symbol)
-                if not quote:
-                    continue
-                results[index_code] = FetchResult(
-                    value=quote["value"],
-                    status="Success",
-                    fetch_method="Web Parse",
-                    source_pub_time=quote.get("source_pub_time"),
-                    raw_payload={
-                        "source": "Sina Finance Futures",
-                        "source_url": url,
-                        "provider_symbol": symbol,
-                        "provider_name": quote.get("name"),
-                        "source_label": meta.get("source_label"),
-                        "official_reference": meta.get("official_reference"),
-                        "value_source": "latest available futures quote from Sina Finance; official reference kept as SHFE",
-                    },
-                )
-                break
-    except Exception as exc:
-        err = f"Sina Finance futures fetch failed: {type(exc).__name__}: {exc}"
-        for index_code, meta in METAL_INDEX_MAP.items():
+            html = _http_get_text(url)
+            text = _normalise_web_text(html)
+            value, pub_time, context = _extract_price_from_keyword_context(text, meta.get("smm_keywords") or [], meta)
+            ok, validation_error = _validate_metal_value(index_code, value)
+            if not ok:
+                raise RuntimeError(validation_error or "SMM parsed value failed validation.")
             results[index_code] = FetchResult(
-                value=None,
-                status="Failed",
+                value=value,
+                status="Success",
                 fetch_method="Web Parse",
-                error_message=err,
+                source_pub_time=pub_time,
                 raw_payload={
-                    "source": "Sina Finance Futures",
+                    "source": "SMM / Shanghai Metals Market",
                     "source_url": url,
+                    "parsed_context": context,
                     "source_label": meta.get("source_label"),
                     "official_reference": meta.get("official_reference"),
+                    "value_source": "SMM spot reference price parsed from index-specific row keywords.",
                 },
             )
-        return results
-
-    for index_code, meta in METAL_INDEX_MAP.items():
-        if index_code not in results:
+        except Exception as exc:
             results[index_code] = FetchResult(
                 value=None,
                 status="Failed",
                 fetch_method="Web Parse",
-                error_message=f"No Sina Finance futures quote found for {index_code}.",
+                error_message=f"SMM metal fetch failed: {type(exc).__name__}: {exc}",
                 raw_payload={
-                    "source": "Sina Finance Futures",
+                    "source": "SMM / Shanghai Metals Market",
                     "source_url": url,
                     "source_label": meta.get("source_label"),
                     "official_reference": meta.get("official_reference"),
@@ -547,136 +577,40 @@ def _fetch_sina_metal_quotes() -> dict[str, FetchResult]:
     return results
 
 
-def _extract_json_like(text: str) -> Any:
-    """Parse JSON or JSONP text safely."""
-    import json
-
-    stripped = (text or "").strip()
-    if not stripped:
-        return None
-    try:
-        return json.loads(stripped)
-    except Exception:
-        pass
-
-    match = re.search(r"\((\{.*\})\)\s*;?$", stripped, re.S)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except Exception:
-            return None
-    return None
-
-
-def _fetch_eastmoney_metal_quotes() -> dict[str, FetchResult]:
-    """Best-effort fallback fetch from Eastmoney Futures.
-
-    Eastmoney futures identifiers can vary by endpoint, so this fallback uses a
-    small set of known candidate secids. If Eastmoney changes identifiers or
-    blocks the request, the function simply returns Failed results; the daily
-    job will then carry forward previous values when available.
-    """
+def _fetch_ccmn_metal_quotes() -> dict[str, FetchResult]:
+    """Fallback fetch from Changjiang Nonferrous Metals Network (CCMN)."""
     results: dict[str, FetchResult] = {}
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ZenithProjectTracker/1.0",
-        "Accept": "application/json,text/javascript,*/*;q=0.1",
-        "Referer": "https://futures.eastmoney.com/",
-    }
-
-    # Reverse lookup for candidate secids.
-    secid_to_index: dict[str, str] = {}
-    secids: list[str] = []
     for index_code, meta in METAL_INDEX_MAP.items():
-        for secid in meta.get("eastmoney_secids", []):
-            if secid not in secids:
-                secids.append(secid)
-                secid_to_index[secid] = index_code
-
-    if not secids:
-        return {}
-
-    url = EASTMONEY_FUTURES_API
-    params = {
-        "fltt": "2",
-        "invt": "2",
-        "fields": "f12,f14,f2,f3,f4,f124,f292",
-        "secids": ",".join(secids),
-    }
-
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=20)
-        response.raise_for_status()
-        payload = _extract_json_like(response.text)
-        diff = (((payload or {}).get("data") or {}).get("diff") or []) if isinstance(payload, dict) else []
-        if not isinstance(diff, list) or not diff:
-            raise RuntimeError("Eastmoney response did not contain futures quote rows.")
-
-        for item in diff:
-            if not isinstance(item, dict):
-                continue
-            secid = str(item.get("f12") or "").strip()
-            index_code = secid_to_index.get(secid)
-            # Some responses may only return the contract symbol without market prefix.
-            if not index_code:
-                code_upper = secid.upper()
-                for candidate, mapped in secid_to_index.items():
-                    if candidate.split(".")[-1].upper() == code_upper:
-                        index_code = mapped
-                        break
-            if not index_code or index_code in results:
-                continue
-            value = _safe_decimal(item.get("f2"))
-            if value is None or value <= Decimal("100"):
-                continue
-            meta = METAL_INDEX_MAP.get(index_code, {})
-            pub_ts = item.get("f124")
-            pub_time = None
-            if pub_ts:
-                try:
-                    pub_time = datetime.fromtimestamp(int(pub_ts), tz=LOCAL_TZ).isoformat(timespec="seconds")
-                except Exception:
-                    pub_time = str(pub_ts)
+        url = str(meta.get("ccmn_url") or "")
+        try:
+            html = _http_get_text(url)
+            text = _normalise_web_text(html)
+            value, pub_time, context = _extract_price_from_keyword_context(text, meta.get("ccmn_keywords") or [], meta)
+            ok, validation_error = _validate_metal_value(index_code, value)
+            if not ok:
+                raise RuntimeError(validation_error or "CCMN parsed value failed validation.")
             results[index_code] = FetchResult(
                 value=value,
                 status="Success",
                 fetch_method="Web Parse",
                 source_pub_time=pub_time,
                 raw_payload={
-                    "source": "Eastmoney Futures",
-                    "source_url": response.url,
-                    "provider_symbol": secid,
-                    "provider_name": item.get("f14"),
-                    "source_label": meta.get("source_label"),
-                    "official_reference": meta.get("official_reference"),
-                    "value_source": "latest available futures quote from Eastmoney fallback; official reference kept as SHFE",
-                },
-            )
-    except Exception as exc:
-        err = f"Eastmoney futures fetch failed: {type(exc).__name__}: {exc}"
-        for index_code, meta in METAL_INDEX_MAP.items():
-            results[index_code] = FetchResult(
-                value=None,
-                status="Failed",
-                fetch_method="Web Parse",
-                error_message=err,
-                raw_payload={
-                    "source": "Eastmoney Futures",
+                    "source": "Changjiang Nonferrous Metals Network",
                     "source_url": url,
+                    "parsed_context": context,
                     "source_label": meta.get("source_label"),
                     "official_reference": meta.get("official_reference"),
+                    "value_source": "CCMN fallback spot reference price parsed from index-specific row keywords.",
                 },
             )
-        return results
-
-    for index_code, meta in METAL_INDEX_MAP.items():
-        if index_code not in results:
+        except Exception as exc:
             results[index_code] = FetchResult(
                 value=None,
                 status="Failed",
                 fetch_method="Web Parse",
-                error_message=f"No Eastmoney futures quote found for {index_code}.",
+                error_message=f"CCMN metal fetch failed: {type(exc).__name__}: {exc}",
                 raw_payload={
-                    "source": "Eastmoney Futures",
+                    "source": "Changjiang Nonferrous Metals Network",
                     "source_url": url,
                     "source_label": meta.get("source_label"),
                     "official_reference": meta.get("official_reference"),
@@ -686,32 +620,31 @@ def _fetch_eastmoney_metal_quotes() -> dict[str, FetchResult]:
 
 
 def _fetch_metal_values(target_date: str | None = None) -> dict[str, FetchResult]:
-    """Fetch metal reference values with Sina primary and Eastmoney fallback.
+    """Fetch metal reference values with SMM primary and CCMN fallback.
 
-    ``target_date`` is accepted for the common fetch API but the selected public
-    quote sources provide latest quotes rather than historical settlement. The
-    value is intentionally treated as a daily reference quote captured at job
-    run time.
+    ``target_date`` is accepted for the common fetch API; public pages normally
+    publish the latest spot reference. The captured source publish date/time is
+    saved when it can be parsed from the page.
     """
-    sina_results = _fetch_sina_metal_quotes()
+    smm_results = _fetch_smm_metal_quotes()
     final: dict[str, FetchResult] = {}
 
     missing_or_failed = [
         code for code in METAL_INDEX_MAP
-        if code not in sina_results or sina_results[code].value is None
+        if code not in smm_results or smm_results[code].value is None
     ]
 
-    eastmoney_results: dict[str, FetchResult] = {}
+    ccmn_results: dict[str, FetchResult] = {}
     if missing_or_failed:
-        eastmoney_results = _fetch_eastmoney_metal_quotes()
+        ccmn_results = _fetch_ccmn_metal_quotes()
 
     for index_code, meta in METAL_INDEX_MAP.items():
-        primary = sina_results.get(index_code)
+        primary = smm_results.get(index_code)
         if primary and primary.value is not None:
             final[index_code] = primary
             continue
 
-        fallback = eastmoney_results.get(index_code)
+        fallback = ccmn_results.get(index_code)
         if fallback and fallback.value is not None:
             final[index_code] = fallback
             continue
@@ -725,9 +658,9 @@ def _fetch_metal_values(target_date: str | None = None) -> dict[str, FetchResult
             value=None,
             status="Failed",
             fetch_method="Web Parse",
-            error_message=" | ".join(messages) or f"No Sina/Eastmoney metal quote found for {index_code}.",
+            error_message=" | ".join(messages) or f"No SMM/CCMN metal quote found for {index_code}.",
             raw_payload={
-                "source": "Sina Finance Futures primary; Eastmoney Futures fallback",
+                "source": "SMM primary; Changjiang Nonferrous Metals Network fallback",
                 "source_label": meta.get("source_label"),
                 "official_reference": meta.get("official_reference"),
             },
@@ -954,8 +887,8 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
                 "index_category": config.get("index_category"),
                 "display_name": config.get("display_name") or config.get("index_name"),
                 "unit": config.get("unit"),
-                "source_name": config.get("source_name") or ("Bank of China" if str(config.get("index_category") or "").upper() == "FX" else ""),
-                "source_url": config.get("source_url") or (BOC_EXCHANGE_RATE_URL if str(config.get("index_category") or "").upper() == "FX" else ""),
+                "source_name": (result.raw_payload or {}).get("source") or config.get("source_name") or ("Bank of China" if str(config.get("index_category") or "").upper() == "FX" else ""),
+                "source_url": (result.raw_payload or {}).get("source_url") or config.get("source_url") or (BOC_EXCHANGE_RATE_URL if str(config.get("index_category") or "").upper() == "FX" else ""),
                 "source_pub_time": result.source_pub_time,
                 "fetch_method": fetch_method,
                 "fetch_status": status,
@@ -996,8 +929,8 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
                 "index_name": config.get("index_name") or config.get("display_name") or config.get("index_code"),
                 "index_value": _safe_float(value),
                 "unit": config.get("unit"),
-                "source_name": config.get("source_name") or ("Bank of China" if str(config.get("index_category") or "").upper() == "FX" else ""),
-                "source_url": config.get("source_url") or (BOC_EXCHANGE_RATE_URL if str(config.get("index_category") or "").upper() == "FX" else ""),
+                "source_name": (result.raw_payload or {}).get("source") or config.get("source_name") or ("Bank of China" if str(config.get("index_category") or "").upper() == "FX" else ""),
+                "source_url": (result.raw_payload or {}).get("source_url") or config.get("source_url") or (BOC_EXCHANGE_RATE_URL if str(config.get("index_category") or "").upper() == "FX" else ""),
                 "source_pub_time": result.source_pub_time,
                 "fetch_method": fetch_method,
                 "fetch_status": status,

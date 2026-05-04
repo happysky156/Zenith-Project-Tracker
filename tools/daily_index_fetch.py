@@ -8,7 +8,7 @@ Run modes:
 
 Current automatic sources:
 - Bank of China exchange-rate page for USD/CNY, HKD/CNY and GBP/CNY.
-- Sina Finance Futures for metal indices, with Eastmoney Futures as fallback.
+- Shanghai Metals Market (SMM) for metal indices, with Changjiang Nonferrous Metals Network (CCMN) as fallback.
 
 Other material / plastic / freight indices are handled conservatively:
 - If there is a previous value, today's row is created as Carry Forward.
