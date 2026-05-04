@@ -400,7 +400,11 @@ def _daily_columns() -> set[str]:
 
 def _daily_key_columns(cols: set[str]) -> tuple[str, str]:
     value_col = "index_value" if "index_value" in cols else "value"
-    name_col = "index_name" if "index_name" in cols else "index_code"
+    # Prefer index_code whenever it exists. Some Supabase installs have both
+    # index_code and index_name, while the unique constraint is on
+    # (index_date, index_code). Looking up by index_name first can miss an
+    # existing row and then cause a duplicate-key error on insert.
+    name_col = "index_code" if "index_code" in cols else "index_name"
     return name_col, value_col
 
 
@@ -447,15 +451,37 @@ def _calculate_change(value: Decimal | None, previous: Decimal | None) -> tuple[
 
 
 def _find_existing_daily_row(conn, cols: set[str], config: dict[str, Any], target_date: str) -> dict[str, Any] | None:
-    name_col, _ = _daily_key_columns(cols)
-    key_value = config["index_name"] if name_col == "index_name" else config["index_code"]
+    """Return an existing daily row for this index/date using the safest key.
+
+    During the upgrade history, daily_market_indices may contain index_code,
+    index_name, or both. Newer tables enforce uniqueness on (index_date,
+    index_code), so we check index_code first when it exists. We still fall
+    back to index_name/display_name to remain compatible with older rows.
+    """
     cur = conn.cursor()
-    execute(
-        cur,
-        f"select * from daily_market_indices where index_date = ? and {name_col} = ? limit 1",
-        (target_date, key_value),
-    )
-    return _fetchone(cur)
+    candidates: list[tuple[str, Any]] = []
+    if "index_code" in cols and config.get("index_code"):
+        candidates.append(("index_code", config.get("index_code")))
+    if "index_name" in cols and config.get("index_name"):
+        candidates.append(("index_name", config.get("index_name")))
+    if "display_name" in cols and config.get("display_name"):
+        candidates.append(("display_name", config.get("display_name")))
+
+    seen: set[tuple[str, str]] = set()
+    for col, val in candidates:
+        key = (col, str(val))
+        if key in seen:
+            continue
+        seen.add(key)
+        execute(
+            cur,
+            f"select * from daily_market_indices where index_date = ? and {col} = ? limit 1",
+            (target_date, val),
+        )
+        row = _fetchone(cur)
+        if row:
+            return row
+    return None
 
 
 def _is_manual_row(row: dict[str, Any] | None) -> bool:
