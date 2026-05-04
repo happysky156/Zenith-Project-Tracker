@@ -86,6 +86,43 @@ METAL_INDEX_MAP: dict[str, dict[str, Any]] = {
         "official_reference": "SMM / Changjiang aluminium spot reference",
     },
 }
+
+CPO_21CP_BASE_URL = "https://intl.21cp.com"
+
+# Plastic index policy:
+# - Source: China Plastics Online / 中塑在线 (21cp.com)
+# - Public pages are used as a safe reference for East China market average prices.
+# - Each plastic index uses its own symbol page and broad expected range so a
+#   wrong field cannot be written as a false Success.
+PLASTIC_INDEX_MAP: dict[str, dict[str, Any]] = {
+    "PVC": {
+        "url": "https://intl.21cp.com/avg_area/list/-PVC.html",
+        "keywords": ["PVC", "PVC by Calcium Carbide Process", "PVC by Vinyl Process"],
+        "preferred_labels": ["PVC"],
+        "expected_min": Decimal("3000"),
+        "expected_max": Decimal("20000"),
+        "source_label": "China Plastics Online East China PVC market average price reference",
+        "official_reference": "21cp.com PVC market average price",
+    },
+    "PP": {
+        "url": "https://intl.21cp.com/avg_area/list/-PP.html",
+        "keywords": ["PP", "Injection PP", "Raffia PP", "Fibre PP", "Transparent PP"],
+        "preferred_labels": ["PP", "Injection PP"],
+        "expected_min": Decimal("4000"),
+        "expected_max": Decimal("25000"),
+        "source_label": "China Plastics Online East China PP market average price reference",
+        "official_reference": "21cp.com PP market average price",
+    },
+    "ABS": {
+        "url": "https://intl.21cp.com/avg_area/list/-ABS.html",
+        "keywords": ["Mid to high end domestically produced ABS", "Mid to low end domestically produced ABS", "Imported ABS", "ABS"],
+        "preferred_labels": ["Mid to high end domestically produced ABS", "Mid to low end domestically produced ABS"],
+        "expected_min": Decimal("6000"),
+        "expected_max": Decimal("40000"),
+        "source_label": "China Plastics Online East China ABS market average price reference",
+        "official_reference": "21cp.com ABS market average price",
+    },
+}
 LOCAL_TZ = ZoneInfo("Asia/Singapore")
 
 DEFAULT_INDEX_CONFIGS: list[dict[str, Any]] = [
@@ -96,9 +133,9 @@ DEFAULT_INDEX_CONFIGS: list[dict[str, Any]] = [
     {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SMM / Changjiang Nonferrous", "source_url": "https://hq.smm.cn", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SMM / Changjiang Nonferrous", "source_url": "https://hq.smm.cn", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SMM / Changjiang Nonferrous", "source_url": "https://hq.smm.cn", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "PP", "index_name": "PP", "display_name": "PP", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "PVC", "index_name": "PVC", "display_name": "PVC", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "ABS", "index_name": "ABS", "display_name": "ABS", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "Third-party / Manual Confirm", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "PP", "index_name": "PP", "display_name": "PP", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "China Plastics Online / 21cp.com", "source_url": "https://intl.21cp.com/avg_area/list/-PP.html", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "PVC", "index_name": "PVC", "display_name": "PVC", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "China Plastics Online / 21cp.com", "source_url": "https://intl.21cp.com/avg_area/list/-PVC.html", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ABS", "index_name": "ABS", "display_name": "ABS", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "China Plastics Online / 21cp.com", "source_url": "https://intl.21cp.com/avg_area/list/-ABS.html", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "FREIGHT_ISRAEL", "index_name": "Freight to Israel", "display_name": "Freight to Israel", "index_category": "Freight", "unit": "USD/40HQ", "source_name": "Manual / Forwarder", "source_url": "", "fetch_enabled": 0, "fetch_method": "Manual", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "FREIGHT_MOROCCO", "index_name": "Freight to Morocco", "display_name": "Freight to Morocco", "index_category": "Freight", "unit": "USD/40HQ", "source_name": "Manual / Forwarder", "source_url": "", "fetch_enabled": 0, "fetch_method": "Manual", "fallback_method": "Carry Forward", "active": 1},
 ]
@@ -668,6 +705,123 @@ def _fetch_metal_values(target_date: str | None = None) -> dict[str, FetchResult
     return final
 
 
+def _plastic_expected_range(meta: dict[str, Any]) -> tuple[Decimal, Decimal]:
+    return Decimal(str(meta.get("expected_min") or "0")), Decimal(str(meta.get("expected_max") or "999999999"))
+
+
+def _validate_plastic_value(index_code: str, value: Decimal | None) -> tuple[bool, str | None]:
+    if value is None:
+        return False, "No value parsed."
+    meta = PLASTIC_INDEX_MAP.get(index_code, {})
+    expected_min, expected_max = _plastic_expected_range(meta)
+    if not (expected_min <= value <= expected_max):
+        return False, f"Parsed value {value} outside expected range {expected_min}-{expected_max} CNY/ton."
+    return True, None
+
+
+def _extract_21cp_price(text: str, meta: dict[str, Any]) -> tuple[Decimal | None, str | None, str | None]:
+    """Extract a plastic market-average price from a 21cp.com page.
+
+    The English intl.21cp pages are intentionally preferred because their text
+    is stable and includes clear lines like:
+      PP / 8000 yuan/ton ... Date Updated: 2026-03-04
+      PVC / 5300 yuan/ton ... Date Updated: 2026-03-19
+      Mid to high end domestically produced ABS / 14450 yuan/ton ...
+
+    The parser only selects numbers followed by yuan/ton and validates the
+    final value against an index-specific range.
+    """
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    joined = "\n".join(lines)
+    expected_min, expected_max = _plastic_expected_range(meta)
+    labels = list(meta.get("preferred_labels") or []) + list(meta.get("keywords") or [])
+
+    def find_price_in_context(context: str) -> tuple[Decimal | None, str | None]:
+        # Prefer values explicitly followed by yuan/ton. This avoids selecting
+        # change amounts, dates, percentages, phone numbers, or page links.
+        for raw in re.findall(r"(?<![A-Za-z])([0-9][0-9,]*(?:\.[0-9]+)?)\s*yuan\s*/\s*ton", context, flags=re.IGNORECASE):
+            value = _safe_decimal(raw)
+            if value is not None and expected_min <= value <= expected_max:
+                return value, context[:500]
+        # Some pages may translate or compact the unit; fallback to a tight
+        # window but still use the broad price range.
+        candidates = _extract_price_candidates(context, expected_min, expected_max)
+        value = _select_representative_price(candidates)
+        if value is not None:
+            return value, context[:500]
+        return None, None
+
+    for label in labels:
+        if not label:
+            continue
+        for idx, line in enumerate(lines):
+            if label == line or label in line:
+                context = " ".join(lines[idx: idx + 4])
+                value, ctx = find_price_in_context(context)
+                if value is not None:
+                    return value, _extract_source_pub_time_from_fields([context]), ctx
+        pos = joined.find(label)
+        if pos >= 0:
+            context = joined[pos: pos + 700]
+            value, ctx = find_price_in_context(context)
+            if value is not None:
+                return value, _extract_source_pub_time_from_fields([context]), ctx
+
+    return None, None, None
+
+
+def _fetch_21cp_plastic_quotes() -> dict[str, FetchResult]:
+    """Fetch PP/PVC/ABS reference prices from China Plastics Online (21cp.com)."""
+    results: dict[str, FetchResult] = {}
+    for index_code, meta in PLASTIC_INDEX_MAP.items():
+        url = str(meta.get("url") or "")
+        try:
+            html = _http_get_text(url)
+            text = _normalise_web_text(html)
+            value, pub_time, context = _extract_21cp_price(text, meta)
+            ok, validation_error = _validate_plastic_value(index_code, value)
+            if not ok:
+                raise RuntimeError(validation_error or "21cp parsed value failed validation.")
+            results[index_code] = FetchResult(
+                value=value,
+                status="Success",
+                fetch_method="Web Parse",
+                source_pub_time=pub_time,
+                raw_payload={
+                    "source": "China Plastics Online / 21cp.com",
+                    "source_url": url,
+                    "parsed_context": context,
+                    "source_label": meta.get("source_label"),
+                    "official_reference": meta.get("official_reference"),
+                    "value_source": "21cp.com East China market average price parsed from product-specific page.",
+                },
+            )
+        except Exception as exc:
+            results[index_code] = FetchResult(
+                value=None,
+                status="Failed",
+                fetch_method="Web Parse",
+                error_message=f"21cp plastic fetch failed: {type(exc).__name__}: {exc}",
+                raw_payload={
+                    "source": "China Plastics Online / 21cp.com",
+                    "source_url": url,
+                    "source_label": meta.get("source_label"),
+                    "official_reference": meta.get("official_reference"),
+                },
+            )
+    return results
+
+
+def _fetch_plastic_values(target_date: str | None = None) -> dict[str, FetchResult]:
+    """Fetch plastic reference values from 21cp.com.
+
+    ``target_date`` is accepted for the common fetch API. The public pages show
+    the latest market-average price available for each plastic category; the
+    page's own Date Updated field is captured as source_pub_time when present.
+    """
+    return _fetch_21cp_plastic_quotes()
+
+
 def fetch_external_values(configs: list[dict[str, Any]], target_date: str | None = None) -> dict[str, FetchResult]:
     """Fetch external values once per source and return result by index_code."""
     results: dict[str, FetchResult] = {}
@@ -692,6 +846,15 @@ def fetch_external_values(configs: list[dict[str, Any]], target_date: str | None
     if metal_configs:
         metal_results = _fetch_metal_values(target_date=target_date)
 
+    plastic_configs = [
+        cfg for cfg in configs
+        if cfg.get("index_code") in PLASTIC_INDEX_MAP
+        and str(cfg.get("fetch_method") or "").strip().lower() in {"web parse", "automatic parse", "api"}
+    ]
+    plastic_results: dict[str, FetchResult] = {}
+    if plastic_configs:
+        plastic_results = _fetch_plastic_values(target_date=target_date)
+
     for cfg in configs:
         index_code = cfg["index_code"]
         currency = _currency_from_config(cfg)
@@ -712,6 +875,8 @@ def fetch_external_values(configs: list[dict[str, Any]], target_date: str | None
                     results[index_code] = FetchResult(None, "Failed", "Web Parse", error_message=f"{currency} not found in BOC result.")
         elif index_code in metal_results:
             results[index_code] = metal_results[index_code]
+        elif index_code in plastic_results:
+            results[index_code] = plastic_results[index_code]
         elif str(cfg.get("index_category") or "").upper() == "FREIGHT" or str(cfg.get("fetch_method") or "").lower() == "manual":
             results[index_code] = FetchResult(
                 value=None,
