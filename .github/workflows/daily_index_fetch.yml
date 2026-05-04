@@ -1,7 +1,7 @@
 name: Daily Market Index Fetch
 
 on:
-schedule:
+  schedule:
     # 新时间是 UTC 00:00 (北京时间 08:00)
     - cron: "0 0 * * *"
   workflow_dispatch:
