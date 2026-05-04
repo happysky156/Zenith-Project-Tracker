@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from io import BytesIO
 from typing import Any
 
 import pandas as pd
@@ -70,9 +71,73 @@ def _build_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return df[cols]
 
 
+def _build_index_history_export(
+    all_rows: list[dict[str, Any]],
+    latest_rows: list[dict[str, Any]],
+    configs: list[dict[str, Any]],
+) -> bytes:
+    """Build a downloadable Excel workbook for index history only.
+
+    This is a read-only export helper. It does not write to the database or
+    change any index calculation/fetch logic.
+    """
+    output = BytesIO()
+    history_df = _build_dataframe(all_rows)
+    latest_df = _build_dataframe(latest_rows)
+    config_df = pd.DataFrame(configs)
+
+    if not config_df.empty:
+        config_cols = [
+            "index_category",
+            "index_code",
+            "index_name",
+            "display_name",
+            "unit",
+            "source_name",
+            "source_url",
+            "fetch_method",
+            "fallback_method",
+            "fetch_enabled",
+            "active",
+            "remarks",
+        ]
+        config_cols = [c for c in config_cols if c in config_df.columns]
+        config_df = config_df[config_cols]
+
+    readme_df = pd.DataFrame([
+        {"Field": "Export Purpose", "Value": "All Daily Market Indices history for Excel search, review and sharing."},
+        {"Field": "Generated At", "Value": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")},
+        {"Field": "History Rows", "Value": len(history_df)},
+        {"Field": "Latest Index Rows", "Value": len(latest_df)},
+        {"Field": "Config Rows", "Value": len(config_df)},
+        {"Field": "Note", "Value": "Daily Market Indices can change every day. Locked Index Snapshots for quotations are managed separately."},
+    ])
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        readme_df.to_excel(writer, sheet_name="Read Me", index=False)
+        history_df.to_excel(writer, sheet_name="Daily Index History", index=False)
+        latest_df.to_excel(writer, sheet_name="Latest Index Summary", index=False)
+        config_df.to_excel(writer, sheet_name="Index Config", index=False)
+
+        for sheet_name, df in {
+            "Read Me": readme_df,
+            "Daily Index History": history_df,
+            "Latest Index Summary": latest_df,
+            "Index Config": config_df,
+        }.items():
+            ws = writer.sheets[sheet_name]
+            ws.freeze_panes = "A2"
+            for idx, col in enumerate(df.columns, start=1):
+                values = [str(col)] + ["" if pd.isna(v) else str(v) for v in df[col].head(500)]
+                width = min(max(len(v) for v in values) + 2, 48)
+                ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = width
+
+    return output.getvalue()
+
+
 configs = list_index_configs()
 latest_rows = latest_daily_indices()
-all_daily_raw = list_daily_indices(limit=3000)
+all_daily_raw = list_daily_indices(limit=100000)
 all_daily_rows = []
 if all_daily_raw:
     from services.market_index_service import normalise_daily_row
@@ -90,6 +155,18 @@ c4.metric("Carry Forward", sum(1 for r in today_rows if _status_label(r.get("fet
 c5.metric("Need Check", sum(1 for r in today_rows if _status_label(r.get("fetch_status")) in {"Failed", "No Parser", "Manual Required", "Need Confirm", "-"}))
 
 st.caption(f"FX automatic source: Bank of China exchange-rate page. The script stores BOC middle rate / 100 as 1 foreign currency = CNY. Source URL: {BOC_EXCHANGE_RATE_URL}")
+
+if all_daily_rows:
+    export_bytes = _build_index_history_export(all_daily_rows, latest_rows, configs)
+    st.download_button(
+        "Export All Index History to Excel",
+        data=export_bytes,
+        file_name=f"zenith_index_history_{today}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Download all Daily Market Indices history, latest summary and index configuration. This export is read-only and does not change system data.",
+    )
+else:
+    st.caption("Export will be available after at least one Daily Market Indices record exists.")
 
 with st.expander("Manual run / refresh today's index records", expanded=False):
     st.warning("This writes today's Daily Market Indices rows. Existing Manual rows are protected and will not be overwritten.")
