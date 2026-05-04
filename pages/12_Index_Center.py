@@ -87,7 +87,7 @@ c1.metric("Config Items", len(configs))
 c2.metric("Today's Records", len(today_rows))
 c3.metric("Success", sum(1 for r in today_rows if _status_label(r.get("fetch_status")) == "Success"))
 c4.metric("Carry Forward", sum(1 for r in today_rows if _status_label(r.get("fetch_status")) == "Carry Forward"))
-c5.metric("Need Check", sum(1 for r in today_rows if _status_label(r.get("fetch_status")) in {"Failed", "No Parser", "-"}))
+c5.metric("Need Check", sum(1 for r in today_rows if _status_label(r.get("fetch_status")) in {"Failed", "No Parser", "Manual Required", "Need Confirm", "-"}))
 
 st.caption(f"FX automatic source: Bank of China exchange-rate page. The script stores BOC middle rate / 100 as 1 foreign currency = CNY. Source URL: {BOC_EXCHANGE_RATE_URL}")
 
@@ -101,6 +101,7 @@ with st.expander("Manual run / refresh today's index records", expanded=False):
                 f"Success: {summary.get('success', 0)} | "
                 f"Carry Forward: {summary.get('carry_forward', 0)} | "
                 f"Failed: {summary.get('failed', 0)} | "
+                f"Manual Required: {summary.get('manual_required', 0)} | "
                 f"Skipped Manual: {summary.get('skipped_manual', 0)}"
             )
             st.rerun()
@@ -117,7 +118,7 @@ else:
     show_df = latest_df.copy()
     if selected_category != "All" and "index_category" in show_df:
         show_df = show_df[show_df["index_category"] == selected_category]
-    st.dataframe(show_df, use_container_width=True, hide_index=True)
+    st.dataframe(show_df, width="stretch", hide_index=True)
 
 with st.expander("Manual Override / Confirm", expanded=False):
     if not configs:
@@ -154,7 +155,7 @@ else:
         text = search.lower().strip()
         mask = show_all.astype(str).apply(lambda col: col.str.lower().str.contains(text, na=False)).any(axis=1)
         show_all = show_all[mask]
-    st.dataframe(show_all, use_container_width=True, hide_index=True)
+    st.dataframe(show_all, width="stretch", hide_index=True)
 
 with st.expander("Index Config Records", expanded=False):
     cfg_df = pd.DataFrame(configs)
@@ -163,4 +164,4 @@ with st.expander("Index Config Records", expanded=False):
     else:
         cfg_cols = ["index_category", "index_code", "index_name", "display_name", "unit", "source_name", "fetch_method", "fallback_method", "active"]
         cfg_cols = [c for c in cfg_cols if c in cfg_df.columns]
-        st.dataframe(cfg_df[cfg_cols], use_container_width=True, hide_index=True)
+        st.dataframe(cfg_df[cfg_cols], width="stretch", hide_index=True)

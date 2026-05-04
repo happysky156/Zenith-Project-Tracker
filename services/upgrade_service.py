@@ -414,14 +414,21 @@ MODULES: dict[str, ModuleSpec] = {
 }
 
 DEFAULT_INDEX_CONFIG = [
-    ("FX", "USD/CNY", "USD/CNY", "rate", "Manual / Bank of China", "", "Manual", "Carry Forward"),
-    ("Metal", "Stainless Steel 304", "Stainless Steel 304", "CNY/ton", "Manual / Fixed source", "", "Manual", "Carry Forward"),
-    ("Metal", "Carbon Steel", "Carbon Steel", "CNY/ton", "Manual / Fixed source", "", "Manual", "Carry Forward"),
-    ("Metal", "Zinc", "Zinc", "CNY/ton", "Manual / Fixed source", "", "Manual", "Carry Forward"),
-    ("Metal", "Aluminium", "Aluminium", "CNY/ton", "Manual / Fixed source", "", "Manual", "Carry Forward"),
-    ("Plastic", "PP", "PP", "CNY/ton", "Manual / Fixed source", "", "Manual", "Carry Forward"),
-    ("Plastic", "ABS", "ABS", "CNY/ton", "Manual / Fixed source", "", "Manual", "Carry Forward"),
-    ("Plastic", "PVC", "PVC", "CNY/ton", "Manual / Fixed source", "", "Manual", "Carry Forward"),
+    # FX is the first fully automatic source. Bank of China publishes rates as
+    # CNY per 100 foreign-currency units; the fetch service stores 1 unit = CNY.
+    ("FX", "USD/CNY", "USD/CNY", "rate", "Bank of China", "https://www.bankofchina.com/sourcedb/whpj/enindex_1619.html", "Web Parse", "Carry Forward"),
+    ("FX", "HKD/CNY", "HKD/CNY", "rate", "Bank of China", "https://www.bankofchina.com/sourcedb/whpj/enindex_1619.html", "Web Parse", "Carry Forward"),
+    ("FX", "GBP/CNY", "GBP/CNY", "rate", "Bank of China", "https://www.bankofchina.com/sourcedb/whpj/enindex_1619.html", "Web Parse", "Carry Forward"),
+    # Material / plastic indices keep the automatic parsing direction. Parsers
+    # can be added source-by-source; failed parses fall back independently.
+    ("Metal", "Stainless Steel 304", "Stainless Steel 304", "CNY/ton", "SHFE", "", "Web Parse", "Carry Forward"),
+    ("Metal", "Carbon Steel", "Carbon Steel", "CNY/ton", "SHFE Hot-Rolled Coil", "", "Web Parse", "Carry Forward"),
+    ("Metal", "Zinc", "Zinc", "CNY/ton", "SHFE", "", "Web Parse", "Carry Forward"),
+    ("Metal", "Aluminium", "Aluminium", "CNY/ton", "SHFE", "", "Web Parse", "Carry Forward"),
+    ("Plastic", "PP", "PP", "CNY/ton", "DCE", "", "Web Parse", "Carry Forward"),
+    ("Plastic", "ABS", "ABS", "CNY/ton", "Third-party / Manual Confirm", "", "Web Parse", "Carry Forward"),
+    ("Plastic", "PVC", "PVC", "CNY/ton", "DCE", "", "Web Parse", "Carry Forward"),
+    # Freight is intentionally manual + carry-forward.
     ("Freight", "Freight to Israel", "Freight to Israel", "USD/40HQ", "Manual / Forwarder", "", "Manual", "Carry Forward"),
     ("Freight", "Freight to Morocco", "Freight to Morocco", "USD/40HQ", "Manual / Forwarder", "", "Manual", "Carry Forward"),
 ]
@@ -1840,7 +1847,7 @@ def seed_default_index_config() -> int:
                 "unit": unit,
                 "source_name": source,
                 "source_url": url,
-                "fetch_enabled": 0,
+                "fetch_enabled": 1 if method != "Manual" else 0,
                 "fetch_method": method,
                 "fallback_method": fallback,
                 "active": 1,

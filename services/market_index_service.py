@@ -36,6 +36,23 @@ BOC_EXCHANGE_RATE_URL = "https://www.bankofchina.com/sourcedb/whpj/enindex_1619.
 SUPPORTED_BOC_CURRENCIES = {"USD", "HKD", "GBP"}
 LOCAL_TZ = ZoneInfo("Asia/Singapore")
 
+DEFAULT_INDEX_CONFIGS: list[dict[str, Any]] = [
+    {"index_code": "USD_CNY", "index_name": "USD/CNY", "display_name": "USD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "HKD_CNY", "index_name": "HKD/CNY", "display_name": "HKD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "GBP_CNY", "index_name": "GBP/CNY", "display_name": "GBP/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "STAINLESS_STEEL_304", "index_name": "Stainless Steel 304", "display_name": "Stainless Steel 304", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE Hot-Rolled Coil", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "PP", "index_name": "PP", "display_name": "PP", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "PVC", "index_name": "PVC", "display_name": "PVC", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ABS", "index_name": "ABS", "display_name": "ABS", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "Third-party / Manual Confirm", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "FREIGHT_ISRAEL", "index_name": "Freight to Israel", "display_name": "Freight to Israel", "index_category": "Freight", "unit": "USD/40HQ", "source_name": "Manual / Forwarder", "source_url": "", "fetch_enabled": 0, "fetch_method": "Manual", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "FREIGHT_MOROCCO", "index_name": "Freight to Morocco", "display_name": "Freight to Morocco", "index_category": "Freight", "unit": "USD/40HQ", "source_name": "Manual / Forwarder", "source_url": "", "fetch_enabled": 0, "fetch_method": "Manual", "fallback_method": "Carry Forward", "active": 1},
+]
+
+_DEFAULT_CONFIG_SYNCED = False
+
 
 @dataclass
 class FetchResult:
@@ -165,7 +182,62 @@ def _normalise_index_config(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def ensure_default_index_configs() -> None:
+    """Seed/synchronise the standard Index Center configuration.
+
+    This is intentionally narrow and safe: it only creates missing default
+    index rows and refreshes default source/fetch settings for those rows. It
+    does not touch daily_market_indices or locked index_snapshots.
+    """
+    global _DEFAULT_CONFIG_SYNCED
+    if _DEFAULT_CONFIG_SYNCED:
+        return
+
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_config")
+        if not cols:
+            return
+        cur = conn.cursor()
+
+        for cfg in DEFAULT_INDEX_CONFIGS:
+            name_col = "index_code" if "index_code" in cols else "index_name"
+            key_value = cfg["index_code"] if name_col == "index_code" else cfg["index_name"]
+            execute(cur, f"select * from index_config where {name_col} = ? limit 1", (key_value,))
+            existing = _fetchone(cur)
+
+            row = {k: v for k, v in cfg.items() if k in cols}
+            if "index_config_id" in cols and "index_config_id" not in row:
+                row["index_config_id"] = existing.get("index_config_id") if existing else _new_id("IDXCFG")
+
+            if existing:
+                # Keep user-specific remarks untouched. Refresh standard fetch/source
+                # settings so USD/HKD/GBP and freight behaviour stay correct.
+                update_keys = [
+                    k for k in row.keys()
+                    if k not in {"index_config_id", "remarks"}
+                ]
+                if update_keys:
+                    set_sql = ", ".join([f"{k} = ?" for k in update_keys])
+                    pk = "index_config_id" if "index_config_id" in cols and existing.get("index_config_id") else name_col
+                    pk_value = existing.get("index_config_id") if pk == "index_config_id" else key_value
+                    execute(cur, f"update index_config set {set_sql} where {pk} = ?", [row[k] for k in update_keys] + [pk_value])
+            else:
+                insert_cols = list(row.keys())
+                placeholders = ", ".join(["?" for _ in insert_cols])
+                execute(cur, f"insert into index_config ({', '.join(insert_cols)}) values ({placeholders})", [row[k] for k in insert_cols])
+
+        conn.commit()
+        _DEFAULT_CONFIG_SYNCED = True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def list_index_configs() -> list[dict[str, Any]]:
+    ensure_default_index_configs()
     conn = get_connection()
     try:
         cols = get_table_columns(conn, "index_config")
@@ -189,10 +261,25 @@ def _currency_from_config(config: dict[str, Any]) -> str | None:
         config.get("display_name"),
     ]
     for candidate in candidates:
-        text = str(candidate or "").upper().replace("_", "/")
+        text = str(candidate or "").upper().replace("_", "/").replace("-", "/")
         for currency in SUPPORTED_BOC_CURRENCIES:
-            if text.startswith(currency) or f"{currency}/CNY" in text or f"{currency}_CNY" in text:
+            if text.startswith(currency) or f"{currency}/CNY" in text:
                 return currency
+    return None
+
+
+def _currency_from_boc_cell(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    mapping = {
+        "USD": ["USD", "US DOLLAR", "U.S. DOLLAR", "美元"],
+        "HKD": ["HKD", "HK DOLLAR", "HONG KONG DOLLAR", "港币", "港幣"],
+        "GBP": ["GBP", "POUND", "STERLING", "BRITISH POUND", "英镑", "英鎊"],
+    }
+    for currency, tokens in mapping.items():
+        if any(token in text for token in tokens):
+            return currency
     return None
 
 
@@ -228,7 +315,7 @@ def _parse_boc_exchange_rates() -> dict[str, dict[str, Any]]:
 
     result: dict[str, dict[str, Any]] = {}
     for _, row in df.iterrows():
-        currency = str(row.get(currency_col) or "").strip().upper()
+        currency = _currency_from_boc_cell(row.get(currency_col))
         if currency not in SUPPORTED_BOC_CURRENCIES:
             continue
 
@@ -248,10 +335,6 @@ def _parse_boc_exchange_rates() -> dict[str, dict[str, Any]]:
                 "stored_value_explanation": f"1 {currency} = {value} CNY",
             },
         }
-
-    missing = SUPPORTED_BOC_CURRENCIES - set(result.keys())
-    if missing:
-        raise RuntimeError(f"Missing currencies from BOC table: {', '.join(sorted(missing))}")
 
     return result
 
@@ -289,11 +372,18 @@ def fetch_external_values(configs: list[dict[str, Any]]) -> dict[str, FetchResul
                     )
                 else:
                     results[index_code] = FetchResult(None, "Failed", "Web Parse", error_message=f"{currency} not found in BOC result.")
+        elif str(cfg.get("index_category") or "").upper() == "FREIGHT" or str(cfg.get("fetch_method") or "").lower() == "manual":
+            results[index_code] = FetchResult(
+                value=None,
+                status="Manual Required",
+                fetch_method="Manual",
+                error_message="Freight is maintained manually. Add a manual value or let the system carry forward the previous value.",
+            )
         else:
             results[index_code] = FetchResult(
                 value=None,
-                status="No Parser",
-                fetch_method=str(cfg.get("fetch_method") or "Manual"),
+                status="Failed",
+                fetch_method=str(cfg.get("fetch_method") or "Web Parse"),
                 error_message=f"Automatic parser for {cfg.get('display_name') or index_code} is not enabled yet. Use carry-forward or manual override.",
             )
 
@@ -394,7 +484,7 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
         error_message = result.error_message or "No new value; carried forward from previous available record."
         fetch_method = "Carry Forward"
     elif value is None:
-        status = "Failed"
+        status = result.status if result.status in {"Manual Required", "Need Confirm"} else "Failed"
         error_message = result.error_message or "No value found and no previous value available."
         fetch_method = result.fetch_method or "Manual"
     else:
@@ -417,9 +507,10 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
                 "display_name": config.get("display_name") or config.get("index_name"),
                 "value": _safe_float(value),
                 "unit": config.get("unit"),
-                "source_name": config.get("source_name") or "Bank of China",
-                "source_url": config.get("source_url") or BOC_EXCHANGE_RATE_URL,
+                "source_name": config.get("source_name") or ("Bank of China" if str(config.get("index_category") or "").upper() == "FX" else ""),
+                "source_url": config.get("source_url") or (BOC_EXCHANGE_RATE_URL if str(config.get("index_category") or "").upper() == "FX" else ""),
                 "source_pub_time": result.source_pub_time,
+                "fetch_method": fetch_method,
                 "fetch_status": status,
                 "error_message": error_message,
                 "is_manual_override": False,
@@ -443,8 +534,9 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
                 "index_name": config.get("index_name") or config.get("display_name") or config.get("index_code"),
                 "index_value": _safe_float(value),
                 "unit": config.get("unit"),
-                "source_name": config.get("source_name") or "Bank of China",
-                "source_url": config.get("source_url") or BOC_EXCHANGE_RATE_URL,
+                "source_name": config.get("source_name") or ("Bank of China" if str(config.get("index_category") or "").upper() == "FX" else ""),
+                "source_url": config.get("source_url") or (BOC_EXCHANGE_RATE_URL if str(config.get("index_category") or "").upper() == "FX" else ""),
+                "source_pub_time": result.source_pub_time,
                 "fetch_method": fetch_method,
                 "fetch_status": status,
                 "previous_value": _safe_float(previous),
@@ -498,6 +590,8 @@ def run_daily_index_fetch(target_date: str | None = None, operator: str = "GitHu
         "updated": 0,
         "carry_forward": 0,
         "failed": 0,
+        "manual_required": 0,
+        "need_confirm": 0,
         "skipped_manual": 0,
     }
 
@@ -524,6 +618,10 @@ def run_daily_index_fetch(target_date: str | None = None, operator: str = "GitHu
                 summary["carry_forward"] += 1
             elif saved_status == "failed":
                 summary["failed"] += 1
+            elif saved_status == "manual required":
+                summary["manual_required"] += 1
+            elif saved_status == "need confirm":
+                summary["need_confirm"] += 1
 
         conn.commit()
         return summary
