@@ -24,6 +24,7 @@ from typing import Any
 
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 
 try:
     from psycopg.types.json import Jsonb
@@ -283,51 +284,65 @@ def _currency_from_boc_cell(value: Any) -> str | None:
     return None
 
 
-def _parse_boc_exchange_rates() -> dict[str, dict[str, Any]]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; ZenithProjectTracker/1.0)"}
-    response = requests.get(BOC_EXCHANGE_RATE_URL, headers=headers, timeout=25)
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding or "utf-8"
+def _parse_boc_exchange_rates(html: str | None = None) -> dict[str, dict[str, Any]]:
+    """Parse Bank of China FX rates for USD/HKD/GBP.
 
-    tables = pd.read_html(response.text)
-    if not tables:
-        raise RuntimeError("No exchange-rate table found on Bank of China page.")
+    The Bank of China page returns a plain HTML page with a table whose id is
+    usually ``priceTable``. A previous implementation passed ``response.text``
+    directly into ``pandas.read_html``. In newer pandas versions, a raw HTML
+    string can be treated as a file path, which caused errors like
+    ``FileNotFoundError: ... <!DOCTYPE html ...>`` in Streamlit Cloud.
 
-    df = tables[0]
-    df.columns = [str(c).strip() for c in df.columns]
+    This parser therefore uses BeautifulSoup first and reads the target table
+    directly from the parsed DOM. It keeps the conversion rule unchanged:
+    BOC middle rates are CNY per 100 units of foreign currency, so the app
+    stores Middle Rate / 100 as 1 foreign currency = X CNY.
+    """
+    if html is None:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ZenithProjectTracker/1.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+        }
+        response = requests.get(BOC_EXCHANGE_RATE_URL, headers=headers, timeout=25)
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or "utf-8"
+        html = response.text
 
-    currency_col = None
-    middle_col = None
-    pub_time_col = None
-    for col in df.columns:
-        lower = col.lower()
-        if currency_col is None and ("currency" in lower or "货币" in col):
-            currency_col = col
-        if middle_col is None and ("middle" in lower or "中间" in col or "折算" in col):
-            middle_col = col
-        if pub_time_col is None and ("pub" in lower or "time" in lower or "发布时间" in col):
-            pub_time_col = col
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", id="priceTable")
+    if table is None:
+        # Fallback: find the table that contains the expected BOC headers.
+        for candidate in soup.find_all("table"):
+            header_text = " ".join(candidate.get_text(" ", strip=True).split()).lower()
+            if "currency name" in header_text and "middle rate" in header_text and "pub time" in header_text:
+                table = candidate
+                break
 
-    if currency_col is None:
-        currency_col = df.columns[0]
-    if middle_col is None:
-        raise RuntimeError(f"Cannot find Middle Rate column. Columns: {df.columns.tolist()}")
+    if table is None:
+        raise RuntimeError("No Bank of China priceTable found in fetched HTML.")
 
     result: dict[str, dict[str, Any]] = {}
-    for _, row in df.iterrows():
-        currency = _currency_from_boc_cell(row.get(currency_col))
+    for tr in table.find_all("tr"):
+        cells = [cell.get_text(" ", strip=True).replace("\xa0", " ").strip() for cell in tr.find_all(["td", "th"])]
+        if not cells or cells[0].lower() == "currency name":
+            continue
+        if len(cells) < 7:
+            continue
+
+        currency = _currency_from_boc_cell(cells[0])
         if currency not in SUPPORTED_BOC_CURRENCIES:
             continue
 
-        middle_per_100 = _safe_decimal(row.get(middle_col))
+        # BOC columns: Currency, Buying, Cash Buying, Selling, Cash Selling, Middle, Pub Time.
+        middle_per_100 = _safe_decimal(cells[5])
         if middle_per_100 is None:
             continue
 
-        # BOC table values are CNY per 100 units of foreign currency.
         value = middle_per_100 / Decimal("100")
         result[currency] = {
             "value": value,
-            "source_pub_time": str(row.get(pub_time_col) or "").strip() if pub_time_col else None,
+            "source_pub_time": cells[6] if len(cells) > 6 else None,
             "raw_payload": {
                 "source": "Bank of China",
                 "currency": currency,
@@ -335,6 +350,12 @@ def _parse_boc_exchange_rates() -> dict[str, dict[str, Any]]:
                 "stored_value_explanation": f"1 {currency} = {value} CNY",
             },
         }
+
+    missing = sorted(SUPPORTED_BOC_CURRENCIES - set(result.keys()))
+    if missing:
+        # Keep the fetch resilient: caller will mark only the missing currency as Failed.
+        # Returning partial results allows USD/HKD/GBP to succeed independently.
+        pass
 
     return result
 
