@@ -743,7 +743,7 @@ def _render_dashboard_header(metrics: dict[str, Any]) -> None:
     with header_col:
         render_page_header(
             "Zenith Project Tracker",
-            "Company project dashboard for Sales pipeline, Operation execution and risk visibility.",
+            "A commercial operation workspace for customer opportunities, supplier quotations, order execution and risk visibility.",
         )
     with export_col:
         st.markdown("<div style='height: 4.2rem'></div>", unsafe_allow_html=True)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from html import escape
 from textwrap import dedent
 from typing import Any
@@ -39,6 +39,12 @@ from services.project_service import (
     get_record_timeline,
     list_board_projects,
     list_detail_ids,
+)
+from services.timeline_service import (
+    MILESTONES,
+    get_manual_timeline_input,
+    list_manual_timeline_inputs,
+    save_manual_timeline_input,
 )
 from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_badges_html, render_page_header
@@ -315,10 +321,170 @@ def _render_lifecycle_view(lifecycle: dict[str, object]) -> None:
         rows = lifecycle.get("milestones") or []
         render_project_table(
             rows,
-            ["Sequence", "Milestone", "Status", "Planned Date", "Actual Date", "Delay Days", "Date Source", "Need Review"],
+            ["Sequence", "Milestone", "Status", "Planned Date", "Actual Date", "Delay Days", "Date Source", "Need Review", "Manual Supplement"],
             empty_message="No lifecycle milestones yet.",
             enable_jump=False,
         )
+
+
+
+def _date_input_text(label: str, value: object = None, *, disabled: bool = False, help_text: str | None = None, key: str | None = None) -> str:
+    """Use text input for optional dates to avoid forcing a default date.
+
+    The accepted format is YYYY-MM-DD. Empty means no manual supplement.
+    """
+    initial = ""
+    if value:
+        try:
+            initial = date.fromisoformat(str(value)[:10]).isoformat()
+        except Exception:
+            initial = str(value or "")
+    return st.text_input(label, value=initial, disabled=disabled, help=help_text, key=key)
+
+
+def _valid_optional_date(value: str, label: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text).isoformat()
+    except Exception:
+        st.error(f"{label} must use YYYY-MM-DD format.")
+        return "__INVALID__"
+
+
+def _render_manual_timeline_supplement(
+    *,
+    lifecycle: dict[str, object],
+    record_type: str,
+    record_id: str,
+    project_id: str | None,
+    order_no: str | None,
+    operator: str,
+) -> None:
+    st.markdown("### Manual Timeline Supplement")
+    st.caption(
+        "System-generated timeline records are locked and cannot be manually changed. "
+        "This section only supplements missing planned dates, missing actual dates, waiting information, or Not Applicable notes."
+    )
+    if not project_id:
+        st.info("Project ID is required before manual timeline supplements can be saved.")
+        return
+
+    milestone_labels = [f"{seq}. {label}" for seq, code, label in MILESTONES]
+    label_to_code = {f"{seq}. {label}": code for seq, code, label in MILESTONES}
+    label_to_name = {f"{seq}. {label}": label for seq, code, label in MILESTONES}
+    selected_label = st.selectbox("Milestone", milestone_labels, key=f"manual_timeline_milestone_{record_type}_{record_id}")
+    milestone_code = label_to_code[selected_label]
+
+    milestone_rows = lifecycle.get("milestones") or []
+    current_row = next((row for row in milestone_rows if row.get("Milestone Code") == milestone_code), {})
+    existing = get_manual_timeline_input(str(project_id), milestone_code, record_id=str(record_id)) or {}
+
+    auto_actual = current_row.get("Actual Date") if current_row.get("Actual Date") != "-" and str(current_row.get("Date Source") or "").startswith("Auto") else None
+    auto_planned = current_row.get("Planned Date") if current_row.get("Planned Date") != "-" and "Manual" not in str(current_row.get("Date Source") or "") else None
+
+    status_cols = st.columns(4)
+    status_cols[0].metric("Current Status", str(current_row.get("Status") or "-"))
+    status_cols[1].metric("Auto Actual", str(auto_actual or "Not recorded"))
+    status_cols[2].metric("Auto Planned", str(auto_planned or "No target"))
+    status_cols[3].metric("Date Source", str(current_row.get("Date Source") or "-"))
+
+    with st.form(f"manual_timeline_form_{record_type}_{record_id}_{milestone_code}"):
+        col1, col2 = st.columns(2)
+        with col1:
+            manual_planned = _date_input_text(
+                "Manual Planned Date",
+                existing.get("manual_planned_date"),
+                disabled=bool(auto_planned),
+                help_text="Allowed only when no system planned date exists for this milestone.",
+                key=f"manual_planned_{record_type}_{record_id}_{milestone_code}",
+            )
+            if auto_actual:
+                st.text_input(
+                    "Manual Actual Date",
+                    value="System actual date already exists; locked.",
+                    disabled=True,
+                    help="Automatic actual dates are locked and cannot be overwritten.",
+                )
+                manual_actual = ""
+            else:
+                manual_actual = _date_input_text(
+                    "Manual Actual Date",
+                    existing.get("manual_actual_date"),
+                    help_text="Only used when no system actual date exists.",
+                    key=f"manual_actual_{record_type}_{record_id}_{milestone_code}",
+                )
+            manual_waiting_for = st.text_input("Manual Waiting For", value=str(existing.get("manual_waiting_for") or ""))
+            manual_waiting_since = _date_input_text("Manual Waiting Since", existing.get("manual_waiting_since"))
+        with col2:
+            owner_options = [""] + PEOPLE
+            owner_value = existing.get("manual_owner") or ""
+            owner_index = owner_options.index(owner_value) if owner_value in owner_options else 0
+            manual_owner = st.selectbox("Manual Owner", options=owner_options, index=owner_index)
+            status_options = ["", "Not Applicable", "Need Review"]
+            status_value = existing.get("manual_status_override") or ""
+            status_index = status_options.index(status_value) if status_value in status_options else 0
+            manual_status = st.selectbox(
+                "Manual Status Supplement",
+                options=status_options,
+                index=status_index,
+                help="Does not override system-generated actual dates. Useful for marking skipped stages as Not Applicable or missing stages as Need Review.",
+            )
+            manual_note = st.text_area("Manual Note", value=str(existing.get("manual_note") or ""), height=110)
+
+        submitted = st.form_submit_button("Save Manual Timeline Supplement", type="primary")
+        if submitted:
+            planned = _valid_optional_date(manual_planned, "Manual Planned Date")
+            actual = _valid_optional_date(manual_actual, "Manual Actual Date")
+            waiting_since = _valid_optional_date(manual_waiting_since, "Manual Waiting Since")
+            if "__INVALID__" in {planned, actual, waiting_since}:
+                st.stop()
+            result = save_manual_timeline_input(
+                project_id=str(project_id),
+                record_type=record_type,
+                record_id=str(record_id),
+                order_no=order_no,
+                milestone_code=milestone_code,
+                manual_planned_date=planned,
+                manual_actual_date=actual,
+                manual_waiting_for=manual_waiting_for.strip() or None,
+                manual_waiting_since=waiting_since,
+                manual_owner=manual_owner or None,
+                manual_status_override=manual_status or None,
+                manual_note=manual_note.strip() or None,
+                operator=operator,
+            )
+            if result.get("saved"):
+                st.success(result.get("message") or "Manual timeline supplement saved.")
+                st.rerun()
+            else:
+                st.warning(result.get("message") or "Manual timeline supplement was not saved.")
+
+    manual_rows = list_manual_timeline_inputs(str(project_id))
+    if manual_rows:
+        with st.expander("Existing manual supplements", expanded=False):
+            display_rows = []
+            milestone_name = {code: label for _, code, label in MILESTONES}
+            for row in manual_rows:
+                display_rows.append({
+                    "Milestone": milestone_name.get(row.get("milestone_code"), row.get("milestone_code") or "-"),
+                    "Manual Planned": row.get("manual_planned_date") or "-",
+                    "Manual Actual": row.get("manual_actual_date") or "-",
+                    "Waiting For": row.get("manual_waiting_for") or "-",
+                    "Waiting Since": row.get("manual_waiting_since") or "-",
+                    "Owner": row.get("manual_owner") or "-",
+                    "Status Supplement": row.get("manual_status_override") or "-",
+                    "Note": row.get("manual_note") or "-",
+                    "Updated By": row.get("updated_by") or row.get("created_by") or "-",
+                    "Updated At": row.get("updated_at") or row.get("created_at") or "-",
+                })
+            render_project_table(
+                display_rows,
+                ["Milestone", "Manual Planned", "Manual Actual", "Waiting For", "Waiting Since", "Owner", "Status Supplement", "Note", "Updated By", "Updated At"],
+                empty_message="No manual timeline supplements yet.",
+                enable_jump=False,
+            )
 
 
 def _has_meaningful_value(value: object) -> bool:
@@ -1039,6 +1205,15 @@ with timeline_tab:
     try:
         lifecycle_view = get_record_lifecycle_view(selected_type, selected_record_id, detail)
         _render_lifecycle_view(lifecycle_view)
+        with st.expander("Manual Timeline Supplement", expanded=False):
+            _render_manual_timeline_supplement(
+                lifecycle=lifecycle_view,
+                record_type=selected_type,
+                record_id=selected_record_id,
+                project_id=str(ext_project_id or "") if ext_project_id else None,
+                order_no=selected_record_id if selected_type == "Operation" else None,
+                operator=acting_user,
+            )
     except Exception as exc:
         st.warning(f"Lifecycle summary is not available yet: {exc}")
 

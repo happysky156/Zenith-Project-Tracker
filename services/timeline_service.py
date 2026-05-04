@@ -7,6 +7,12 @@ from database.connection import execute, get_connection
 from database.repositories import insert_event_log
 from utils.dates import now_iso
 from utils.ids import new_event_id
+import uuid
+
+try:
+    import streamlit as st
+except Exception:  # pragma: no cover
+    st = None  # type: ignore
 
 
 MILESTONES = [
@@ -166,6 +172,10 @@ def fetch_project_timeline_source(record_type: str, record_id: str, project_id: 
         "order_details": q("SELECT * FROM order_details WHERE project_id = ?", (project_id,)) if project_id else [],
         "order_costs": q("SELECT * FROM order_costs WHERE project_id = ?", (project_id,)) if project_id else [],
         "sample_tracking": q("SELECT * FROM sample_tracking WHERE project_id = ?", (project_id,)) if project_id else [],
+        "timeline_manual_inputs": q(
+            "SELECT * FROM timeline_manual_inputs WHERE project_id = ? ORDER BY COALESCE(updated_at, created_at) DESC",
+            (project_id,),
+        ) if project_id else [],
     }
     conn.close()
     return {
@@ -179,6 +189,33 @@ def fetch_project_timeline_source(record_type: str, record_id: str, project_id: 
         **ext,
     }
 
+
+
+def _latest_manual_by_milestone(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Return the latest manual supplement for each milestone.
+
+    Manual supplements never overwrite system-generated events. They are used
+    only when automatic actual/planned/waiting values are missing, or as notes.
+    """
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        code = str(row.get("milestone_code") or "").strip()
+        if not code:
+            continue
+        current = latest.get(code)
+        row_time = _date_text(row.get("updated_at")) or _date_text(row.get("created_at")) or ""
+        current_time = _date_text(current.get("updated_at")) or _date_text(current.get("created_at")) or "" if current else ""
+        if current is None or str(row_time) >= str(current_time):
+            latest[code] = row
+    return latest
+
+
+def _manual_text(value: Any) -> str | None:
+    return _text(value)
+
+
+def _manual_date(value: Any) -> str | None:
+    return _date_text(value)
 
 def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
     project_id = (detail or {}).get("project_id") or (record_id if record_type == "Sales" else None)
@@ -197,6 +234,8 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
     order_costs = source["order_costs"]
     linked_ops = source["linked_operations"]
     events = source["events"]
+    manual_rows = source.get("timeline_manual_inputs", [])
+    manual_by_code = _latest_manual_by_milestone(manual_rows)
 
     event_by_type = {}
     for ev in events:
@@ -305,41 +344,89 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
     current_seq = min((seq for seq, _, _ in MILESTONES if seq > last_done_seq), default=None)
 
     milestones: list[dict[str, Any]] = []
+    manual_waiting_candidates: list[dict[str, Any]] = []
     for seq, code, label in MILESTONES:
-        actual = actual_by_code.get(code)
+        manual = manual_by_code.get(code, {})
+        auto_actual = actual_by_code.get(code)
+        manual_actual = _manual_date(manual.get("manual_actual_date"))
+        actual = auto_actual or manual_actual
         need_review_note = need_review_by_code.get(code)
+        manual_status_override = _manual_text(manual.get("manual_status_override"))
+        manual_note = _manual_text(manual.get("manual_note"))
+        manual_planned = _manual_date(manual.get("manual_planned_date"))
+
+        if _manual_text(manual.get("manual_waiting_for")) or _manual_date(manual.get("manual_waiting_since")):
+            manual_waiting_candidates.append({"milestone_code": code, **manual})
+
         if need_review_note:
             status = "Need Review"
         else:
             status = "Done" if actual else ("Current" if current_seq == seq else "Pending")
             if not actual and last_done_seq > seq:
                 status = "Missing"
+
+        if manual_status_override in {"Not Applicable", "Need Review"} and not auto_actual:
+            # Manual supplement can classify a missing/non-system node, but it
+            # never overrides an automatic system actual date.
+            status = manual_status_override
+            if manual_status_override == "Need Review" and manual_note:
+                need_review_note = manual_note
+
         if code.startswith("sample_") or code == "client_approved_sample":
             # If an order exists and no sample record exists, many trading cases do not need sample tracking.
-            if order_created and not samples and not actual:
+            if order_created and not samples and not actual and manual_status_override != "Need Review":
                 status = "Not Applicable"
                 need_review_note = None
+
         planned = None
+        planned_source = None
         if code in {"sample_requested", "sample_sent_to_client"}:
             planned = _first_date(samples, ["target_sample_date", "target_date"])
+            planned_source = "Module Data" if planned else None
         elif code in {"order_created", "production_followup", "inspection_completed", "shipment_completed"}:
             planned = _first_date(order_details, ["target_delivery_date"])
+            planned_source = "Module Data" if planned else None
         else:
             planned = _date_text(base.get("target_date")) if status == "Current" else None
+            planned_source = "Core Target" if planned else None
+        if not planned and manual_planned:
+            planned = manual_planned
+            planned_source = "Manual"
+
         delay = None
         if planned:
             if actual and not need_review_note:
                 delay = max(_days_between(planned, actual) or 0, 0)
-            elif date.fromisoformat(planned) < date.today():
+            elif date.fromisoformat(planned) < date.today() and status not in {"Done", "Not Applicable"}:
                 delay = _days_between(planned)
-                if status in {"Current", "Pending"}:
+                if status in {"Current", "Pending", "Missing"}:
                     status = "Delayed"
-        date_source = "Auto" if actual else ("Manual Target" if planned else "Not recorded")
-        if need_review_note:
+
+        if auto_actual:
+            date_source = "Auto"
+        elif manual_actual:
+            date_source = "Manual"
+        elif planned_source:
+            date_source = f"{planned_source} Target"
+        else:
+            date_source = "Not recorded"
+        if need_review_note and auto_actual:
             date_source = "Auto / Need review"
+
+        manual_summary_parts = []
+        if manual_planned and planned_source == "Manual":
+            manual_summary_parts.append(f"Planned: {manual_planned}")
+        if manual_actual and not auto_actual:
+            manual_summary_parts.append(f"Actual: {manual_actual}")
+        if _manual_text(manual.get("manual_waiting_for")):
+            manual_summary_parts.append(f"Waiting for: {manual.get('manual_waiting_for')}")
+        if manual_note:
+            manual_summary_parts.append(f"Note: {manual_note}")
+
         milestones.append(
             {
                 "Sequence": seq,
+                "Milestone Code": code,
                 "Milestone": label,
                 "Status": status,
                 "Planned Date": planned or "-",
@@ -347,6 +434,7 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
                 "Delay Days": delay if delay is not None else "-",
                 "Date Source": date_source,
                 "Need Review": need_review_note or "-",
+                "Manual Supplement": "; ".join(manual_summary_parts) if manual_summary_parts else "-",
             }
         )
 
@@ -368,6 +456,12 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
 
     waiting_for = _text(base.get("client_waiting_for")) or _text(base.get("waiting_for_text")) or _text(base.get("block_point")) or _text(base.get("need_from_meeting")) or _text(base.get("next_step_owner"))
     waiting_since = _date_text(base.get("last_status_update_at")) or current_stage_start or project_created
+    if not waiting_for and manual_waiting_candidates:
+        # Prefer a manual waiting note for the current stage; otherwise use the latest available supplement.
+        current_code = next((str(m.get("Milestone Code") or "") for m in milestones if m.get("Status") in {"Current", "Delayed", "Need Review"}), "")
+        selected_manual = next((m for m in manual_waiting_candidates if m.get("milestone_code") == current_code), manual_waiting_candidates[0])
+        waiting_for = _manual_text(selected_manual.get("manual_waiting_for"))
+        waiting_since = _manual_date(selected_manual.get("manual_waiting_since")) or waiting_since
     waiting_days = _days_between(waiting_since) if waiting_for and waiting_since else None
 
     customer_waiting = _text(base.get("client_waiting_for"))
@@ -412,6 +506,7 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
         "milestones": milestones,
         "events": detailed,
         "raw_events": events,
+        "manual_inputs": manual_rows,
         "summary": {
             "project_created": project_created,
             "current_stage": current_stage,
@@ -421,6 +516,190 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
             "target_date": target_date,
         },
     }
+
+
+
+def _new_manual_id() -> str:
+    return f"TMI-{uuid.uuid4().hex[:12].upper()}"
+
+
+def _clear_streamlit_cache() -> None:
+    if st is not None:
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+
+def list_manual_timeline_inputs(project_id: str) -> list[dict[str, Any]]:
+    from database.schema import init_extension_db
+    init_extension_db()
+    if not project_id:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        execute(
+            cur,
+            """
+            SELECT * FROM timeline_manual_inputs
+            WHERE project_id = ?
+            ORDER BY COALESCE(updated_at, created_at) DESC
+            """,
+            (project_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_manual_timeline_input(project_id: str, milestone_code: str, record_id: str | None = None) -> dict[str, Any] | None:
+    rows = list_manual_timeline_inputs(project_id)
+    for row in rows:
+        if str(row.get("milestone_code") or "") != milestone_code:
+            continue
+        if record_id and row.get("record_id") and str(row.get("record_id")) != str(record_id):
+            continue
+        return row
+    return None
+
+
+def save_manual_timeline_input(
+    *,
+    project_id: str,
+    record_type: str,
+    record_id: str,
+    order_no: str | None,
+    milestone_code: str,
+    manual_planned_date: str | None = None,
+    manual_actual_date: str | None = None,
+    manual_waiting_for: str | None = None,
+    manual_waiting_since: str | None = None,
+    manual_owner: str | None = None,
+    manual_status_override: str | None = None,
+    manual_note: str | None = None,
+    operator: str | None = None,
+) -> dict[str, Any]:
+    """Save a manual timeline supplement without changing automatic events.
+
+    The record is a supplement only. build_lifecycle_view uses automatic actual
+    dates first; manual actual dates are used only when an automatic actual date
+    is missing.
+    """
+    from database.schema import init_extension_db
+    init_extension_db()
+    now = now_iso()
+    project_id = str(project_id or "").strip()
+    milestone_code = str(milestone_code or "").strip()
+    if not project_id:
+        return {"saved": False, "message": "Project ID is required."}
+    if not milestone_code:
+        return {"saved": False, "message": "Milestone is required."}
+
+    def norm(value: str | None) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        execute(
+            cur,
+            """
+            SELECT manual_id FROM timeline_manual_inputs
+            WHERE project_id = ? AND milestone_code = ? AND COALESCE(record_id, '') = COALESCE(?, '')
+            ORDER BY COALESCE(updated_at, created_at) DESC
+            LIMIT 1
+            """,
+            (project_id, milestone_code, record_id),
+        )
+        existing = cur.fetchone()
+        values = {
+            "project_id": project_id,
+            "record_type": norm(record_type),
+            "record_id": norm(record_id),
+            "order_no": norm(order_no),
+            "milestone_code": milestone_code,
+            "manual_planned_date": norm(manual_planned_date),
+            "manual_actual_date": norm(manual_actual_date),
+            "manual_waiting_for": norm(manual_waiting_for),
+            "manual_waiting_since": norm(manual_waiting_since),
+            "manual_owner": norm(manual_owner),
+            "manual_status_override": norm(manual_status_override),
+            "manual_note": norm(manual_note),
+            "updated_by": norm(operator),
+            "updated_at": now,
+        }
+        if existing:
+            manual_id = existing[0] if not isinstance(existing, dict) else existing.get("manual_id")
+            execute(
+                cur,
+                """
+                UPDATE timeline_manual_inputs
+                SET record_type = ?, record_id = ?, order_no = ?,
+                    manual_planned_date = ?, manual_actual_date = ?,
+                    manual_waiting_for = ?, manual_waiting_since = ?, manual_owner = ?,
+                    manual_status_override = ?, manual_note = ?, updated_by = ?, updated_at = ?
+                WHERE manual_id = ?
+                """,
+                (
+                    values["record_type"], values["record_id"], values["order_no"],
+                    values["manual_planned_date"], values["manual_actual_date"],
+                    values["manual_waiting_for"], values["manual_waiting_since"], values["manual_owner"],
+                    values["manual_status_override"], values["manual_note"], values["updated_by"], values["updated_at"],
+                    manual_id,
+                ),
+            )
+        else:
+            manual_id = _new_manual_id()
+            execute(
+                cur,
+                """
+                INSERT INTO timeline_manual_inputs (
+                    manual_id, project_id, record_type, record_id, order_no, milestone_code,
+                    manual_planned_date, manual_actual_date, manual_waiting_for, manual_waiting_since,
+                    manual_owner, manual_status_override, manual_note,
+                    created_by, created_at, updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    manual_id, values["project_id"], values["record_type"], values["record_id"], values["order_no"], values["milestone_code"],
+                    values["manual_planned_date"], values["manual_actual_date"], values["manual_waiting_for"], values["manual_waiting_since"],
+                    values["manual_owner"], values["manual_status_override"], values["manual_note"],
+                    norm(operator), now, norm(operator), now,
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    _clear_streamlit_cache()
+    try:
+        log_commercial_event(
+            entity_type=record_type,
+            entity_id=record_id,
+            project_id=project_id,
+            order_no=order_no,
+            event_type="Manual Timeline Supplement Updated",
+            event_group="Timeline",
+            operator=operator,
+            event_note=f"Manual supplement saved for {milestone_code}.",
+            source_page="Project Detail",
+            source_module="Timeline Manual Supplement",
+            source_record_id=manual_id,
+            planned_date=manual_planned_date,
+            actual_date=manual_actual_date,
+            waiting_for=manual_waiting_for,
+            owner=manual_owner,
+        )
+    except Exception:
+        # The supplement itself is already saved. Do not fail the user action if
+        # the auxiliary event-log write is unavailable.
+        pass
+    return {"saved": True, "message": "Manual timeline supplement saved.", "manual_id": manual_id}
 
 
 def log_commercial_event(

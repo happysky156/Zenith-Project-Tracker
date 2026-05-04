@@ -86,7 +86,7 @@ def render_sidebar_branding() -> None:
             """
             <div class='zt-sidebar-brand-text'>
                 <div class='zt-sidebar-brand-title'>Zenith Tracker</div>
-                <div class='zt-sidebar-brand-subtitle'>Project progress · meeting control · action follow-up</div>
+                <div class='zt-sidebar-brand-subtitle'>Client first · Risk control · Overdeliver</div>
             </div>
             <div class='zt-sidebar-nav-label'>Workspace</div>
             """,

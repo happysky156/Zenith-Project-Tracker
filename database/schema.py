@@ -550,6 +550,28 @@ EXTENSION_TABLE_SQL = [
         created_by TEXT
     )
     """,
+
+    """
+    CREATE TABLE IF NOT EXISTS timeline_manual_inputs (
+        manual_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        record_type TEXT,
+        record_id TEXT,
+        order_no TEXT,
+        milestone_code TEXT NOT NULL,
+        manual_planned_date TEXT,
+        manual_actual_date TEXT,
+        manual_waiting_for TEXT,
+        manual_waiting_since TEXT,
+        manual_owner TEXT,
+        manual_status_override TEXT,
+        manual_note TEXT,
+        created_by TEXT,
+        created_at TEXT,
+        updated_by TEXT,
+        updated_at TEXT
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS sample_tracking (
         sample_id TEXT PRIMARY KEY,
@@ -659,6 +681,25 @@ SUPPLIER_DETAILS_EXTENSION_COLUMNS = {
 # missing columns, so these migrations keep pages such as Client Quotation and
 # Project Detail History from failing with UndefinedColumn.
 EXTENSION_COMPAT_COLUMNS = {
+    "timeline_manual_inputs": {
+        "manual_id": "TEXT",
+        "project_id": "TEXT",
+        "record_type": "TEXT",
+        "record_id": "TEXT",
+        "order_no": "TEXT",
+        "milestone_code": "TEXT",
+        "manual_planned_date": "TEXT",
+        "manual_actual_date": "TEXT",
+        "manual_waiting_for": "TEXT",
+        "manual_waiting_since": "TEXT",
+        "manual_owner": "TEXT",
+        "manual_status_override": "TEXT",
+        "manual_note": "TEXT",
+        "created_by": "TEXT",
+        "created_at": "TEXT",
+        "updated_by": "TEXT",
+        "updated_at": "TEXT",
+    },
     "index_snapshots": {
         "index_snapshot_id": "TEXT",
         "client_quote_id": "TEXT",
@@ -722,6 +763,7 @@ EXTENSION_INDEX_DEFINITIONS = [
     ("order_details", "idx_order_details_order", ["order_no"]),
     ("order_costs", "idx_order_costs_order", ["order_no"]),
     ("sample_tracking", "idx_sample_tracking_project", ["project_id"]),
+    ("timeline_manual_inputs", "idx_timeline_manual_project", ["project_id", "milestone_code"]),
 ]
 
 MARKET_INDEX_INDEX_DEFINITIONS = [
