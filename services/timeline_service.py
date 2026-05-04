@@ -24,27 +24,19 @@ MILESTONES = [
     (6, "client_quotation_created", "Client Quotation V1 Created"),
     (7, "index_snapshot_locked", "Index Snapshot Locked"),
     (8, "client_quotation_sent", "Client Quotation Sent"),
-    (9, "commercial_won", "Commercial Won"),
-    (10, "sample_requested", "Sample Requested"),
-    (11, "sample_sent_to_client", "Sample Sent to Client"),
-    (12, "client_approved_sample", "Client Approved Sample"),
-    (13, "order_created", "Order Created"),
-    (14, "production_followup", "Production Follow-up"),
-    (15, "inspection_completed", "Inspection Completed"),
-    (16, "shipment_completed", "Shipment Completed"),
-    (17, "final_cost_updated", "Final Cost Updated"),
-    (18, "gross_profit_confirmed", "Gross Profit Confirmed"),
-    (19, "project_closed", "Project Fully Closed"),
+    (9, "sample_requested", "Sample Requested"),
+    (10, "sample_sent_to_client", "Sample Sent to Client"),
+    (11, "client_approved_sample", "Client Approved Sample"),
+    (12, "order_created", "Order Created"),
+    (13, "production_followup", "Production Follow-up"),
+    (14, "inspection_completed", "Inspection Completed"),
+    (15, "shipment_completed", "Shipment Completed"),
+    (16, "final_cost_updated", "Final Cost Updated"),
+    (17, "gross_profit_confirmed", "Gross Profit Confirmed"),
+    (18, "project_closed", "Project Closed"),
 ]
 
-# Management distinction:
-# - Sales Result = Won means the commercial opportunity is won. It does NOT
-#   mean the whole project/order lifecycle is fully closed.
-# - Project Fully Closed requires linked Operation order(s) to be completed /
-#   paid closed, or an explicit Project Fully Closed event.
-SALES_COMMERCIAL_WON_RESULTS = {"won"}
-SALES_TERMINAL_NO_ORDER_RESULTS = {"lost", "cancelled", "canceled", "closed", "complete", "completed"}
-OPERATION_FULLY_CLOSED_RESULTS = {"paid closed", "complete", "completed", "complete shipped", "closed", "cancelled", "canceled"}
+CLOSED_RESULTS = {"won", "lost", "paid closed", "cancelled", "canceled", "closed", "complete", "completed"}
 RISK_HEALTH = {"risk", "blocked", "delayed", "due soon", "need decision", "need alignment", "waiting client", "waiting supplier", "waiting internal"}
 
 
@@ -56,10 +48,6 @@ def _text(value: Any) -> str | None:
     if _is_blank(value):
         return None
     return str(value).strip()
-
-
-def _norm_status(value: Any) -> str:
-    return " ".join(str(value or "").strip().lower().replace("_", " ").split())
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -312,47 +300,11 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
         event_date(["Gross Profit Confirmed"]),
         _latest_date(order_details, ["imported_at", "order_date"], lambda r: not _is_blank(r.get("gross_profit"))),
     )
-    sales_row = source.get("sales") or {}
-    selected_operation_row = source.get("operation") or {}
-    operation_rows = linked_ops or ([selected_operation_row] if selected_operation_row else [])
-
-    sales_result_normalized = _norm_status(sales_row.get("result_status") or (base.get("result_status") if record_type == "Sales" else None))
-    base_result_normalized = _norm_status(base.get("result_status"))
-
-    commercial_won = _earliest(
-        event_date(["Commercial Won", "Client Quotation Accepted", "Sales Won"]),
-        (sales_row.get("last_status_update_at") or sales_row.get("updated_at") or sales_row.get("created_at"))
-        if sales_result_normalized in SALES_COMMERCIAL_WON_RESULTS
-        else None,
-        (base.get("last_status_update_at") or base.get("updated_at") or base.get("created_at"))
-        if record_type == "Sales" and base_result_normalized in SALES_COMMERCIAL_WON_RESULTS
-        else None,
-    )
-
-    def _operation_fully_closed(row: dict[str, Any]) -> bool:
-        return _norm_status(row.get("result_status")) in OPERATION_FULLY_CLOSED_RESULTS
-
-    has_operation_orders = bool(operation_rows)
-    all_operations_closed = has_operation_orders and all(_operation_fully_closed(r) for r in operation_rows)
-    operations_closed_date = _latest_date(operation_rows, ["last_status_update_at", "updated_at", "created_at"], _operation_fully_closed)
-    explicit_project_closed_date = event_date(["Project Fully Closed", "Project Closed"])
-
-    # Full closure rules from management perspective:
-    # - Won is recorded as Commercial Won only.
-    # - A won project becomes fully closed only after linked Operation orders
-    #   are completed / paid closed.
-    # - Lost/cancelled sales cases with no linked operation can be treated as
-    #   terminally closed because no execution lifecycle remains.
-    no_order_terminal_close = (
-        not has_operation_orders
-        and sales_result_normalized in SALES_TERMINAL_NO_ORDER_RESULTS
-        and (sales_row.get("last_status_update_at") or base.get("last_status_update_at") or sales_row.get("updated_at") or base.get("updated_at"))
-    )
-    project_fully_closed = bool(explicit_project_closed_date) or (all_operations_closed and (bool(commercial_won) or not sales_row)) or bool(no_order_terminal_close)
+    result_status_normalized = str(base.get("result_status") or "").strip().lower()
+    explicit_closed = result_status_normalized in CLOSED_RESULTS
     closed = _earliest(
-        explicit_project_closed_date,
-        operations_closed_date if all_operations_closed and (bool(commercial_won) or not sales_row) else None,
-        no_order_terminal_close,
+        event_date(["Project Closed"]),
+        base.get("last_status_update_at") if explicit_closed else None,
     )
 
     actual_by_code = {
@@ -364,7 +316,6 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
         "client_quotation_created": client_v1,
         "index_snapshot_locked": index_locked,
         "client_quotation_sent": client_sent,
-        "commercial_won": commercial_won,
         "sample_requested": sample_requested,
         "sample_sent_to_client": sample_sent,
         "client_approved_sample": sample_approved,
@@ -488,19 +439,19 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
         )
 
     stage = next((m for m in milestones if m["Status"] in {"Current", "Delayed", "Need Review"}), None)
-    if project_fully_closed:
-        current_stage = "Project Fully Closed"
+    if explicit_closed:
+        current_stage = "Project Closed"
     elif stage:
         current_stage = stage["Milestone"]
     else:
         current_stage = "Not classified yet"
     previous_done_dates = [m["Actual Date"] for m in milestones if m["Actual Date"] != "-" and m["Status"] == "Done"]
     current_stage_start = max(previous_done_dates) if previous_done_dates else project_created
-    days_in_stage = _days_between(current_stage_start) if current_stage_start and current_stage != "Project Fully Closed" else None
+    days_in_stage = _days_between(current_stage_start) if current_stage_start and current_stage != "Project Closed" else None
 
     target_date = _date_text(base.get("target_date"))
     delay_days = None
-    if target_date and date.fromisoformat(target_date) < date.today() and not project_fully_closed:
+    if target_date and date.fromisoformat(target_date) < date.today() and not closed:
         delay_days = _days_between(target_date)
 
     waiting_for = _text(base.get("client_waiting_for")) or _text(base.get("waiting_for_text")) or _text(base.get("block_point")) or _text(base.get("need_from_meeting")) or _text(base.get("next_step_owner"))
@@ -563,10 +514,6 @@ def build_lifecycle_view(record_type: str, record_id: str, detail: dict[str, Any
             "waiting_for": waiting_for,
             "risk_summary": risk_summary,
             "target_date": target_date,
-            "commercial_won": commercial_won,
-            "project_fully_closed": project_fully_closed,
-            "all_operations_closed": all_operations_closed,
-            "has_operation_orders": has_operation_orders,
         },
     }
 
