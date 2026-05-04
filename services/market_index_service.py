@@ -15,7 +15,7 @@ Index Center can work with either shape without changing existing business data.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from decimal import Decimal, InvalidOperation
 import re
@@ -35,16 +35,36 @@ from database.connection import execute, get_connection, using_postgres
 
 BOC_EXCHANGE_RATE_URL = "https://www.bankofchina.com/sourcedb/whpj/enindex_1619.html"
 SUPPORTED_BOC_CURRENCIES = {"USD", "HKD", "GBP"}
+SHFE_DAILY_DATA_PAGE = "https://www.shfe.com.cn/eng/reports/StatisticalData/DailyData/"
+SHFE_DAILY_DATA_URL_TEMPLATE = "https://www.shfe.com.cn/data/dailydata/kx/kx{yyyymmdd}.dat"
+SHFE_METAL_INDEX_MAP: dict[str, dict[str, Any]] = {
+    "STAINLESS_STEEL_304": {
+        "product_ids": ["ss"],
+        "source_label": "SHFE Stainless Steel reference",
+    },
+    "CARBON_STEEL": {
+        "product_ids": ["hc", "rb"],
+        "source_label": "SHFE Hot-Rolled Coil / Rebar reference",
+    },
+    "ZINC": {
+        "product_ids": ["zn"],
+        "source_label": "SHFE Zinc reference",
+    },
+    "ALUMINIUM": {
+        "product_ids": ["al"],
+        "source_label": "SHFE Aluminium reference",
+    },
+}
 LOCAL_TZ = ZoneInfo("Asia/Singapore")
 
 DEFAULT_INDEX_CONFIGS: list[dict[str, Any]] = [
     {"index_code": "USD_CNY", "index_name": "USD/CNY", "display_name": "USD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "HKD_CNY", "index_name": "HKD/CNY", "display_name": "HKD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "GBP_CNY", "index_name": "GBP/CNY", "display_name": "GBP/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "STAINLESS_STEEL_304", "index_name": "Stainless Steel 304", "display_name": "Stainless Steel 304", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE Hot-Rolled Coil", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "STAINLESS_STEEL_304", "index_name": "Stainless Steel 304", "display_name": "Stainless Steel 304", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE Hot-Rolled Coil", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "PP", "index_name": "PP", "display_name": "PP", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "PVC", "index_name": "PVC", "display_name": "PVC", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "ABS", "index_name": "ABS", "display_name": "ABS", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "Third-party / Manual Confirm", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
@@ -360,7 +380,188 @@ def _parse_boc_exchange_rates(html: str | None = None) -> dict[str, dict[str, An
     return result
 
 
-def fetch_external_values(configs: list[dict[str, Any]]) -> dict[str, FetchResult]:
+
+def _shfe_date_candidates(target_date: str | None, lookback_days: int = 10) -> list[date]:
+    """Return target date and recent prior dates for SHFE daily data lookup."""
+    if target_date:
+        try:
+            base = datetime.fromisoformat(str(target_date)).date()
+        except Exception:
+            base = datetime.now(LOCAL_TZ).date()
+    else:
+        base = datetime.now(LOCAL_TZ).date()
+    return [base - timedelta(days=offset) for offset in range(lookback_days + 1)]
+
+
+def _json_rows_from_payload(payload: Any) -> list[dict[str, Any]]:
+    """Flatten the list-like sections of a SHFE daily data JSON payload."""
+    rows: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        for value in payload.values():
+            if isinstance(value, list):
+                rows.extend([item for item in value if isinstance(item, dict)])
+            elif isinstance(value, dict):
+                rows.extend(_json_rows_from_payload(value))
+    elif isinstance(payload, list):
+        rows.extend([item for item in payload if isinstance(item, dict)])
+    return rows
+
+
+def _row_value(row: dict[str, Any], keys: list[str]) -> Any:
+    lower = {str(k).lower(): v for k, v in row.items()}
+    for key in keys:
+        if key in row:
+            return row.get(key)
+        if key.lower() in lower:
+            return lower.get(key.lower())
+    return None
+
+
+def _normalise_shfe_product_id(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("_f", "").replace("-f", "")
+    text = re.sub(r"[^a-z]", "", text)
+    return text
+
+
+def _shfe_row_matches_product(row: dict[str, Any], product_ids: list[str]) -> bool:
+    product_id = _normalise_shfe_product_id(_row_value(row, ["PRODUCTID", "productid", "product_id", "INSTRUMENTID", "instrumentid"]))
+    instrument_id = _normalise_shfe_product_id(_row_value(row, ["INSTRUMENTID", "instrumentid", "instrument_id", "CONTRACTID", "contractid"]))
+    ids = {_normalise_shfe_product_id(item) for item in product_ids}
+    if product_id in ids:
+        return True
+    # Instrument IDs are usually like ss2606 / hc2606 / zn2606 / al2606.
+    if any(instrument_id.startswith(pid) for pid in ids if pid):
+        return True
+    return False
+
+
+def _is_shfe_total_row(row: dict[str, Any]) -> bool:
+    text_parts = [
+        _row_value(row, ["DELIVERYMONTH", "deliverymonth", "DELIVERY_MONTH"]),
+        _row_value(row, ["INSTRUMENTID", "instrumentid", "CONTRACTID", "contractid"]),
+        _row_value(row, ["PRODUCTNAME", "productname"]),
+    ]
+    text = " ".join(str(v or "") for v in text_parts).strip().lower()
+    return any(token in text for token in ["小计", "合计", "total", "subtotal"])
+
+
+def _shfe_price_from_row(row: dict[str, Any]) -> Decimal | None:
+    # Prefer daily settlement price, then close price. All supported SHFE metals
+    # are quoted in RMB/CNY per metric ton in the exchange daily data.
+    for keys in (
+        ["SETTLEMENTPRICE", "settlementprice", "settle", "settlement_price"],
+        ["CLOSEPRICE", "closeprice", "closingprice", "close_price"],
+        ["LASTPRICE", "lastprice", "last_price"],
+    ):
+        value = _safe_decimal(_row_value(row, keys))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _shfe_rank_tuple(row: dict[str, Any]) -> tuple[Decimal, Decimal]:
+    open_interest = _safe_decimal(_row_value(row, ["OPENINTEREST", "openinterest", "open_interest"])) or Decimal("0")
+    volume = _safe_decimal(_row_value(row, ["VOLUME", "volume", "TRADEVOLUME", "tradevolume"])) or Decimal("0")
+    return open_interest, volume
+
+
+def _select_shfe_contract(rows: list[dict[str, Any]], product_ids: list[str]) -> tuple[dict[str, Any], Decimal] | None:
+    candidates: list[tuple[tuple[Decimal, Decimal], dict[str, Any], Decimal]] = []
+    for row in rows:
+        if not _shfe_row_matches_product(row, product_ids):
+            continue
+        if _is_shfe_total_row(row):
+            continue
+        price = _shfe_price_from_row(row)
+        if price is None:
+            continue
+        candidates.append((_shfe_rank_tuple(row), row, price))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, row, price = candidates[0]
+    return row, price
+
+
+def _fetch_shfe_metal_values(target_date: str | None = None) -> dict[str, FetchResult]:
+    """Fetch SHFE metal reference values safely.
+
+    The implementation is deliberately defensive. It tries the official SHFE
+    daily data .dat endpoint for the target date and recent prior calendar days.
+    If SHFE blocks the request, returns HTML/WAF content, or changes the JSON
+    shape, the caller receives a Failed result for metal indices only. FX and
+    freight logic are not affected.
+    """
+    requested = set(SHFE_METAL_INDEX_MAP.keys())
+    results: dict[str, FetchResult] = {}
+    last_error: str | None = None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ZenithProjectTracker/1.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": SHFE_DAILY_DATA_PAGE,
+    }
+
+    for dt in _shfe_date_candidates(target_date, lookback_days=10):
+        if len(results) >= len(requested):
+            break
+        yyyymmdd = dt.strftime("%Y%m%d")
+        url = SHFE_DAILY_DATA_URL_TEMPLATE.format(yyyymmdd=yyyymmdd)
+        try:
+            response = requests.get(url, headers=headers, timeout=25)
+            response.raise_for_status()
+            content_type = str(response.headers.get("content-type") or "").lower()
+            text_start = response.text[:200].strip().lower()
+            if "html" in content_type or text_start.startswith("<!doctype") or text_start.startswith("<html"):
+                raise RuntimeError("SHFE returned HTML instead of daily data JSON; request may be blocked by website protection.")
+            payload = response.json()
+            rows = _json_rows_from_payload(payload)
+            if not rows:
+                raise RuntimeError("SHFE daily data JSON did not contain data rows.")
+
+            for index_code, meta in SHFE_METAL_INDEX_MAP.items():
+                if index_code in results:
+                    continue
+                selected = _select_shfe_contract(rows, meta["product_ids"])
+                if not selected:
+                    continue
+                row, value = selected
+                instrument = _row_value(row, ["INSTRUMENTID", "instrumentid", "CONTRACTID", "contractid"])
+                product_id = _row_value(row, ["PRODUCTID", "productid", "product_id"])
+                results[index_code] = FetchResult(
+                    value=value,
+                    status="Success",
+                    fetch_method="Web Parse",
+                    source_pub_time=dt.isoformat(),
+                    raw_payload={
+                        "source": "SHFE",
+                        "source_url": url,
+                        "source_date": dt.isoformat(),
+                        "source_label": meta.get("source_label"),
+                        "product_id": product_id,
+                        "instrument_id": instrument,
+                        "value_source": "settlement price preferred; close price fallback",
+                    },
+                )
+        except Exception as exc:
+            last_error = f"SHFE fetch failed for {yyyymmdd}: {type(exc).__name__}: {exc}"
+            continue
+
+    for index_code, meta in SHFE_METAL_INDEX_MAP.items():
+        if index_code not in results:
+            label = meta.get("source_label") or index_code
+            results[index_code] = FetchResult(
+                value=None,
+                status="Failed",
+                fetch_method="Web Parse",
+                error_message=last_error or f"No SHFE daily data value found for {label}.",
+                raw_payload={"source": "SHFE", "source_label": label},
+            )
+    return results
+
+
+def fetch_external_values(configs: list[dict[str, Any]], target_date: str | None = None) -> dict[str, FetchResult]:
     """Fetch external values once per source and return result by index_code."""
     results: dict[str, FetchResult] = {}
 
@@ -374,6 +575,15 @@ def fetch_external_values(configs: list[dict[str, Any]]) -> dict[str, FetchResul
             boc_rates = _parse_boc_exchange_rates()
         except Exception as exc:  # keep the daily job resilient
             boc_error = f"BOC fetch failed: {type(exc).__name__}: {exc}"
+
+    metal_configs = [
+        cfg for cfg in configs
+        if cfg.get("index_code") in SHFE_METAL_INDEX_MAP
+        and str(cfg.get("fetch_method") or "").strip().lower() in {"web parse", "automatic parse", "api"}
+    ]
+    shfe_results: dict[str, FetchResult] = {}
+    if metal_configs:
+        shfe_results = _fetch_shfe_metal_values(target_date=target_date)
 
     for cfg in configs:
         index_code = cfg["index_code"]
@@ -393,6 +603,8 @@ def fetch_external_values(configs: list[dict[str, Any]]) -> dict[str, FetchResul
                     )
                 else:
                     results[index_code] = FetchResult(None, "Failed", "Web Parse", error_message=f"{currency} not found in BOC result.")
+        elif index_code in shfe_results:
+            results[index_code] = shfe_results[index_code]
         elif str(cfg.get("index_category") or "").upper() == "FREIGHT" or str(cfg.get("fetch_method") or "").lower() == "manual":
             results[index_code] = FetchResult(
                 value=None,
@@ -657,7 +869,7 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
 def run_daily_index_fetch(target_date: str | None = None, operator: str = "GitHub Actions") -> dict[str, int]:
     target_date = target_date or today_local()
     configs = list_index_configs()
-    results = fetch_external_values(configs)
+    results = fetch_external_values(configs, target_date=target_date)
 
     summary = {
         "configs": len(configs),
