@@ -6,13 +6,14 @@ Run modes:
 - GitHub Actions: scheduled every day using DATABASE_URL from repository secrets.
 - Local test: python tools/daily_index_fetch.py
 
-Current automatic source:
+Current automatic sources:
 - Bank of China exchange-rate page for USD/CNY, HKD/CNY and GBP/CNY.
+- Sina Finance Futures for metal indices, with Eastmoney Futures as fallback.
 
 Other material / plastic / freight indices are handled conservatively:
 - If there is a previous value, today's row is created as Carry Forward.
-- If there is no previous value, today's row is created as Failed so Index Center
-  clearly shows that manual input is needed.
+- If there is no previous value, today's row is created as Failed / Manual Required
+  so Index Center clearly shows that manual input is needed.
 """
 
 from pathlib import Path

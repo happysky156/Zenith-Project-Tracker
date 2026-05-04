@@ -35,24 +35,40 @@ from database.connection import execute, get_connection, using_postgres
 
 BOC_EXCHANGE_RATE_URL = "https://www.bankofchina.com/sourcedb/whpj/enindex_1619.html"
 SUPPORTED_BOC_CURRENCIES = {"USD", "HKD", "GBP"}
-SHFE_DAILY_DATA_PAGE = "https://www.shfe.com.cn/eng/reports/StatisticalData/DailyData/"
-SHFE_DAILY_DATA_URL_TEMPLATE = "https://www.shfe.com.cn/data/dailydata/kx/kx{yyyymmdd}.dat"
-SHFE_METAL_INDEX_MAP: dict[str, dict[str, Any]] = {
+SINA_FUTURES_QUOTE_PAGE = "https://finance.sina.com.cn/futures/quotes/"
+SINA_FUTURES_QUOTES_URL_TEMPLATE = "https://hq.sinajs.cn/list={symbols}"
+EASTMONEY_FUTURES_API = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+
+# Metal index policy:
+# - Primary auto source: Sina Finance Futures
+# - Fallback auto source: Eastmoney Futures
+# - Official reference kept in payload/remarks as SHFE, so the business meaning
+#   remains aligned with the exchange product while avoiding SHFE website/WAF
+#   instability in Streamlit Cloud / GitHub Actions.
+METAL_INDEX_MAP: dict[str, dict[str, Any]] = {
     "STAINLESS_STEEL_304": {
-        "product_ids": ["ss"],
-        "source_label": "SHFE Stainless Steel reference",
+        "sina_symbols": ["nf_SS0", "nf_SS"],
+        "eastmoney_secids": ["113.SS0", "142.SS0", "103.SS0"],
+        "official_reference": "SHFE Stainless Steel reference",
+        "source_label": "Sina Finance Futures Stainless Steel quote; official reference: SHFE Stainless Steel",
     },
     "CARBON_STEEL": {
-        "product_ids": ["hc", "rb"],
-        "source_label": "SHFE Hot-Rolled Coil / Rebar reference",
+        "sina_symbols": ["nf_HC0", "nf_RB0", "nf_HC", "nf_RB"],
+        "eastmoney_secids": ["113.HC0", "113.RB0", "142.HC0", "142.RB0", "103.HC0", "103.RB0"],
+        "official_reference": "SHFE Hot-Rolled Coil / Rebar reference",
+        "source_label": "Sina Finance Futures Hot-Rolled Coil quote; official reference: SHFE HRC/Rebar",
     },
     "ZINC": {
-        "product_ids": ["zn"],
-        "source_label": "SHFE Zinc reference",
+        "sina_symbols": ["nf_ZN0", "nf_ZN"],
+        "eastmoney_secids": ["113.ZN0", "142.ZN0", "103.ZN0"],
+        "official_reference": "SHFE Zinc reference",
+        "source_label": "Sina Finance Futures Zinc quote; official reference: SHFE Zinc",
     },
     "ALUMINIUM": {
-        "product_ids": ["al"],
-        "source_label": "SHFE Aluminium reference",
+        "sina_symbols": ["nf_AL0", "nf_AL"],
+        "eastmoney_secids": ["113.AL0", "142.AL0", "103.AL0"],
+        "official_reference": "SHFE Aluminium reference",
+        "source_label": "Sina Finance Futures Aluminium quote; official reference: SHFE Aluminium",
     },
 }
 LOCAL_TZ = ZoneInfo("Asia/Singapore")
@@ -61,10 +77,10 @@ DEFAULT_INDEX_CONFIGS: list[dict[str, Any]] = [
     {"index_code": "USD_CNY", "index_name": "USD/CNY", "display_name": "USD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "HKD_CNY", "index_name": "HKD/CNY", "display_name": "HKD/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "GBP_CNY", "index_name": "GBP/CNY", "display_name": "GBP/CNY", "index_category": "FX", "unit": "rate", "source_name": "Bank of China", "source_url": BOC_EXCHANGE_RATE_URL, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "STAINLESS_STEEL_304", "index_name": "Stainless Steel 304", "display_name": "Stainless Steel 304", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE Hot-Rolled Coil", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
-    {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "SHFE", "source_url": SHFE_DAILY_DATA_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "STAINLESS_STEEL_304", "index_name": "Stainless Steel 304", "display_name": "Stainless Steel 304", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "CARBON_STEEL", "index_name": "Carbon Steel", "display_name": "Carbon Steel", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ZINC", "index_name": "Zinc", "display_name": "Zinc", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
+    {"index_code": "ALUMINIUM", "index_name": "Aluminium", "display_name": "Aluminium", "index_category": "Metal", "unit": "CNY/ton", "source_name": "Sina Finance Futures", "source_url": SINA_FUTURES_QUOTE_PAGE, "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "PP", "index_name": "PP", "display_name": "PP", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "PVC", "index_name": "PVC", "display_name": "PVC", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "DCE", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
     {"index_code": "ABS", "index_name": "ABS", "display_name": "ABS", "index_category": "Plastic", "unit": "CNY/ton", "source_name": "Third-party / Manual Confirm", "source_url": "", "fetch_enabled": 1, "fetch_method": "Web Parse", "fallback_method": "Carry Forward", "active": 1},
@@ -381,184 +397,342 @@ def _parse_boc_exchange_rates(html: str | None = None) -> dict[str, dict[str, An
 
 
 
-def _shfe_date_candidates(target_date: str | None, lookback_days: int = 10) -> list[date]:
-    """Return target date and recent prior dates for SHFE daily data lookup."""
-    if target_date:
-        try:
-            base = datetime.fromisoformat(str(target_date)).date()
-        except Exception:
-            base = datetime.now(LOCAL_TZ).date()
-    else:
-        base = datetime.now(LOCAL_TZ).date()
-    return [base - timedelta(days=offset) for offset in range(lookback_days + 1)]
 
-
-def _json_rows_from_payload(payload: Any) -> list[dict[str, Any]]:
-    """Flatten the list-like sections of a SHFE daily data JSON payload."""
-    rows: list[dict[str, Any]] = []
-    if isinstance(payload, dict):
-        for value in payload.values():
-            if isinstance(value, list):
-                rows.extend([item for item in value if isinstance(item, dict)])
-            elif isinstance(value, dict):
-                rows.extend(_json_rows_from_payload(value))
-    elif isinstance(payload, list):
-        rows.extend([item for item in payload if isinstance(item, dict)])
-    return rows
-
-
-def _row_value(row: dict[str, Any], keys: list[str]) -> Any:
-    lower = {str(k).lower(): v for k, v in row.items()}
-    for key in keys:
-        if key in row:
-            return row.get(key)
-        if key.lower() in lower:
-            return lower.get(key.lower())
+def _extract_source_pub_time_from_fields(fields: list[str]) -> str | None:
+    text = " ".join(str(item or "") for item in fields)
+    date_match = re.search(r"20\d{2}[-/]\d{1,2}[-/]\d{1,2}", text)
+    time_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", text)
+    if date_match and time_match:
+        return f"{date_match.group(0)} {time_match.group(0)}"
+    if date_match:
+        return date_match.group(0)
     return None
 
 
-def _normalise_shfe_product_id(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    text = text.replace("_f", "").replace("-f", "")
-    text = re.sub(r"[^a-z]", "", text)
-    return text
+def _first_plausible_metal_price(fields: list[str]) -> Decimal | None:
+    """Return a plausible CNY/ton futures quote from a Sina/Eastmoney row.
 
-
-def _shfe_row_matches_product(row: dict[str, Any], product_ids: list[str]) -> bool:
-    product_id = _normalise_shfe_product_id(_row_value(row, ["PRODUCTID", "productid", "product_id", "INSTRUMENTID", "instrumentid"]))
-    instrument_id = _normalise_shfe_product_id(_row_value(row, ["INSTRUMENTID", "instrumentid", "instrument_id", "CONTRACTID", "contractid"]))
-    ids = {_normalise_shfe_product_id(item) for item in product_ids}
-    if product_id in ids:
-        return True
-    # Instrument IDs are usually like ss2606 / hc2606 / zn2606 / al2606.
-    if any(instrument_id.startswith(pid) for pid in ids if pid):
-        return True
-    return False
-
-
-def _is_shfe_total_row(row: dict[str, Any]) -> bool:
-    text_parts = [
-        _row_value(row, ["DELIVERYMONTH", "deliverymonth", "DELIVERY_MONTH"]),
-        _row_value(row, ["INSTRUMENTID", "instrumentid", "CONTRACTID", "contractid"]),
-        _row_value(row, ["PRODUCTNAME", "productname"]),
-    ]
-    text = " ".join(str(v or "") for v in text_parts).strip().lower()
-    return any(token in text for token in ["小计", "合计", "total", "subtotal"])
-
-
-def _shfe_price_from_row(row: dict[str, Any]) -> Decimal | None:
-    # Prefer daily settlement price, then close price. All supported SHFE metals
-    # are quoted in RMB/CNY per metric ton in the exchange daily data.
-    for keys in (
-        ["SETTLEMENTPRICE", "settlementprice", "settle", "settlement_price"],
-        ["CLOSEPRICE", "closeprice", "closingprice", "close_price"],
-        ["LASTPRICE", "lastprice", "last_price"],
-    ):
-        value = _safe_decimal(_row_value(row, keys))
-        if value is not None and value > 0:
+    Domestic metal futures prices should be much larger than small change/
+    percentage fields, so using a threshold avoids accidentally picking price
+    movement or percent columns when a provider changes field order.
+    """
+    for item in fields:
+        value = _safe_decimal(item)
+        if value is not None and value > Decimal("100"):
             return value
     return None
 
 
-def _shfe_rank_tuple(row: dict[str, Any]) -> tuple[Decimal, Decimal]:
-    open_interest = _safe_decimal(_row_value(row, ["OPENINTEREST", "openinterest", "open_interest"])) or Decimal("0")
-    volume = _safe_decimal(_row_value(row, ["VOLUME", "volume", "TRADEVOLUME", "tradevolume"])) or Decimal("0")
-    return open_interest, volume
+def _parse_sina_futures_response(text: str) -> dict[str, dict[str, Any]]:
+    """Parse Sina Finance futures quote response.
 
-
-def _select_shfe_contract(rows: list[dict[str, Any]], product_ids: list[str]) -> tuple[dict[str, Any], Decimal] | None:
-    candidates: list[tuple[tuple[Decimal, Decimal], dict[str, Any], Decimal]] = []
-    for row in rows:
-        if not _shfe_row_matches_product(row, product_ids):
-            continue
-        if _is_shfe_total_row(row):
-            continue
-        price = _shfe_price_from_row(row)
-        if price is None:
-            continue
-        candidates.append((_shfe_rank_tuple(row), row, price))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    _, row, price = candidates[0]
-    return row, price
-
-
-def _fetch_shfe_metal_values(target_date: str | None = None) -> dict[str, FetchResult]:
-    """Fetch SHFE metal reference values safely.
-
-    The implementation is deliberately defensive. It tries the official SHFE
-    daily data .dat endpoint for the target date and recent prior calendar days.
-    If SHFE blocks the request, returns HTML/WAF content, or changes the JSON
-    shape, the caller receives a Failed result for metal indices only. FX and
-    freight logic are not affected.
+    Typical response format is a group of JavaScript assignments, for example:
+    ``var hq_str_nf_AL0="...";``. The exact field order may vary, so this
+    parser deliberately uses a defensive strategy: find the first plausible
+    CNY/ton numeric quote and keep the raw fields for audit/debugging.
     """
-    requested = set(SHFE_METAL_INDEX_MAP.keys())
-    results: dict[str, FetchResult] = {}
-    last_error: str | None = None
+    parsed: dict[str, dict[str, Any]] = {}
+    if not text:
+        return parsed
 
+    pattern = re.compile(r"var\s+hq_str_(?P<symbol>[^=]+)=\"(?P<data>.*?)\";", re.S)
+    for match in pattern.finditer(text):
+        symbol = match.group("symbol").strip()
+        data = match.group("data") or ""
+        if not data.strip():
+            continue
+        fields = [field.strip() for field in data.split(",")]
+        value = _first_plausible_metal_price(fields[1:] if len(fields) > 1 else fields)
+        if value is None:
+            continue
+        parsed[symbol] = {
+            "value": value,
+            "name": fields[0] if fields else symbol,
+            "source_pub_time": _extract_source_pub_time_from_fields(fields),
+            "fields": fields,
+        }
+    return parsed
+
+
+def _fetch_sina_metal_quotes() -> dict[str, FetchResult]:
+    """Fetch metal quote values from Sina Finance Futures.
+
+    This function is intentionally safe: any network, decoding, or parser
+    failure returns Failed results for metal indices only. FX and freight logic
+    remain independent.
+    """
+    requested = set(METAL_INDEX_MAP.keys())
+    results: dict[str, FetchResult] = {}
+
+    symbols: list[str] = []
+    for meta in METAL_INDEX_MAP.values():
+        for symbol in meta.get("sina_symbols", []):
+            if symbol not in symbols:
+                symbols.append(symbol)
+
+    if not symbols:
+        return {}
+
+    url = SINA_FUTURES_QUOTES_URL_TEMPLATE.format(symbols=",".join(symbols))
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ZenithProjectTracker/1.0",
-        "Accept": "application/json,text/plain,*/*",
-        "Referer": SHFE_DAILY_DATA_PAGE,
+        "Accept": "*/*",
+        "Referer": SINA_FUTURES_QUOTE_PAGE,
     }
 
-    for dt in _shfe_date_candidates(target_date, lookback_days=10):
-        if len(results) >= len(requested):
-            break
-        yyyymmdd = dt.strftime("%Y%m%d")
-        url = SHFE_DAILY_DATA_URL_TEMPLATE.format(yyyymmdd=yyyymmdd)
+    try:
+        response = requests.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
         try:
-            response = requests.get(url, headers=headers, timeout=25)
-            response.raise_for_status()
-            content_type = str(response.headers.get("content-type") or "").lower()
-            text_start = response.text[:200].strip().lower()
-            if "html" in content_type or text_start.startswith("<!doctype") or text_start.startswith("<html"):
-                raise RuntimeError("SHFE returned HTML instead of daily data JSON; request may be blocked by website protection.")
-            payload = response.json()
-            rows = _json_rows_from_payload(payload)
-            if not rows:
-                raise RuntimeError("SHFE daily data JSON did not contain data rows.")
+            text = response.content.decode("gbk", errors="ignore")
+        except Exception:
+            response.encoding = response.apparent_encoding or "utf-8"
+            text = response.text
+        quote_map = _parse_sina_futures_response(text)
+        if not quote_map:
+            raise RuntimeError("Sina Finance response did not contain parsable futures quotes.")
 
-            for index_code, meta in SHFE_METAL_INDEX_MAP.items():
-                if index_code in results:
+        for index_code, meta in METAL_INDEX_MAP.items():
+            for symbol in meta.get("sina_symbols", []):
+                quote = quote_map.get(symbol)
+                if not quote:
                     continue
-                selected = _select_shfe_contract(rows, meta["product_ids"])
-                if not selected:
-                    continue
-                row, value = selected
-                instrument = _row_value(row, ["INSTRUMENTID", "instrumentid", "CONTRACTID", "contractid"])
-                product_id = _row_value(row, ["PRODUCTID", "productid", "product_id"])
                 results[index_code] = FetchResult(
-                    value=value,
+                    value=quote["value"],
                     status="Success",
                     fetch_method="Web Parse",
-                    source_pub_time=dt.isoformat(),
+                    source_pub_time=quote.get("source_pub_time"),
                     raw_payload={
-                        "source": "SHFE",
+                        "source": "Sina Finance Futures",
                         "source_url": url,
-                        "source_date": dt.isoformat(),
+                        "provider_symbol": symbol,
+                        "provider_name": quote.get("name"),
                         "source_label": meta.get("source_label"),
-                        "product_id": product_id,
-                        "instrument_id": instrument,
-                        "value_source": "settlement price preferred; close price fallback",
+                        "official_reference": meta.get("official_reference"),
+                        "value_source": "latest available futures quote from Sina Finance; official reference kept as SHFE",
                     },
                 )
-        except Exception as exc:
-            last_error = f"SHFE fetch failed for {yyyymmdd}: {type(exc).__name__}: {exc}"
-            continue
-
-    for index_code, meta in SHFE_METAL_INDEX_MAP.items():
-        if index_code not in results:
-            label = meta.get("source_label") or index_code
+                break
+    except Exception as exc:
+        err = f"Sina Finance futures fetch failed: {type(exc).__name__}: {exc}"
+        for index_code, meta in METAL_INDEX_MAP.items():
             results[index_code] = FetchResult(
                 value=None,
                 status="Failed",
                 fetch_method="Web Parse",
-                error_message=last_error or f"No SHFE daily data value found for {label}.",
-                raw_payload={"source": "SHFE", "source_label": label},
+                error_message=err,
+                raw_payload={
+                    "source": "Sina Finance Futures",
+                    "source_url": url,
+                    "source_label": meta.get("source_label"),
+                    "official_reference": meta.get("official_reference"),
+                },
+            )
+        return results
+
+    for index_code, meta in METAL_INDEX_MAP.items():
+        if index_code not in results:
+            results[index_code] = FetchResult(
+                value=None,
+                status="Failed",
+                fetch_method="Web Parse",
+                error_message=f"No Sina Finance futures quote found for {index_code}.",
+                raw_payload={
+                    "source": "Sina Finance Futures",
+                    "source_url": url,
+                    "source_label": meta.get("source_label"),
+                    "official_reference": meta.get("official_reference"),
+                },
             )
     return results
+
+
+def _extract_json_like(text: str) -> Any:
+    """Parse JSON or JSONP text safely."""
+    import json
+
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except Exception:
+        pass
+
+    match = re.search(r"\((\{.*\})\)\s*;?$", stripped, re.S)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            return None
+    return None
+
+
+def _fetch_eastmoney_metal_quotes() -> dict[str, FetchResult]:
+    """Best-effort fallback fetch from Eastmoney Futures.
+
+    Eastmoney futures identifiers can vary by endpoint, so this fallback uses a
+    small set of known candidate secids. If Eastmoney changes identifiers or
+    blocks the request, the function simply returns Failed results; the daily
+    job will then carry forward previous values when available.
+    """
+    results: dict[str, FetchResult] = {}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ZenithProjectTracker/1.0",
+        "Accept": "application/json,text/javascript,*/*;q=0.1",
+        "Referer": "https://futures.eastmoney.com/",
+    }
+
+    # Reverse lookup for candidate secids.
+    secid_to_index: dict[str, str] = {}
+    secids: list[str] = []
+    for index_code, meta in METAL_INDEX_MAP.items():
+        for secid in meta.get("eastmoney_secids", []):
+            if secid not in secids:
+                secids.append(secid)
+                secid_to_index[secid] = index_code
+
+    if not secids:
+        return {}
+
+    url = EASTMONEY_FUTURES_API
+    params = {
+        "fltt": "2",
+        "invt": "2",
+        "fields": "f12,f14,f2,f3,f4,f124,f292",
+        "secids": ",".join(secids),
+    }
+
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=20)
+        response.raise_for_status()
+        payload = _extract_json_like(response.text)
+        diff = (((payload or {}).get("data") or {}).get("diff") or []) if isinstance(payload, dict) else []
+        if not isinstance(diff, list) or not diff:
+            raise RuntimeError("Eastmoney response did not contain futures quote rows.")
+
+        for item in diff:
+            if not isinstance(item, dict):
+                continue
+            secid = str(item.get("f12") or "").strip()
+            index_code = secid_to_index.get(secid)
+            # Some responses may only return the contract symbol without market prefix.
+            if not index_code:
+                code_upper = secid.upper()
+                for candidate, mapped in secid_to_index.items():
+                    if candidate.split(".")[-1].upper() == code_upper:
+                        index_code = mapped
+                        break
+            if not index_code or index_code in results:
+                continue
+            value = _safe_decimal(item.get("f2"))
+            if value is None or value <= Decimal("100"):
+                continue
+            meta = METAL_INDEX_MAP.get(index_code, {})
+            pub_ts = item.get("f124")
+            pub_time = None
+            if pub_ts:
+                try:
+                    pub_time = datetime.fromtimestamp(int(pub_ts), tz=LOCAL_TZ).isoformat(timespec="seconds")
+                except Exception:
+                    pub_time = str(pub_ts)
+            results[index_code] = FetchResult(
+                value=value,
+                status="Success",
+                fetch_method="Web Parse",
+                source_pub_time=pub_time,
+                raw_payload={
+                    "source": "Eastmoney Futures",
+                    "source_url": response.url,
+                    "provider_symbol": secid,
+                    "provider_name": item.get("f14"),
+                    "source_label": meta.get("source_label"),
+                    "official_reference": meta.get("official_reference"),
+                    "value_source": "latest available futures quote from Eastmoney fallback; official reference kept as SHFE",
+                },
+            )
+    except Exception as exc:
+        err = f"Eastmoney futures fetch failed: {type(exc).__name__}: {exc}"
+        for index_code, meta in METAL_INDEX_MAP.items():
+            results[index_code] = FetchResult(
+                value=None,
+                status="Failed",
+                fetch_method="Web Parse",
+                error_message=err,
+                raw_payload={
+                    "source": "Eastmoney Futures",
+                    "source_url": url,
+                    "source_label": meta.get("source_label"),
+                    "official_reference": meta.get("official_reference"),
+                },
+            )
+        return results
+
+    for index_code, meta in METAL_INDEX_MAP.items():
+        if index_code not in results:
+            results[index_code] = FetchResult(
+                value=None,
+                status="Failed",
+                fetch_method="Web Parse",
+                error_message=f"No Eastmoney futures quote found for {index_code}.",
+                raw_payload={
+                    "source": "Eastmoney Futures",
+                    "source_url": url,
+                    "source_label": meta.get("source_label"),
+                    "official_reference": meta.get("official_reference"),
+                },
+            )
+    return results
+
+
+def _fetch_metal_values(target_date: str | None = None) -> dict[str, FetchResult]:
+    """Fetch metal reference values with Sina primary and Eastmoney fallback.
+
+    ``target_date`` is accepted for the common fetch API but the selected public
+    quote sources provide latest quotes rather than historical settlement. The
+    value is intentionally treated as a daily reference quote captured at job
+    run time.
+    """
+    sina_results = _fetch_sina_metal_quotes()
+    final: dict[str, FetchResult] = {}
+
+    missing_or_failed = [
+        code for code in METAL_INDEX_MAP
+        if code not in sina_results or sina_results[code].value is None
+    ]
+
+    eastmoney_results: dict[str, FetchResult] = {}
+    if missing_or_failed:
+        eastmoney_results = _fetch_eastmoney_metal_quotes()
+
+    for index_code, meta in METAL_INDEX_MAP.items():
+        primary = sina_results.get(index_code)
+        if primary and primary.value is not None:
+            final[index_code] = primary
+            continue
+
+        fallback = eastmoney_results.get(index_code)
+        if fallback and fallback.value is not None:
+            final[index_code] = fallback
+            continue
+
+        messages = []
+        if primary and primary.error_message:
+            messages.append(primary.error_message)
+        if fallback and fallback.error_message:
+            messages.append(fallback.error_message)
+        final[index_code] = FetchResult(
+            value=None,
+            status="Failed",
+            fetch_method="Web Parse",
+            error_message=" | ".join(messages) or f"No Sina/Eastmoney metal quote found for {index_code}.",
+            raw_payload={
+                "source": "Sina Finance Futures primary; Eastmoney Futures fallback",
+                "source_label": meta.get("source_label"),
+                "official_reference": meta.get("official_reference"),
+            },
+        )
+    return final
 
 
 def fetch_external_values(configs: list[dict[str, Any]], target_date: str | None = None) -> dict[str, FetchResult]:
@@ -578,12 +752,12 @@ def fetch_external_values(configs: list[dict[str, Any]], target_date: str | None
 
     metal_configs = [
         cfg for cfg in configs
-        if cfg.get("index_code") in SHFE_METAL_INDEX_MAP
+        if cfg.get("index_code") in METAL_INDEX_MAP
         and str(cfg.get("fetch_method") or "").strip().lower() in {"web parse", "automatic parse", "api"}
     ]
-    shfe_results: dict[str, FetchResult] = {}
+    metal_results: dict[str, FetchResult] = {}
     if metal_configs:
-        shfe_results = _fetch_shfe_metal_values(target_date=target_date)
+        metal_results = _fetch_metal_values(target_date=target_date)
 
     for cfg in configs:
         index_code = cfg["index_code"]
@@ -603,8 +777,8 @@ def fetch_external_values(configs: list[dict[str, Any]], target_date: str | None
                     )
                 else:
                     results[index_code] = FetchResult(None, "Failed", "Web Parse", error_message=f"{currency} not found in BOC result.")
-        elif index_code in shfe_results:
-            results[index_code] = shfe_results[index_code]
+        elif index_code in metal_results:
+            results[index_code] = metal_results[index_code]
         elif str(cfg.get("index_category") or "").upper() == "FREIGHT" or str(cfg.get("fetch_method") or "").lower() == "manual":
             results[index_code] = FetchResult(
                 value=None,
