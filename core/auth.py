@@ -25,6 +25,9 @@ QUERY_SESSION_KEY = "zt_session"
 KEEP_QUERY_SESSION_FALLBACK = True
 AUTH_USER_STATE_KEY = "auth_user"
 AUTH_TOKEN_STATE_KEY = "auth_session_token"
+AUTH_SKIP_BROWSER_TOKEN_LOADER_KEY = "auth_skip_browser_token_loader"
+AUTH_BROWSER_TOKEN_LOADER_RENDERED_KEY = "auth_browser_token_loader_rendered"
+AUTH_LOGIN_NOTICE_KEY = "auth_login_notice"
 USER_ACCESS_CODES_SECTION = "USER_ACCESS_CODES"
 # Optional legacy fallback. Only used when USER_ACCESS_CODES is not configured.
 ACCESS_CODE_SECRET_NAMES = (
@@ -243,6 +246,8 @@ def login_with_internal_code(email: str, access_code: str) -> tuple[bool, str, d
     user_dict = app_user.as_dict()
     st.session_state[AUTH_USER_STATE_KEY] = user_dict
     st.session_state[AUTH_TOKEN_STATE_KEY] = local_session_token
+    st.session_state.pop(AUTH_SKIP_BROWSER_TOKEN_LOADER_KEY, None)
+    st.session_state.pop(AUTH_BROWSER_TOKEN_LOADER_RENDERED_KEY, None)
     st.session_state["last_login_email"] = normalized
     _update_last_login(app_user.email)
     return True, "Login successful. This browser will be remembered for 30 days.", user_dict
@@ -323,6 +328,7 @@ def revoke_current_session() -> None:
             pass
     st.session_state.pop(AUTH_USER_STATE_KEY, None)
     st.session_state.pop(AUTH_TOKEN_STATE_KEY, None)
+    st.session_state[AUTH_SKIP_BROWSER_TOKEN_LOADER_KEY] = True
     st.session_state.pop("last_login_email", None)
 
 
@@ -527,7 +533,13 @@ def _render_login_css() -> None:
 
 def render_login_page() -> None:
     _render_login_css()
-    _render_browser_token_loader()
+    # Browser remembered-login is a best-effort helper only.
+    # If a saved token is expired/invalid, do not keep re-reading localStorage
+    # and forcing query-param redirects, because that can make the login page
+    # look like it is loading forever on Streamlit Cloud.
+    if not st.session_state.get(AUTH_SKIP_BROWSER_TOKEN_LOADER_KEY) and not st.session_state.get(AUTH_BROWSER_TOKEN_LOADER_RENDERED_KEY):
+        st.session_state[AUTH_BROWSER_TOKEN_LOADER_RENDERED_KEY] = True
+        _render_browser_token_loader()
 
     st.markdown(
         f"""
@@ -543,6 +555,10 @@ def render_login_page() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    notice = st.session_state.pop(AUTH_LOGIN_NOTICE_KEY, None)
+    if notice:
+        st.info(str(notice))
 
     if not _is_access_code_configured():
         st.warning("USER_ACCESS_CODES is not configured in Streamlit Secrets yet.")
@@ -615,6 +631,13 @@ def require_login() -> dict[str, str]:
                 _clear_query_params()
             st.rerun()
         else:
+            # The token may remain in browser localStorage even when the DB session
+            # is expired/revoked. Prevent an infinite localStorage -> query param
+            # redirect loop, then show the normal login form.
+            st.session_state[AUTH_SKIP_BROWSER_TOKEN_LOADER_KEY] = True
+            st.session_state[AUTH_LOGIN_NOTICE_KEY] = (
+                "Saved login expired or could not be verified. Please log in again."
+            )
             _render_clear_browser_token(reload=False)
             _clear_query_params()
 
