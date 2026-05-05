@@ -86,6 +86,9 @@ EVIDENCE_COLUMNS = [
     "Gross Profit",
     "Extension Summary",
     "Extension Details",
+    "Relevance Tier",
+    "Related By",
+    "Suggested Answer Use",
 ]
 
 DASHBOARD_COLUMNS = ["Metric", "Value", "Source Module"]
@@ -1420,6 +1423,292 @@ def _is_broad_integrated_question(query: str) -> bool:
     )
 
 
+
+def _extract_explicit_keys(query: str) -> dict[str, set[str]]:
+    """Extract exact business identifiers from a user question.
+
+    This is a retrieval guardrail: exact keys narrow the evidence before the AI
+    sees it, so broad project questions do not pull in same-client or loosely
+    similar records.
+    """
+    text = clean_text(query)
+    upper = text.upper()
+    keys: dict[str, set[str]] = {
+        "project_id": set(),
+        "order_no": set(),
+        "supplier_code": set(),
+        "supplier_id": set(),
+        "rfq_item_ref": set(),
+        "item_option": set(),
+        "index_name": set(),
+    }
+
+    for value in re.findall(r"\bSDG-\d{2}-\d{3}\b", upper):
+        keys["project_id"].add(value)
+    # Supplier codes used in this system are SD + digits; avoid matching SDG project IDs.
+    for value in re.findall(r"\bSD(?!G\b)\d{1,6}\b", upper):
+        keys["supplier_code"].add(value)
+    for value in re.findall(r"\bSUP-\d{3,}\b", upper):
+        keys["supplier_id"].add(value)
+    for value in re.findall(r"\bITM[-_ ]?\d{1,4}\b", upper):
+        keys["rfq_item_ref"].add(value.replace(" ", "-").replace("_", "-"))
+
+    # Order numbers are company/client prefixes followed by date-like digits and suffix.
+    # This intentionally excludes project IDs and supplier IDs.
+    for value in re.findall(r"\b(?!SDG\b)(?!SUP\b)[A-Z]{2,6}\d{5,8}-\d{1,4}\b", upper):
+        keys["order_no"].add(value)
+
+    index_patterns = [
+        r"\bUSD[/_\-]?CNY\b", r"\bHKD[/_\-]?CNY\b", r"\bGBP[/_\-]?CNY\b",
+        r"\bPP\b", r"\bPVC\b", r"\bABS\b",
+        r"\bZINC\b", r"\bALUMINIUM\b", r"\bALUMINUM\b",
+        r"\bCARBON\s+STEEL\b", r"\bSTAINLESS\s+STEEL\s*304\b",
+        r"\bFREIGHT\s+TO\s+ISRAEL\b", r"\bFREIGHT\s+TO\s+MOROCCO\b",
+    ]
+    for pattern in index_patterns:
+        for match in re.findall(pattern, upper):
+            value = clean_text(match).upper().replace("-", "/").replace("_", "/")
+            value = re.sub(r"\s+", " ", value)
+            if value:
+                keys["index_name"].add(value)
+    return keys
+
+
+def _explicit_key_present(keys: dict[str, set[str]], *names: str) -> bool:
+    return any(bool(keys.get(name)) for name in names)
+
+
+def _record_has_project(record: dict[str, Any], project_ids: set[str]) -> bool:
+    project_id = clean_text(record.get("Project ID")).upper()
+    return bool(project_id and project_id in project_ids)
+
+
+def _record_has_order(record: dict[str, Any], order_nos: set[str]) -> bool:
+    if not order_nos:
+        return False
+    own_order = clean_text(record.get("Order No")).upper()
+    if own_order and own_order in order_nos:
+        return True
+    for linked_order in _split_join_list(record.get("Linked Orders")):
+        if linked_order.upper() in order_nos:
+            return True
+    return False
+
+
+def _record_has_supplier(record: dict[str, Any], supplier_codes: set[str], supplier_ids: set[str] | None = None) -> bool:
+    supplier_ids = supplier_ids or set()
+    code = clean_text(record.get("Supplier Code")).upper()
+    sid = clean_text(record.get("Supplier ID") or record.get("Entity ID")).upper()
+    return bool((code and code in supplier_codes) or (sid and sid in supplier_ids))
+
+
+def _record_has_index(record: dict[str, Any], index_names: set[str]) -> bool:
+    if clean_text(record.get("Source Module")) != "Index Center" or not index_names:
+        return False
+    candidates = {
+        clean_text(record.get("Index Name")).upper(),
+        clean_text(record.get("Entity ID")).upper(),
+        clean_text(record.get("Extension Summary")).upper(),
+    }
+    compact_candidates = {c.replace("_", "/").replace("-", "/") for c in candidates if c}
+    for idx in index_names:
+        compact = idx.upper().replace("_", "/").replace("-", "/")
+        if compact in compact_candidates or any(compact in candidate for candidate in compact_candidates):
+            return True
+    return False
+
+
+def _question_intent(query: str, scope: str) -> str:
+    """Lightweight intent router for answer style and retrieval narrowing."""
+    lower = _lower(query)
+    keys = _extract_explicit_keys(query)
+    if _explicit_key_present(keys, "index_name") or scope == "Index Center" or _has_any(lower, INTENT_KEYWORDS["index_center"]):
+        return "index"
+    if scope == "Supplier Details" or (_explicit_key_present(keys, "supplier_code", "supplier_id") and not _explicit_key_present(keys, "project_id", "order_no")):
+        return "supplier"
+    if scope == "Price Comparison" or _has_any(lower, INTENT_KEYWORDS["price_comparison"]):
+        return "price_comparison"
+    if _explicit_key_present(keys, "order_no") or scope == "Order Details" or (_has_any(lower, INTENT_KEYWORDS["order_details"]) and not _explicit_key_present(keys, "project_id")):
+        return "order"
+    if _explicit_key_present(keys, "project_id") or scope in {"Project Details", "Sales Board", "Operation Board"}:
+        return "project"
+    if _has_any(lower, INTENT_KEYWORDS["meeting"]):
+        return "meeting"
+    return "general"
+
+
+def _mark_relevance(row: dict[str, Any], tier: str, related_by: str, suggested_use: str) -> dict[str, Any]:
+    marked = dict(row)
+    marked["Relevance Tier"] = tier
+    marked["Related By"] = related_by
+    marked["Suggested Answer Use"] = suggested_use
+    existing_reason = clean_text(marked.get("Match Reason"))
+    if related_by and related_by not in existing_reason:
+        marked["Match Reason"] = f"{existing_reason}; {related_by}" if existing_reason else related_by
+    return marked
+
+
+def _dedupe_by_identity(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in records:
+        identity = _record_source_identity(row)
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        out.append(row)
+    return out
+
+
+def _strong_relevance_records_for_query(
+    *,
+    query: str,
+    records: list[dict[str, Any]],
+    scope: str,
+    limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Return exact-key, strong-relevance evidence for focused questions.
+
+    The goal is management usefulness: for a project question, include only the
+    project records and directly linked supplier/order/quotation records. Do not
+    pull in same-client records, same-category suppliers, or supplier history
+    unless the user explicitly asks for those.
+    """
+    keys = _extract_explicit_keys(query)
+    intent = _question_intent(query, scope)
+    project_ids = keys.get("project_id", set())
+    order_nos = keys.get("order_no", set())
+    supplier_codes = keys.get("supplier_code", set())
+    supplier_ids = keys.get("supplier_id", set())
+    index_names = keys.get("index_name", set())
+
+    if not any([project_ids, order_nos, supplier_codes, supplier_ids, index_names]):
+        return None
+
+    priority = {module: idx for idx, module in enumerate(AI_MODULE_SOURCE_PRIORITY)}
+    strong: list[dict[str, Any]] = []
+    related_but_not_expanded = 0
+
+    if intent == "project" and project_ids:
+        # 1) Direct project evidence.
+        direct_project = [r for r in records if _record_has_project(r, project_ids)]
+        for row in direct_project:
+            strong.append(_mark_relevance(row, "Strong", "Exact Project ID match", "Use in project management answer"))
+
+        # 2) Orders explicitly linked by exact project records.
+        linked_orders = set(order_nos)
+        for row in direct_project:
+            for order_no in _split_join_list(row.get("Linked Orders")):
+                linked_orders.add(order_no.upper())
+            own_order = clean_text(row.get("Order No")).upper()
+            if own_order:
+                linked_orders.add(own_order)
+
+        direct_orders = [r for r in records if _record_has_order(r, linked_orders)] if linked_orders else []
+        for row in direct_orders:
+            strong.append(_mark_relevance(row, "Strong", "Order No linked to exact Project ID", "Use only for this project/order situation"))
+
+        # 3) Suppliers only if they appear in the exact project/order/price evidence.
+        direct_bundle = _dedupe_by_identity(direct_project + direct_orders)
+        supplier_codes_from_direct = {
+            clean_text(r.get("Supplier Code")).upper()
+            for r in direct_bundle
+            if clean_text(r.get("Supplier Code"))
+        }
+        supplier_ids_from_direct = {
+            clean_text(r.get("Supplier ID")).upper()
+            for r in direct_bundle
+            if clean_text(r.get("Supplier ID"))
+        }
+        # Price comparison records for the exact project may introduce additional suppliers.
+        price_rows = [r for r in direct_project if clean_text(r.get("Source Module")) == "Price Comparison"]
+        supplier_codes_from_direct.update(
+            clean_text(r.get("Supplier Code")).upper() for r in price_rows if clean_text(r.get("Supplier Code"))
+        )
+        supplier_rows = [
+            r for r in records
+            if clean_text(r.get("Source Module")) == "Supplier Details"
+            and _record_has_supplier(r, supplier_codes_from_direct, supplier_ids_from_direct)
+        ]
+        for row in supplier_rows:
+            strong.append(_mark_relevance(row, "Strong", "Supplier Code found in exact project/order records", "Use only as linked supplier master data"))
+
+        # 4) Do not include unrelated index rows unless the project itself has index snapshot rows.
+        # Daily market indices are not project evidence unless the question asks about index.
+
+        # Count weak records that matched by supplier but are outside this project; keep them out of final tabs.
+        for r in records:
+            if clean_text(r.get("Source Module")) in {"Price Comparison", "Order Details"} and _record_has_supplier(r, supplier_codes_from_direct):
+                if not _record_has_project(r, project_ids) and not _record_has_order(r, linked_orders):
+                    related_but_not_expanded += 1
+
+    elif intent == "supplier" and (supplier_codes or supplier_ids):
+        for row in records:
+            if _record_has_supplier(row, supplier_codes, supplier_ids):
+                strong.append(_mark_relevance(row, "Strong", "Exact Supplier Code / Supplier ID match", "Use in supplier answer"))
+
+    elif intent == "order" and order_nos:
+        direct_orders = [r for r in records if _record_has_order(r, order_nos)]
+        for row in direct_orders:
+            strong.append(_mark_relevance(row, "Strong", "Exact Order No match", "Use in order answer"))
+        supplier_codes_from_order = {
+            clean_text(r.get("Supplier Code")).upper()
+            for r in direct_orders
+            if clean_text(r.get("Supplier Code"))
+        }
+        supplier_rows = [
+            r for r in records
+            if clean_text(r.get("Source Module")) == "Supplier Details"
+            and _record_has_supplier(r, supplier_codes_from_order)
+        ]
+        for row in supplier_rows:
+            strong.append(_mark_relevance(row, "Strong", "Supplier Code found in exact order records", "Use as linked supplier master data"))
+
+    elif intent == "index" and index_names:
+        for row in records:
+            if _record_has_index(row, index_names):
+                strong.append(_mark_relevance(row, "Strong", "Exact Index Name / Index Code match", "Use in index answer"))
+
+    elif intent == "price_comparison" and project_ids:
+        for row in records:
+            if clean_text(row.get("Source Module")) == "Price Comparison" and _record_has_project(row, project_ids):
+                strong.append(_mark_relevance(row, "Strong", "Exact Project ID in Price Comparison", "Use in quotation comparison answer"))
+
+    strong = _dedupe_by_identity(strong)
+    if not strong:
+        return None
+
+    strong.sort(
+        key=lambda row: (
+            priority.get(clean_text(row.get("Source Module")), 99),
+            clean_text(row.get("Project ID")),
+            clean_text(row.get("Order No")),
+            clean_text(row.get("Supplier Code")),
+            clean_text(row.get("RFQ Item Ref")),
+            clean_text(row.get("Source ID")),
+        )
+    )
+    capped = strong[: max(limit, min(len(strong), 50))]
+    return capped, {
+        "query_mode": "Strong Relevance Exact-Key Search + Read-only Join",
+        "answer_intent": intent,
+        "strong_relevance_filter": True,
+        "explicit_project_ids": sorted(project_ids),
+        "explicit_order_nos": sorted(order_nos),
+        "explicit_supplier_codes": sorted(supplier_codes),
+        "explicit_supplier_ids": sorted(supplier_ids),
+        "explicit_index_names": sorted(index_names),
+        "total_searchable_records": len(records),
+        "total_records_after_deterministic_filters": len(strong),
+        "total_matched_records": len(strong),
+        "returned_records": len(capped),
+        "initial_matched_records": len(capped),
+        "join_expanded_records": 0,
+        "join_keys_used": sorted(k for k, v in keys.items() if v),
+        "related_but_not_expanded": related_but_not_expanded,
+    }
+
+
 def _split_join_list(value: Any) -> list[str]:
     text = clean_text(value)
     if not text:
@@ -1581,6 +1870,16 @@ def _search_records(query: str, *, scope: str, record_type: str, limit: int) -> 
     query = clean_text(query)
     tokens = _tokenize(query)
     loaded_records = _load_records_for_scope(scope, record_type)
+
+    strong_result = _strong_relevance_records_for_query(
+        query=query,
+        records=loaded_records,
+        scope=scope,
+        limit=limit,
+    )
+    if strong_result is not None:
+        return strong_result
+
     records = _apply_deterministic_filters(query, loaded_records)
     scored: list[tuple[float, dict[str, Any], list[str]]] = []
 
@@ -1608,7 +1907,7 @@ def _search_records(query: str, *, scope: str, record_type: str, limit: int) -> 
         seed_records=matched,
         available_records=loaded_records,
         scope=scope,
-        max_total=min(max(limit * 4, limit + 20), 100),
+        max_total=min(max(limit * 2, limit + 10), 50),
     )
     metadata = {
         "query_mode": "Natural Language Search + Deterministic Cross-Module Join",
@@ -1840,6 +2139,12 @@ def _source_summary(records: list[dict[str, Any]], dashboard_rows: list[dict[str
         summary["records_shown"] = len(records)
     if metadata.get("client_terms"):
         summary["client_terms"] = metadata.get("client_terms")
+    if metadata.get("answer_intent"):
+        summary["answer_intent"] = metadata.get("answer_intent")
+    if metadata.get("strong_relevance_filter"):
+        summary["strong_relevance_filter"] = "On"
+    if metadata.get("related_but_not_expanded"):
+        summary["related_but_not_expanded"] = metadata.get("related_but_not_expanded")
     return summary
 
 
@@ -2415,12 +2720,15 @@ Review rules:
 - Index Center may need review when fetch_status is Failed, value is Carry Forward, or confirmed status is false where confirmation is expected.
 - Order Details may need review when gross profit is missing, supplier code is missing, or an open order issue is recorded.
 
-Answer format:
+Answer format and management style:
 - Return JSON only.
+- Answer like a management meeting assistant, not a raw data export.
+- Use this structure unless the user asks for a different format: Direct Answer → Current situation → Confirmed facts → Main risk / impact → Missing or not found in current system records → Suggested next step → Evidence used.
 - Keep the answer concise. Do not dump every field from every evidence row.
-- Summarize by modules and include only evidence that directly answers the question.
+- Include a module only if it is strongly related to the user question. If no strongly related records exist for a module, state that briefly and do not expand it.
 - final_source_ids must include only Source ID values that directly support the answer.
-- Do not mention candidate records, internal search counts, or checked-record counts.
+- Do not mention candidate records, internal search counts, checked-record counts, or weak related records.
+- If the user asks for "all information", still summarize by management value; do not list every raw field unless the user explicitly asks for raw records/export-style details.
 
 Language rule:
 - requested_output_language is mandatory.
@@ -2448,11 +2756,12 @@ Required JSON keys exactly:
             "special_intent": special_intent,
             "evidence": evidence_payload,
             "required_answer_style": (
-                "Direct answer first. Then give a concise module-based answer using only provided system records. "
+                "Direct answer first. Then give a boss-style management answer using only strongly related system records. "
+                "Structure the answer as: current situation, confirmed facts, main risk/impact, missing/not found, suggested next step, evidence used. "
                 "When useful, connect modules only with project_id, supplier_code, supplier_id, order_no, rfq_item_ref, item_option, and index_name/index_code. Treat deterministic joined records as supporting evidence, not AI-created facts. "
                 "Use the readonly_analysis_context review rules to identify missing information or review points, but do not invent facts or make final decisions. "
                 "If data is not found, state that it was not found in current system records. "
-                "Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
+                "Do not list raw records one by one unless the user explicitly asks for raw records. Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
             ),
         },
         ensure_ascii=False,
