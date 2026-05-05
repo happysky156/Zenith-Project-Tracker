@@ -2,8 +2,12 @@ name: Daily Market Index Fetch
 
 on:
   schedule:
-    # 02:30 UTC = 10:30 Beijing/Singapore time
-    - cron: "30 2 * * *"
+    # GitHub cron uses UTC.
+    # These two schedules are gated below so the job runs at London 00:00 year-round:
+    # - 23:00 UTC = 00:00 London during British Summer Time = 07:00 Beijing/China time
+    # - 00:00 UTC = 00:00 London during Greenwich Mean Time = 08:00 Beijing/China time
+    - cron: "0 23 * * *"
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 jobs:
@@ -27,5 +31,36 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check London midnight schedule
+        id: london_gate
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual workflow run: daily index fetch will run now."
+            exit 0
+          fi
+
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          now = datetime.now(ZoneInfo("Europe/London"))
+          should_run = now.hour == 0
+          print(f"should_run={'true' if should_run else 'false'}")
+          PY
+
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          now = datetime.now(ZoneInfo("Europe/London"))
+          print(f"London time check: {now:%Y-%m-%d %H:%M:%S %Z}. Run only when hour == 00.")
+          PY
+
       - name: Run daily market index fetch
+        if: steps.london_gate.outputs.should_run == 'true'
         run: python tools/daily_index_fetch.py
+
+      - name: Skip non-midnight schedule
+        if: steps.london_gate.outputs.should_run != 'true'
+        run: echo "Skipped because this scheduled run is not London midnight."

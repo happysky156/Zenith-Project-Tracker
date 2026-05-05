@@ -27,9 +27,21 @@ if str(ROOT) not in sys.path:
 from services.market_index_service import run_daily_index_fetch
 
 
+def _has_database_url() -> bool:
+    return bool((os.getenv("DATABASE_URL") or os.getenv("database_url") or "").strip())
+
+
 def main() -> None:
-    if not os.getenv("DATABASE_URL") and not os.getenv("database_url"):
-        print("WARNING: DATABASE_URL is not set. The script will use the app's configured fallback if available.")
+    running_in_github_actions = os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+
+    if running_in_github_actions and not _has_database_url():
+        raise SystemExit("DATABASE_URL is required for GitHub Actions daily index fetch.")
+
+    if not _has_database_url():
+        print(
+            "WARNING: DATABASE_URL is not set. "
+            "This is allowed only for local testing; production automation must use Supabase/PostgreSQL."
+        )
 
     summary = run_daily_index_fetch(operator="GitHub Actions")
     print("Daily market index fetch completed.")
