@@ -84,21 +84,48 @@ def _money(value: Any, currency: Any = None, *, detail: bool = False) -> str:
     return f"{prefix}{number:,.{decimals}f}"
 
 
+def _colored_text(text: str, color: str = "green") -> str:
+    safe_color = color if color in {"green", "blue", "orange", "red", "violet", "gray", "grey", "rainbow"} else "green"
+    return f":{safe_color}[{text}]"
+
+
 def _colored_money(value: Any, currency: Any = None, *, detail: bool = False, color: str = "green") -> str:
     """Return Streamlit-coloured money text for compact expander labels.
 
-    Keep the label text outside the colour markup so captions read consistently:
-    Lowest: :green[$19.12] | Highest: :green[$19.12]
+    Keep label text outside the colour markup so captions read consistently, for example:
+    Lowest: :green[$19.12] | Highest: :red[$25.50] | Gap: :orange[25.0%]
     """
     money = _money(value, currency, detail=detail)
     if money == "-":
         return money
-    safe_color = color if color in {"green", "blue", "orange", "red", "violet", "gray", "grey", "rainbow"} else "green"
-    return f":{safe_color}[{money}]"
+    return _colored_text(money, color)
+
+
+def _same_number(a: Any, b: Any, *, tolerance: float = 0.000001) -> bool:
+    left = _num(a)
+    right = _num(b)
+    if left is None or right is None:
+        return False
+    return abs(left - right) <= tolerance
 
 
 def _pct(value: float | None) -> str:
     return f"{value:.1f}%" if value is not None else "-"
+
+
+def _gap_caption(prices: list[float], lowest: float | None, highest: float | None, gap_pct: float | None) -> str:
+    """Return the compact gap display used in RFQ item labels.
+
+    Rules:
+    - one valid quote: neutral text "Single quote only"
+    - multiple valid quotes, same value: neutral text "0.0%"
+    - multiple valid quotes, real difference: orange percentage
+    """
+    if len(prices) <= 1:
+        return "Single quote only"
+    if _same_number(lowest, highest):
+        return "0.0%"
+    return _colored_text(_pct(gap_pct), "orange")
 
 
 def _safe_key(*parts: Any) -> str:
@@ -1080,11 +1107,13 @@ with view_tab:
                 need_review_count = sum(1 for r in group if _needs_review(r))
                 item_title = f"{_item_label((p, rfq, opt))} — {_item_spec_for_group(group)}"
                 currency_for_group = group[0].get("currency") if group else "USD"
+                same_price = _same_number(lowest, highest)
+                highest_color = "green" if same_price else "red"
                 item_caption = (
                     f"Suppliers: {supplier_count} | "
-                    f"Lowest: {_colored_money(lowest, currency_for_group)} | "
-                    f"Highest: {_colored_money(highest, currency_for_group)} | "
-                    f"Gap: {_pct(gap_pct) if len(prices) > 1 else '-'} | "
+                    f"Lowest: {_colored_money(lowest, currency_for_group, color='green')} | "
+                    f"Highest: {_colored_money(highest, currency_for_group, color=highest_color)} | "
+                    f"Gap: {_gap_caption(prices, lowest, highest, gap_pct)} | "
                     f"Need Review: {need_review_count}"
                 )
                 with st.expander(f"{item_title} — {item_caption}", expanded=False):
