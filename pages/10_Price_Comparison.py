@@ -226,6 +226,85 @@ def _supplier_options(rows: list[dict[str, Any]]) -> list[str]:
     return sorted(values)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _supplier_master_lookup() -> dict[str, dict[str, Any]]:
+    """Read Supplier Details for quick fill only.
+
+    This lookup is read-only. It does not update Supplier Details and does not
+    search Sales / Operation / other modules.
+    """
+    try:
+        supplier_rows = list_module_records("Supplier Details", limit=10000)
+    except Exception:
+        return {}
+    lookup: dict[str, dict[str, Any]] = {}
+    for supplier in supplier_rows:
+        code = _blank(supplier.get("supplier_code"))
+        sid = _blank(supplier.get("supplier_id"))
+        name = _blank(supplier.get("supplier_name"))
+        if code:
+            lookup[code.upper()] = supplier
+        if sid:
+            lookup[sid.upper()] = supplier
+        if name:
+            lookup[name.upper()] = supplier
+    return lookup
+
+
+def _supplier_name_from_code(supplier_code: str) -> str:
+    code = _blank(supplier_code).upper()
+    if not code:
+        return ""
+    supplier = _supplier_master_lookup().get(code)
+    return _blank(supplier.get("supplier_name")) if supplier else ""
+
+
+def _rows_for_project(rows: list[dict[str, Any]], project_id: str) -> list[dict[str, Any]]:
+    project = _blank(project_id)
+    return [r for r in rows if _txt(r.get("project_id"), "") == project]
+
+
+def _rfq_refs_for_project(rows: list[dict[str, Any]], project_id: str) -> list[str]:
+    project_rows = _rows_for_project(rows, project_id)
+    return sorted({_txt(r.get("rfq_item_ref"), "") for r in project_rows if _txt(r.get("rfq_item_ref"), "")})
+
+
+def _item_options_for_project_ref(rows: list[dict[str, Any]], project_id: str, rfq_item_ref: str) -> list[str]:
+    project = _blank(project_id)
+    rfq = _blank(rfq_item_ref)
+    opts = sorted({_blank(r.get("item_option")) for r in rows if _txt(r.get("project_id"), "") == project and _txt(r.get("rfq_item_ref"), "") == rfq})
+    # Always include blank option. Blank means no option.
+    return [""] + [o for o in opts if o]
+
+
+def _item_spec_for_project_ref_option(rows: list[dict[str, Any]], project_id: str, rfq_item_ref: str, item_option: str = "") -> str:
+    project = _blank(project_id)
+    rfq = _blank(rfq_item_ref)
+    option = _blank(item_option)
+    candidates = [
+        r for r in rows
+        if _txt(r.get("project_id"), "") == project
+        and _txt(r.get("rfq_item_ref"), "") == rfq
+        and _blank(r.get("item_option")) == option
+    ]
+    if not candidates and option:
+        candidates = [
+            r for r in rows
+            if _txt(r.get("project_id"), "") == project
+            and _txt(r.get("rfq_item_ref"), "") == rfq
+        ]
+    return _item_spec_for_group(candidates) if candidates else ""
+
+
+def _rfq_display_label(rows: list[dict[str, Any]], project_id: str, rfq_item_ref: str) -> str:
+    spec = _item_spec_for_project_ref_option(rows, project_id, rfq_item_ref, "")
+    if not spec:
+        project_rows = [r for r in _rows_for_project(rows, project_id) if _txt(r.get("rfq_item_ref"), "") == rfq_item_ref]
+        spec = _item_spec_for_group(project_rows) if project_rows else ""
+    spec_short = spec.replace("\n", " ")[:90]
+    return f"{rfq_item_ref} — {spec_short}" if spec_short and spec_short != "-" else rfq_item_ref
+
+
 def _apply_filters(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
     st.markdown("### Search and filter")
     c1, c2, c3, c4 = st.columns([1.2, 1.0, 1.0, 1.2])
@@ -422,6 +501,16 @@ def _comparison_table_rows(rows: list[dict[str, Any]], decisions: dict[tuple[str
     return output
 
 
+def _review_next_step(row: dict[str, Any], missing: list[str]) -> str:
+    if not missing:
+        return "Ready for comparison"
+    if "Supplier Master Match" in missing:
+        return "Check Supplier Code in Supplier Details"
+    if "Price" in missing or "Price <= 0" in missing:
+        return "Check / enter valid supplier unit cost"
+    return "Follow up missing fields: " + ", ".join(missing[:4])
+
+
 def _build_completeness_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for r in rows:
@@ -443,6 +532,7 @@ def _build_completeness_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "Risk": risk,
                 "Need Review": "Yes" if _needs_review(r) else "No",
                 "Missing / Review Points": ", ".join(missing) if missing else "-",
+                "Suggested Next Step": _review_next_step(r, missing),
             }
         )
     return out
@@ -471,6 +561,7 @@ def _build_saving_rows(rows: list[dict[str, Any]], decisions: dict[tuple[str, st
                     "Saving %": "-",
                     "Need Review": "No valid price",
                     "Comparison Status": "No Quote",
+                    "Suggested Action": "Add supplier quote or check missing price",
                 }
             )
             continue
@@ -484,6 +575,15 @@ def _build_saving_rows(rows: list[dict[str, Any]], decisions: dict[tuple[str, st
         gap = high - low
         saving = (gap / high * 100) if high else 0
         status = "Selected" if decision and _txt(decision.get("selection_status"), "") == "Selected" else ("Single Quote" if len(priced) == 1 else "Comparable")
+        need_review_count = sum(1 for r in group if _needs_review(r))
+        if status == "Selected":
+            suggested_action = "Selection saved; review if newer quote appears"
+        elif need_review_count:
+            suggested_action = "Resolve quotation review points before selection"
+        elif len(priced) == 1:
+            suggested_action = "Single quote only; get second quote if comparison is required"
+        else:
+            suggested_action = "Compare suppliers and select quote in Tab 1"
         out.append(
             {
                 "Project ID": project_id,
@@ -498,8 +598,9 @@ def _build_saving_rows(rows: list[dict[str, Any]], decisions: dict[tuple[str, st
                 "Average Price": _money(avg, low_row.get("currency")),
                 "Price Gap": _money(gap, low_row.get("currency")),
                 "Saving %": _pct(saving) if len(prices) > 1 else "-",
-                "Need Review": sum(1 for r in group if _needs_review(r)),
+                "Need Review": need_review_count,
                 "Comparison Status": status,
+                "Suggested Action": suggested_action,
             }
         )
     return out
@@ -704,8 +805,8 @@ def _export_workbook(filtered_rows: list[dict[str, Any]], all_rows: list[dict[st
     sheets: list[tuple[str, list[dict[str, Any]], list[str]]] = [
         ("Project Summary", summary, ["Project ID", "Items", "Suppliers", "Comparable Items", "Single Quote Items", "Need Review", "Comparison Status"]),
         ("Item Supplier Comparison", comparison_rows, ["RFQ Item Ref", "Item Option", "Item Spec", "Supplier Code", "Supplier Name", "Unit Cost", "Currency", "MOQ", "Lead Time", "Quote Date"]),
-        ("Completeness Risk", risk_rows, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Supplier Code", "Supplier Name", "Completeness", "Risk", "Need Review", "Missing / Review Points"]),
-        ("Price Difference Saving", saving_rows, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Suppliers", "Lowest Supplier", "Lowest Price", "Highest Supplier", "Highest Price", "Saving %"]),
+        ("Completeness Risk", risk_rows, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Supplier Code", "Supplier Name", "Completeness", "Risk", "Need Review", "Missing / Review Points", "Suggested Next Step"]),
+        ("Price Difference Saving", saving_rows, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Suppliers", "Lowest Supplier", "Lowest Price", "Highest Supplier", "Highest Price", "Saving %", "Comparison Status", "Suggested Action"]),
         ("Supplier Quote History", history, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Supplier Code", "Supplier Name", "Quote Date", "Unit Cost", "Previous Unit Cost", "Change", "Change %"]),
         ("Selection Decisions", decisions, ["decision_level", "project_id", "rfq_item_ref", "item_option", "supplier_quote_id", "selected_supplier_code", "selection_status", "selection_note", "review_note"]),
         ("Raw Records", filtered_rows, ["project_id", "rfq_item_ref", "item_option", "item_spec", "supplier_code", "supplier_name", "supplier_unit_cost", "currency", "quote_date"]),
@@ -779,31 +880,105 @@ export_cols[1].download_button(
 )
 
 with st.expander("Add supplier quote", expanded=False):
+    st.caption(
+        "Quick fill uses existing Price Comparison records for RFQ Item Ref / Item Option / Item Spec. "
+        "Supplier Name is read from Supplier Details by Supplier Code. These lookups are read-only."
+    )
+
+    pc_lookup_rows = rows
+    project_mode = st.radio(
+        "Project ID input mode",
+        ["Use existing Project ID in Price Comparison", "Type Project ID manually"],
+        horizontal=True,
+        key="pc_add_project_mode",
+    )
+    project_choices = [""] + _project_options(pc_lookup_rows)
+    if project_mode.startswith("Use existing") and len(project_choices) > 1:
+        project_default = st.selectbox("Project ID", project_choices, key="pc_add_project_select")
+    else:
+        project_default = st.text_input("Project ID", key="pc_add_project_manual")
+
+    rfq_default = ""
+    item_option_default = ""
+    item_spec_default = ""
+    if project_default:
+        existing_rfq_refs = _rfq_refs_for_project(pc_lookup_rows, project_default)
+        rfq_mode = st.radio(
+            "RFQ Item Ref input mode",
+            ["Use existing RFQ Item Ref", "Add new RFQ Item Ref"],
+            horizontal=True,
+            key=f"pc_add_rfq_mode_{_safe_key(project_default)}",
+        )
+        if rfq_mode.startswith("Use existing") and existing_rfq_refs:
+            rfq_default = st.selectbox(
+                "RFQ Item Ref",
+                existing_rfq_refs,
+                format_func=lambda value: _rfq_display_label(pc_lookup_rows, project_default, value),
+                key=f"pc_add_rfq_select_{_safe_key(project_default)}",
+            )
+        else:
+            if rfq_mode.startswith("Use existing") and not existing_rfq_refs:
+                st.info("No RFQ Item Ref exists in Price Comparison for this Project ID yet. Add a new RFQ Item Ref below.")
+            rfq_default = st.text_input("New RFQ Item Ref", key=f"pc_add_rfq_manual_{_safe_key(project_default)}")
+
+        if rfq_default:
+            existing_item_options = _item_options_for_project_ref(pc_lookup_rows, project_default, rfq_default)
+            option_mode = st.radio(
+                "Item Option input mode",
+                ["Use existing / blank Item Option", "Add new Item Option"],
+                horizontal=True,
+                key=f"pc_add_option_mode_{_safe_key(project_default, rfq_default)}",
+            )
+            if option_mode.startswith("Use existing"):
+                item_option_default = st.selectbox(
+                    "Item Option",
+                    existing_item_options,
+                    format_func=lambda value: "(blank / no option)" if not value else value,
+                    key=f"pc_add_option_select_{_safe_key(project_default, rfq_default)}",
+                )
+            else:
+                item_option_default = st.text_input(
+                    "New Item Option",
+                    help="Optional. Blank means no option.",
+                    key=f"pc_add_option_manual_{_safe_key(project_default, rfq_default)}",
+                )
+            item_spec_default = _item_spec_for_project_ref_option(pc_lookup_rows, project_default, rfq_default, item_option_default)
+            if item_spec_default:
+                st.info("Item Spec has been filled from existing Price Comparison records. Please review before saving.")
+
+    supplier_code_lookup = st.text_input("Supplier Code lookup", key="pc_add_supplier_code_lookup")
+    supplier_name_default = _supplier_name_from_code(supplier_code_lookup)
+    if supplier_code_lookup and supplier_name_default:
+        st.success(f"Supplier Name found: {supplier_name_default}")
+    elif supplier_code_lookup:
+        st.warning("Supplier Code not found in Supplier Details. You can still type Supplier Name manually below.")
+
     with st.form("supplier_quote_form"):
         c1, c2, c3, c4 = st.columns(4)
-        project_id = c1.text_input("Project ID")
-        rfq_item_ref = c2.text_input("RFQ Item Ref")
-        item_option = c3.text_input("Item Option", help="Optional. Blank means no option.")
-        quote_round = c4.text_input("Quote Round", value="1")
-        item_spec = st.text_area("Item Spec", height=80)
+        form_key_seed = _safe_key(project_default, rfq_default, item_option_default, supplier_code_lookup)
+        project_id = c1.text_input("Project ID", value=project_default, key=f"pc_form_project_{form_key_seed}")
+        rfq_item_ref = c2.text_input("RFQ Item Ref", value=rfq_default, key=f"pc_form_rfq_{form_key_seed}")
+        item_option = c3.text_input("Item Option", value=item_option_default, help="Optional. Blank means no option.", key=f"pc_form_option_{form_key_seed}")
+        quote_round = c4.text_input("Quote Round", value="1", key=f"pc_form_round_{form_key_seed}")
+        item_spec = st.text_area("Item Spec", value=item_spec_default, height=120, key=f"pc_form_spec_{form_key_seed}")
         c1, c2, c3 = st.columns(3)
-        supplier_code = c1.text_input("Supplier Code")
-        supplier_name = c2.text_input("Supplier Name")
-        quote_date = c3.date_input("Quote Date", value=None)
+        supplier_code = c1.text_input("Supplier Code", value=supplier_code_lookup, key=f"pc_form_supplier_code_{form_key_seed}")
+        supplier_name = c2.text_input("Supplier Name", value=supplier_name_default, key=f"pc_form_supplier_name_{form_key_seed}")
+        quote_date = c3.date_input("Quote Date", value=None, key=f"pc_form_quote_date_{form_key_seed}")
         c1, c2, c3, c4 = st.columns(4)
-        supplier_unit_cost = c1.number_input("Supplier Unit Cost", min_value=0.0, step=0.001, format="%.3f", value=0.0)
-        currency = c2.text_input("Currency", value="USD")
-        price_term = c3.text_input("Price Term")
-        lead_time = c4.text_input("Lead Time")
+        supplier_unit_cost = c1.number_input("Supplier Unit Cost", min_value=0.0, step=0.001, format="%.3f", value=0.0, key=f"pc_form_cost_{form_key_seed}")
+        currency = c2.text_input("Currency", value="USD", key=f"pc_form_currency_{form_key_seed}")
+        price_term = c3.text_input("Price Term", key=f"pc_form_price_term_{form_key_seed}")
+        lead_time = c4.text_input("Lead Time", key=f"pc_form_lead_time_{form_key_seed}")
         c1, c2 = st.columns(2)
-        recommended_supplier = c1.checkbox("Recommended Supplier")
-        selected_supplier = c2.checkbox("Selected Supplier")
+        recommended_supplier = c1.checkbox("Recommended Supplier", key=f"pc_form_recommended_{form_key_seed}")
+        selected_supplier = c2.checkbox("Selected Supplier", key=f"pc_form_selected_{form_key_seed}")
         with st.expander("Risk / missing info", expanded=False):
-            quotation_quality = st.selectbox("Quotation Quality", ["", "Complete", "Partial", "Poor"])
-            quotation_risk = st.selectbox("Quotation Risk", ["", "Low", "Medium", "High"])
-            missing_info = st.text_area("Missing Information", height=80)
-            selection_reason = st.text_area("Selection Reason", height=80)
-        remarks = st.text_area("Remarks", height=80)
+            quotation_quality = st.selectbox("Quotation Quality", ["", "Complete", "Partial", "Poor"], key=f"pc_form_quality_{form_key_seed}")
+            quotation_risk = st.selectbox("Quotation Risk", ["", "Low", "Medium", "High"], key=f"pc_form_risk_{form_key_seed}")
+            missing_info = st.text_area("Missing Information", height=80, key=f"pc_form_missing_{form_key_seed}")
+            selection_reason = st.text_area("Selection Reason", height=80, key=f"pc_form_reason_{form_key_seed}")
+        remarks = st.text_area("Remarks", height=80, key=f"pc_form_remarks_{form_key_seed}")
         submitted = st.form_submit_button("Save Supplier Quote", type="primary")
         if submitted:
             if not project_id.strip() or not rfq_item_ref.strip() or not supplier_name.strip():
