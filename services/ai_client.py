@@ -51,7 +51,7 @@ def get_ai_settings() -> dict[str, Any]:
         "base_url": str(_read_ai_secret("DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
         "model": str(_read_ai_secret("DEEPSEEK_MODEL", "deepseek-chat")),
         "timeout": int(_read_ai_secret("AI_TIMEOUT_SECONDS", 45)),
-        "max_tokens": int(_read_ai_secret("AI_MAX_TOKENS", 1200)),
+        "max_tokens": int(_read_ai_secret("AI_MAX_TOKENS", 2500)),
     }
 
 
@@ -89,7 +89,23 @@ def call_deepseek_json(
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise AIResponseError(f"AI returned invalid JSON: {content}") from exc
+        # Some compatible APIs may still return a JSON-looking object with leading/trailing
+        # text or markdown fences. Try one conservative extraction before falling back.
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.strip("`").strip()
+            if stripped.lower().startswith("json"):
+                stripped = stripped[4:].strip()
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end > start:
+            candidate = stripped[start : end + 1]
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                raise AIResponseError(f"AI returned invalid JSON: {content[:1200]}") from exc
+        else:
+            raise AIResponseError(f"AI returned invalid JSON: {content[:1200]}") from exc
 
     if not isinstance(parsed, dict):
         raise AIResponseError("AI response must be a JSON object.")

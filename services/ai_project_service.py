@@ -127,6 +127,58 @@ STOPWORDS = {
     "please", "project", "projects", "order", "orders", "current", "system", "records", "record",
 }
 
+# Read-only AI configuration. These rules help the assistant connect existing records
+# without changing business logic or writing data.
+AI_MODULE_SOURCE_PRIORITY = [
+    "Sales Board",
+    "Operation Board",
+    "Meeting Mode",
+    "Project History",
+    "Supplier Details",
+    "Price Comparison",
+    "Order Details",
+    "Index Center",
+    "Dashboard",
+]
+AI_JOIN_KEYS = [
+    "project_id",
+    "supplier_code",
+    "supplier_id",
+    "order_no",
+    "rfq_item_ref",
+    "item_option",
+    "index_name",
+    "index_code",
+]
+AI_REVIEW_RULES = {
+    "price_comparison": [
+        "missing price",
+        "missing currency",
+        "missing MOQ",
+        "missing lead time",
+        "missing quote date",
+        "missing supplier code",
+        "supplier not matched or supplier name missing",
+        "price is zero or negative",
+    ],
+    "index_center": [
+        "fetch_status is Failed",
+        "fetch_status is Carry Forward",
+        "confirmed is false where manual confirmation is expected",
+    ],
+    "order_details": [
+        "missing gross profit",
+        "missing supplier code",
+        "open production / inspection / shipment issue",
+    ],
+}
+AI_ANSWER_TEMPLATES = {
+    "project": "Project Summary → Current Records → Quotations / Suppliers → Orders → Review Points → Evidence",
+    "supplier": "Supplier Master Data → Related Quotations → Related Orders → Review Points → Evidence",
+    "price_comparison": "Supplier Quotes → Lowest / Highest → Completeness / Review Points → Selection Status → Evidence",
+    "index": "Latest Index Value → Source / Status / Confirmed → Limitations → Evidence",
+}
+
 
 class AIProjectAssistantError(RuntimeError):
     """Raised when the AI Project Assistant cannot safely complete a request."""
@@ -1384,6 +1436,121 @@ def _looks_like_meeting_question(query: str, scope: str) -> bool:
     return _has_any(query, INTENT_KEYWORDS["meeting"])
 
 
+def _safe_float(value: Any) -> float | None:
+    text = clean_text(value).replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _review_points_for_record(record: dict[str, Any]) -> list[str]:
+    """Return read-only review hints based only on fields in the evidence row."""
+    module = clean_text(record.get("Source Module"))
+    points: list[str] = []
+
+    if module == "Price Comparison":
+        if _safe_float(record.get("Supplier Unit Cost")) is None:
+            points.append("missing price")
+        elif (_safe_float(record.get("Supplier Unit Cost")) or 0) <= 0:
+            points.append("price is zero or negative")
+        if not clean_text(record.get("Currency")):
+            points.append("missing currency")
+        if not clean_text(record.get("MOQ")):
+            points.append("missing MOQ")
+        if not clean_text(record.get("Lead Time")):
+            points.append("missing lead time")
+        if not clean_text(record.get("Quote Date")):
+            points.append("missing quote date")
+        if not clean_text(record.get("Supplier Code")):
+            points.append("missing supplier code")
+        if not clean_text(record.get("Supplier Name")):
+            points.append("supplier name missing")
+        if _has_any(record.get("Extension Details"), ["not matched", "supplier not matched", "unmatched"]):
+            points.append("supplier not matched")
+
+    elif module == "Index Center":
+        status = clean_text(record.get("Fetch Status") or record.get("Result Status"))
+        if status.lower() in {"failed", "fail"}:
+            points.append("index fetch failed")
+        elif status.lower() == "carry forward":
+            points.append("index value is carried forward")
+        if _has_any(record.get("Extension Details"), ["Confirmed: False", "confirmed: false", "Confirmed: No"]):
+            points.append("index value not manually confirmed")
+
+    elif module == "Order Details":
+        if not clean_text(record.get("Supplier Code")):
+            points.append("missing supplier code")
+        if not clean_text(record.get("Gross Profit")):
+            points.append("gross profit not recorded")
+        if clean_text(record.get("Main Issue")):
+            points.append("open order issue recorded")
+
+    return points
+
+
+def _build_readonly_analysis_context(records: list[dict[str, Any]], dashboard_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build compact cross-module context from current evidence only.
+
+    This does not infer external facts and does not modify records. It gives the model
+    deterministic joins, review rules, and evidence counts so answers stay grounded.
+    """
+    module_counts = Counter(clean_text(row.get("Source Module")) or "Unknown" for row in records)
+    project_ids = sorted({clean_text(row.get("Project ID")) for row in records if clean_text(row.get("Project ID"))})
+    supplier_codes = sorted({clean_text(row.get("Supplier Code")) for row in records if clean_text(row.get("Supplier Code"))})
+    order_nos = sorted({clean_text(row.get("Order No")) for row in records if clean_text(row.get("Order No"))})
+    rfq_keys = sorted({
+        " / ".join(part for part in [clean_text(row.get("Project ID")), clean_text(row.get("RFQ Item Ref")), clean_text(row.get("Item Option"))] if part)
+        for row in records
+        if clean_text(row.get("RFQ Item Ref"))
+    })
+    index_names = sorted({clean_text(row.get("Index Name")) for row in records if clean_text(row.get("Index Name"))})
+
+    review_rows: list[dict[str, Any]] = []
+    for row in records:
+        points = _review_points_for_record(row)
+        if points:
+            review_rows.append({
+                "source_id": clean_text(row.get("Source ID")),
+                "source_module": clean_text(row.get("Source Module")),
+                "project_id": clean_text(row.get("Project ID")),
+                "supplier_code": clean_text(row.get("Supplier Code")),
+                "rfq_item_ref": clean_text(row.get("RFQ Item Ref")),
+                "item_option": clean_text(row.get("Item Option")),
+                "review_points": points,
+            })
+
+    return {
+        "definition": "Read-only business record assistant. Cross-module answers must use only the provided system records.",
+        "module_source_priority": AI_MODULE_SOURCE_PRIORITY,
+        "join_keys": AI_JOIN_KEYS,
+        "allowed_join_examples": [
+            "Project ID -> Price Comparison",
+            "Project ID -> Order Details",
+            "Supplier Code -> Supplier Details",
+            "Supplier Code -> Price Comparison",
+            "Supplier Code -> Order Details",
+            "Index Name / Index Code -> Daily Market Indices",
+        ],
+        "review_rules": AI_REVIEW_RULES,
+        "answer_templates": AI_ANSWER_TEMPLATES,
+        "not_found_handling": "If a field or module record is not present in evidence, state that it was not found in current system records. Do not convert not-found into a real-world fact.",
+        "evidence_requirement": "Every business statement must be supported by provided evidence rows. Use final_source_ids for the rows that directly answer the question.",
+        "evidence_counts_by_module": dict(module_counts),
+        "join_key_values_found": {
+            "project_id": project_ids[:30],
+            "supplier_code": supplier_codes[:30],
+            "order_no": order_nos[:30],
+            "project_rfq_item_option": rfq_keys[:30],
+            "index_name": index_names[:30],
+        },
+        "deterministic_review_points": review_rows[:40],
+        "dashboard_metric_rows": len(dashboard_rows),
+    }
+
+
 def _prepare_ai_evidence(records: list[dict[str, Any]], dashboard_rows: list[dict[str, Any]], *, max_rows: int = 50) -> dict[str, Any]:
     evidence_records = []
     for row in records[:max_rows]:
@@ -1444,6 +1611,7 @@ def _prepare_ai_evidence(records: list[dict[str, Any]], dashboard_rows: list[dic
     return {
         "dashboard_metrics": dashboard_rows[:80],
         "system_records": evidence_records,
+        "readonly_analysis_context": _build_readonly_analysis_context(records[:max_rows], dashboard_rows[:80]),
     }
 
 
@@ -1999,42 +2167,62 @@ def ask_ai_project_assistant(
     system_prompt = """
 You are the AI Project Assistant for Zenith Project Tracker System.
 
-Role:
-- You are a read-only intelligent query layer.
-- You answer user questions only from the provided system evidence.
-- You must not create, update, delete, assume, or invent any business data.
+Definition:
+- You are a read-only business record analysis assistant.
+- You may search, join, compare, and explain only the system evidence provided in the payload.
+- You must never invent facts, assume missing information, or modify system data.
 
-Hard rules:
-- Only use the provided dashboard_metrics and system_records.
-- Do not invent project names, order numbers, clients, owners, dates, statuses, issues, next steps, decisions, suppliers, testing results, or links.
-- If the evidence does not contain the answer, say it is not found in current system records.
-- Do not recommend changing system records.
-- Give the direct answer first, then evidence-based details.
-- For order association answers, respect the system order-link rule evidence rather than guessing from wording.
-- For boss, client and history summaries, summarise only the evidence rows provided.
-- Extension module records (Supplier Details, Price Comparison, Index Center, Order Details) are also read-only system records. Use them only when they are included in the provided evidence.
-- Keep the reply clear, concise, and complete.
+Hard data rules:
+- Use only dashboard_metrics, system_records, and readonly_analysis_context from the user payload.
+- If a module, field, supplier, quote, order, index, or project is not found in the evidence, say it was not found in current system records.
+- Do not turn "not found in system records" into "does not exist in real life".
+- Distinguish facts from record-based review notes. Use wording such as "System records show" and "This may need review because".
+- Do not make final business decisions for the user. You may identify lowest price, missing information, selected status, or review points from records.
+
+Allowed join keys:
+- project_id
+- supplier_code
+- supplier_id
+- order_no
+- rfq_item_ref
+- item_option
+- index_name / index_code
+Only connect modules using these keys when the evidence contains them.
+
+Module source priority:
+- Sales Board and Operation Board for current project/order status.
+- Meeting Mode and Project History for meeting/follow-up evidence.
+- Supplier Details for supplier master data and risk fields.
+- Price Comparison for supplier quotes, RFQ Item Ref, Item Option, Item Spec, price, MOQ, lead time, and selected/comparison status.
+- Order Details for order items, quantities, supplier cost, gross profit, production/inspection/shipment status.
+- Index Center for latest index values, source, fetch status, and confirmed status.
+
+Review rules:
+- Price Comparison may need review when price, currency, MOQ, lead time, quote date, supplier code, or supplier name is missing; supplier is not matched; or price is zero/negative.
+- Index Center may need review when fetch_status is Failed, value is Carry Forward, or confirmed status is false where confirmation is expected.
+- Order Details may need review when gross profit is missing, supplier code is missing, or an open order issue is recorded.
+
+Answer format:
+- Return JSON only.
+- Keep the answer concise. Do not dump every field from every evidence row.
+- Summarize by modules and include only evidence that directly answers the question.
+- final_source_ids must include only Source ID values that directly support the answer.
+- Do not mention candidate records, internal search counts, or checked-record counts.
 
 Language rule:
-- The requested_output_language value is mandatory and overrides the language of the user's question.
-- If requested_output_language is "English", write all narrative text, labels, explanations and summaries in English only. Do not mix Chinese narrative into the answer. Keep project names, order numbers, client codes and raw system field values unchanged when needed.
-- If requested_output_language is "Chinese", write the narrative text in Simplified Chinese. Keep project names, order numbers and client codes unchanged.
-- If requested_output_language is "Bilingual Chinese and English", provide a clearly bilingual answer rather than random mixed-language text.
+- requested_output_language is mandatory.
+- English: English narrative only. Keep raw project names, codes, links, and statuses unchanged.
+- Chinese: Simplified Chinese narrative. Keep project IDs, order numbers, supplier codes, and raw system values unchanged.
+- Bilingual Chinese and English: clearly bilingual, not random mixed-language text.
 
-Return JSON only with exactly these keys:
+Required JSON keys exactly:
 {
   "direct_answer": "...",
   "evidence_summary": "...",
   "detailed_answer": "...",
   "not_found_or_limitations": "...",
-  "final_source_ids": ["Source ID values that directly satisfy the user's question"]
+  "final_source_ids": ["..."]
 }
-
-Important display rule:
-- final_source_ids must include only records that truly answer the user's question.
-- Do not include records that were merely checked or used as candidates.
-- Do not mention candidate record counts, checked record counts, or internal search counts in the user-facing answer.
-- Use "final answer records" rather than "matched records" when describing the result count.
 """
 
     user_prompt = json.dumps(
@@ -2047,7 +2235,10 @@ Important display rule:
             "special_intent": special_intent,
             "evidence": evidence_payload,
             "required_answer_style": (
-                "Direct answer first. Then summarize only the final answer records by Sales Board, Operation Board, Dashboard, Project Details, Meeting Mode, Supplier Details, Price Comparison, Index Center, and Order Details when applicable. "
+                "Direct answer first. Then give a concise module-based answer using only provided system records. "
+                "When useful, connect modules only with project_id, supplier_code, supplier_id, order_no, rfq_item_ref, item_option, and index_name/index_code. "
+                "Use the readonly_analysis_context review rules to identify missing information or review points, but do not invent facts or make final decisions. "
+                "If data is not found, state that it was not found in current system records. "
                 "Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
             ),
         },
@@ -2082,7 +2273,18 @@ Important display rule:
         record_type=record_type,
     )
 
-    if _language_mismatch_for_output(answer, output_language):
+    if ai_error:
+        # If the model API is unavailable or returns invalid JSON, keep the page useful by
+        # rendering a deterministic read-only system-record answer. This preserves the
+        # safety rule: no system evidence means no business conclusion.
+        safe_answer = _build_language_safe_final_answer(
+            question=question,
+            output_language=output_language,
+            final_records=final_records,
+            dashboard_rows=dashboard_rows,
+        )
+        answer.update(safe_answer)
+    elif _language_mismatch_for_output(answer, output_language):
         safe_answer = _build_language_safe_final_answer(
             question=question,
             output_language=output_language,
