@@ -16,18 +16,7 @@ from services.project_service import get_dashboard_metrics, get_meeting_pool, ge
 
 
 SUPPORTED_OUTPUT_LANGUAGES = ["English", "Chinese", "Bilingual Chinese and English"]
-SUPPORTED_SCOPES = [
-    "All",
-    "Sales Board",
-    "Operation Board",
-    "Dashboard",
-    "Project Details",
-    "Meeting Mode",
-    "Supplier Details",
-    "Price Comparison",
-    "Index Center",
-    "Order Details",
-]
+SUPPORTED_SCOPES = ["All", "Sales Board", "Operation Board", "Dashboard", "Project Details", "Meeting Mode"]
 SUPPORTED_RECORD_TYPES = ["All", "Sales", "Operation"]
 
 EVIDENCE_COLUMNS = [
@@ -67,24 +56,6 @@ EVIDENCE_COLUMNS = [
     "New Result",
     "Last Event",
     "Reference Link",
-    "Supplier Code",
-    "Supplier Name",
-    "RFQ Item Ref",
-    "Item Option",
-    "Item Spec",
-    "Supplier Unit Cost",
-    "Currency",
-    "MOQ",
-    "Lead Time",
-    "Quote Date",
-    "Index Name",
-    "Index Value",
-    "Index Date",
-    "Fetch Status",
-    "Order Qty",
-    "Gross Profit",
-    "Extension Summary",
-    "Extension Details",
 ]
 
 DASHBOARD_COLUMNS = ["Metric", "Value", "Source Module"]
@@ -115,10 +86,6 @@ INTENT_KEYWORDS: dict[str, list[str]] = {
     "client_open_issues": ["open issues", "client issues", "customer issues", "all open issues", "客户问题", "客户未关闭问题", "客户open issue", "open issue"],
     "history": ["history", "timeline", "change history", "project history", "order history", "变化", "历史", "时间线", "项目历史", "订单历史", "变更记录"],
     "next_step": ["next step", "follow up", "follow-up", "action", "下一步", "跟进", "行动"],
-    "supplier_details": ["supplier details", "supplier detail", "supplier master", "supplier code", "supplier name", "supplier", "vendor", "供应商资料", "供应商详情", "供应商代码", "供应商名称", "供应商"],
-    "price_comparison": ["price comparison", "supplier quote", "supplier quotation", "rfq item", "rfq item ref", "comparison item", "quote history", "报价对比", "供应商报价", "报价比较", "RFQ", "价格对比"],
-    "index_center": ["index center", "daily index", "market index", "fx", "exchange rate", "usd/cny", "hkd/cny", "gbp/cny", "freight index", "material index", "指数", "汇率", "材料价格", "运费", "每日指数"],
-    "order_details": ["order details", "order detail", "order item", "gross profit", "gp", "production status", "shipment status", "inspection status", "订单明细", "订单详情", "毛利", "出货状态", "生产状态", "查货状态"],
 }
 
 STOPWORDS = {
@@ -327,371 +294,6 @@ def _build_dashboard_rows() -> list[dict[str, Any]]:
     return rows
 
 
-
-# -----------------------------------------------------------------------------
-# Read-only extension module evidence for AI Project Assistant
-# -----------------------------------------------------------------------------
-
-AI_EXTENSION_SCOPES = {"Supplier Details", "Price Comparison", "Index Center", "Order Details"}
-
-AI_SCOPE_TO_EXTENSION_MODULES: dict[str, tuple[str, ...]] = {
-    "Supplier Details": ("Supplier Details",),
-    "Price Comparison": ("Supplier Price Comparison",),
-    "Index Center": ("Daily Market Indices", "Index Config", "Index Snapshot", "Freight Index"),
-    "Order Details": ("Order Details",),
-}
-
-AI_EXTENSION_SOURCE_NAMES: dict[str, str] = {
-    "Supplier Details": "Supplier Details",
-    "Supplier Price Comparison": "Price Comparison",
-    "Daily Market Indices": "Index Center",
-    "Index Config": "Index Center",
-    "Index Snapshot": "Index Center",
-    "Freight Index": "Index Center",
-    "Order Details": "Order Details",
-}
-
-
-def _detail_pairs(row: dict[str, Any], fields: list[tuple[str, str]]) -> str:
-    parts: list[str] = []
-    for key, label in fields:
-        value = clean_text(row.get(key))
-        if value:
-            parts.append(f"{label}: {value}")
-    return " | ".join(parts)
-
-
-def _normalise_extension_row(module_name: str, row: dict[str, Any], index: int) -> dict[str, Any]:
-    """Convert extension rows into the same read-only evidence shape used by the AI assistant.
-
-    This does not update or infer business data. It only exposes existing module records
-    as searchable evidence for the read-only AI Project Assistant.
-    """
-    source_module = AI_EXTENSION_SOURCE_NAMES.get(module_name, module_name)
-    source_prefix = {
-        "Supplier Details": "SUP",
-        "Supplier Price Comparison": "PC",
-        "Daily Market Indices": "IDX",
-        "Index Config": "ICFG",
-        "Index Snapshot": "ISNP",
-        "Freight Index": "FRT",
-        "Order Details": "OD",
-    }.get(module_name, "EXT")
-
-    source_id = clean_text(
-        row.get("supplier_id")
-        or row.get("supplier_quote_id")
-        or row.get("daily_index_id")
-        or row.get("index_config_id")
-        or row.get("index_snapshot_id")
-        or row.get("freight_index_id")
-        or row.get("order_detail_id")
-        or f"{source_prefix}-{index + 1}"
-    )
-    entity_id = source_id
-    project_id = clean_text(row.get("project_id") or row.get("last_project_id"))
-    order_no = clean_text(row.get("order_no") or row.get("last_order_no"))
-
-    if module_name == "Supplier Details":
-        summary = _detail_pairs(row, [
-            ("supplier_code", "Supplier Code"),
-            ("supplier_name", "Supplier Name"),
-            ("active_status", "Active"),
-            ("quality_risk", "Quality Risk"),
-            ("commercial_risk", "Commercial Risk"),
-            ("main_products", "Main Products"),
-            ("main_process", "Main Process"),
-            ("capability_tags", "Capability Tags"),
-            ("risk_summary", "Risk Summary"),
-        ])
-        details = _detail_pairs(row, [
-            ("supplier_short_name", "Short Name"),
-            ("company_type", "Company Type"),
-            ("country", "Country"),
-            ("province", "Province"),
-            ("city", "City"),
-            ("website_primary", "Website"),
-            ("primary_contact_name", "Contact"),
-            ("primary_contact_mobile", "Mobile"),
-            ("primary_contact_email", "Email"),
-            ("certificate", "Certificate"),
-            ("nda_status", "NDA"),
-            ("audit_status", "Audit"),
-            ("catalogue_status", "Catalogue"),
-            ("payment_terms", "Payment Terms"),
-            ("lead_time", "Lead Time"),
-            ("last_order_no", "Last Order"),
-            ("last_project_id", "Last Project"),
-            ("price_comparison_count", "Price Comparison Count"),
-            ("order_count", "Order Count"),
-            ("remark_internal", "Internal Remark"),
-        ])
-        return {
-            "Source Module": source_module,
-            "Record Type": "Extension",
-            "Source ID": f"{source_prefix}-{source_id}",
-            "Entity ID": source_id,
-            "Project ID": project_id,
-            "Project Name": "",
-            "Order No": order_no,
-            "Client Code": "",
-            "Current Owner": "",
-            "Phase": clean_text(row.get("active_status")),
-            "Health Status": clean_text(row.get("risk_summary") or row.get("quality_risk") or row.get("commercial_risk")),
-            "Result Status": clean_text(row.get("active_status")),
-            "Current Progress": summary,
-            "Main Issue": clean_text(row.get("risk_summary")),
-            "Next Step": "",
-            "Reference Link": clean_text(row.get("website_primary")),
-            "Supplier Code": clean_text(row.get("supplier_code")),
-            "Supplier Name": clean_text(row.get("supplier_name")),
-            "Extension Summary": summary,
-            "Extension Details": details,
-        }
-
-    if module_name == "Supplier Price Comparison":
-        summary = _detail_pairs(row, [
-            ("project_id", "Project ID"),
-            ("rfq_item_ref", "RFQ Item Ref"),
-            ("item_option", "Item Option"),
-            ("supplier_code", "Supplier Code"),
-            ("supplier_name", "Supplier Name"),
-            ("supplier_unit_cost", "Supplier Unit Cost USD"),
-            ("currency", "Currency"),
-            ("moq", "MOQ"),
-            ("lead_time", "Lead Time"),
-            ("quote_date", "Quote Date"),
-            ("comparison_status", "Comparison Status"),
-            ("selected_supplier", "Selected"),
-            ("recommended_supplier", "Recommended"),
-        ])
-        details = _detail_pairs(row, [
-            ("item_spec", "Item Spec"),
-            ("quote_round", "Quote Round"),
-            ("quote_file_ref", "Source Ref"),
-            ("price_term", "Price Term"),
-            ("tooling_cost", "Tooling Cost"),
-            ("sample_cost", "Sample Cost"),
-            ("packing_cost", "Packing Cost"),
-            ("supplier_material_basis", "Material Basis"),
-            ("supplier_quote_validity", "Quote Validity"),
-            ("missing_info", "Missing Info"),
-            ("quotation_quality", "Quotation Quality"),
-            ("quotation_risk", "Quotation Risk"),
-            ("selection_reason", "Selection Reason"),
-            ("remarks", "Remarks"),
-        ])
-        return {
-            "Source Module": source_module,
-            "Record Type": "Extension",
-            "Source ID": f"{source_prefix}-{source_id}",
-            "Entity ID": source_id,
-            "Project ID": project_id,
-            "Project Name": "",
-            "Order No": "",
-            "Client Code": "",
-            "Current Owner": "",
-            "Phase": clean_text(row.get("comparison_status")),
-            "Health Status": clean_text(row.get("quotation_risk")),
-            "Result Status": clean_text(row.get("comparison_status")),
-            "Current Progress": summary,
-            "Main Issue": clean_text(row.get("missing_info") or row.get("quotation_risk")),
-            "Next Step": clean_text(row.get("price_adjustment_note")),
-            "Reference Link": clean_text(row.get("quote_file_ref")),
-            "Supplier Code": clean_text(row.get("supplier_code")),
-            "Supplier Name": clean_text(row.get("supplier_name")),
-            "RFQ Item Ref": clean_text(row.get("rfq_item_ref")),
-            "Item Option": clean_text(row.get("item_option")),
-            "Item Spec": clean_text(row.get("item_spec")),
-            "Supplier Unit Cost": clean_text(row.get("supplier_unit_cost")),
-            "Currency": clean_text(row.get("currency")),
-            "MOQ": clean_text(row.get("moq")),
-            "Lead Time": clean_text(row.get("lead_time")),
-            "Quote Date": clean_text(row.get("quote_date")),
-            "Extension Summary": summary,
-            "Extension Details": details,
-        }
-
-    if module_name in {"Daily Market Indices", "Index Config", "Index Snapshot", "Freight Index"}:
-        summary = _detail_pairs(row, [
-            ("index_date", "Index Date"),
-            ("index_category", "Category"),
-            ("index_name", "Index Name"),
-            ("index_value", "Index Value"),
-            ("unit", "Unit"),
-            ("fetch_status", "Fetch Status"),
-            ("source_name", "Source"),
-            ("display_name", "Display Name"),
-            ("fetch_method", "Fetch Method"),
-            ("fallback_method", "Fallback"),
-            ("destination_country", "Destination"),
-            ("freight_value", "Freight Value"),
-            ("snapshot_date", "Snapshot Date"),
-            ("material_index_name", "Material Index"),
-            ("material_index_value", "Material Value"),
-            ("exchange_rate_pair", "FX Pair"),
-            ("exchange_rate_value", "FX Value"),
-        ])
-        details = _detail_pairs(row, [
-            ("source_url", "Source URL"),
-            ("previous_value", "Previous Value"),
-            ("change_value", "Change Value"),
-            ("change_percent", "Change Percent"),
-            ("error_message", "Error Message"),
-            ("confirmed_by_user", "Confirmed"),
-            ("confirmed_at", "Confirmed At"),
-            ("last_updated_at", "Last Updated"),
-            ("updated_by", "Updated By"),
-            ("freight_route", "Freight Route"),
-            ("freight_index_value", "Freight Index Value"),
-            ("locked_at", "Locked At"),
-            ("locked_by", "Locked By"),
-            ("remarks", "Remarks"),
-        ])
-        index_name = clean_text(row.get("index_name") or row.get("display_name") or row.get("material_index_name") or row.get("freight_index_name") or row.get("destination_country"))
-        return {
-            "Source Module": source_module,
-            "Record Type": "Extension",
-            "Source ID": f"{source_prefix}-{source_id}",
-            "Entity ID": source_id,
-            "Project ID": project_id,
-            "Project Name": "",
-            "Order No": "",
-            "Client Code": "",
-            "Current Owner": "",
-            "Phase": clean_text(row.get("index_category") or row.get("fetch_method")),
-            "Health Status": clean_text(row.get("fetch_status") or row.get("error_message")),
-            "Result Status": clean_text(row.get("fetch_status") or row.get("active")),
-            "Current Progress": summary,
-            "Main Issue": clean_text(row.get("error_message")),
-            "Next Step": "",
-            "Reference Link": clean_text(row.get("source_url")),
-            "Index Name": index_name,
-            "Index Value": clean_text(row.get("index_value") or row.get("freight_value") or row.get("material_index_value") or row.get("exchange_rate_value")),
-            "Index Date": clean_text(row.get("index_date") or row.get("snapshot_date")),
-            "Fetch Status": clean_text(row.get("fetch_status")),
-            "Extension Summary": summary,
-            "Extension Details": details,
-        }
-
-    if module_name == "Order Details":
-        summary = _detail_pairs(row, [
-            ("project_id", "Project ID"),
-            ("order_no", "Order No"),
-            ("order_item_code", "Order Item Code"),
-            ("supplier_code", "Supplier Code"),
-            ("supplier_name", "Supplier Name"),
-            ("order_qty", "Order Qty"),
-            ("client_unit_price", "Client Unit Price USD"),
-            ("supplier_unit_cost", "Supplier Unit Cost USD"),
-            ("gross_profit", "Gross Profit USD"),
-            ("gross_profit_percent", "Gross Profit %"),
-            ("production_status", "Production Status"),
-            ("inspection_status", "Inspection Status"),
-            ("shipment_status", "Shipment Status"),
-        ])
-        details = _detail_pairs(row, [
-            ("client_code", "Client Code"),
-            ("po_no", "PO No"),
-            ("customer_item_no", "Customer Item No"),
-            ("supplier_item_no", "Supplier Item No"),
-            ("sales_revenue", "Sales Revenue"),
-            ("supplier_cost", "Supplier Cost"),
-            ("extra_cost", "Extra Cost"),
-            ("payment_status", "Payment Status"),
-            ("packing_status", "Packing Status"),
-            ("order_date", "Order Date"),
-            ("target_delivery_date", "Target Delivery Date"),
-            ("actual_delivery_date", "Actual Delivery Date"),
-            ("inspection_date", "Inspection Date"),
-            ("shipment_date", "Shipment Date"),
-            ("container_no", "Container No"),
-            ("bl_no", "B/L No"),
-            ("main_issue", "Main Issue"),
-            ("next_step", "Next Step"),
-            ("next_step_owner", "Next Step Owner"),
-            ("remarks", "Remarks"),
-        ])
-        return {
-            "Source Module": source_module,
-            "Record Type": "Extension",
-            "Source ID": f"{source_prefix}-{source_id}",
-            "Entity ID": source_id,
-            "Project ID": project_id,
-            "Project Name": "",
-            "Order No": order_no,
-            "Client Code": clean_text(row.get("client_code")),
-            "Current Owner": clean_text(row.get("next_step_owner")),
-            "Phase": clean_text(row.get("production_status")),
-            "Health Status": clean_text(row.get("main_issue")),
-            "Result Status": clean_text(row.get("shipment_status") or row.get("payment_status")),
-            "Current Progress": summary,
-            "Main Issue": clean_text(row.get("main_issue")),
-            "Next Step": clean_text(row.get("next_step")),
-            "Next Step Owner": clean_text(row.get("next_step_owner")),
-            "Target Date": clean_text(row.get("target_delivery_date")),
-            "Reference Link": "",
-            "Supplier Code": clean_text(row.get("supplier_code")),
-            "Supplier Name": clean_text(row.get("supplier_name")),
-            "Order Qty": clean_text(row.get("order_qty")),
-            "Currency": clean_text(row.get("currency")),
-            "Gross Profit": clean_text(row.get("gross_profit")),
-            "Extension Summary": summary,
-            "Extension Details": details,
-        }
-
-    return {
-        "Source Module": source_module,
-        "Record Type": "Extension",
-        "Source ID": f"{source_prefix}-{source_id}",
-        "Entity ID": source_id,
-        "Project ID": project_id,
-        "Project Name": "",
-        "Order No": order_no,
-        "Client Code": "",
-        "Current Progress": _detail_pairs(row, [(key, key) for key in sorted(row.keys())[:12]]),
-        "Extension Details": _detail_pairs(row, [(key, key) for key in sorted(row.keys())]),
-    }
-
-
-def _load_extension_records_for_scope(scope: str) -> list[dict[str, Any]]:
-    if scope == "Dashboard" or scope == "Meeting Mode":
-        return []
-    module_names: list[str] = []
-    if scope == "All":
-        for names in AI_SCOPE_TO_EXTENSION_MODULES.values():
-            module_names.extend(names)
-    elif scope in AI_SCOPE_TO_EXTENSION_MODULES:
-        module_names.extend(AI_SCOPE_TO_EXTENSION_MODULES[scope])
-    else:
-        return []
-
-    try:
-        from services.upgrade_service import list_module_records
-    except Exception:
-        return []
-
-    records: list[dict[str, Any]] = []
-    # Keep limits practical so the assistant remains responsive and read-only.
-    limits = {
-        "Supplier Details": 2000,
-        "Supplier Price Comparison": 3000,
-        "Daily Market Indices": 1200,
-        "Index Config": 300,
-        "Index Snapshot": 1200,
-        "Freight Index": 500,
-        "Order Details": 3000,
-    }
-    for module_name in module_names:
-        try:
-            rows = list_module_records(module_name, limit=limits.get(module_name, 1000))
-        except Exception:
-            continue
-        for idx, row in enumerate(rows):
-            records.append(_normalise_extension_row(module_name, row, idx))
-    return records
-
-
 def _combined_text(record: dict[str, Any]) -> str:
     fields = [
         "Source Module",
@@ -731,24 +333,6 @@ def _combined_text(record: dict[str, Any]) -> str:
         "Last Event",
         "Reference Link",
         "Meeting Reference Links",
-        "Supplier Code",
-        "Supplier Name",
-        "RFQ Item Ref",
-        "Item Option",
-        "Item Spec",
-        "Supplier Unit Cost",
-        "Currency",
-        "MOQ",
-        "Lead Time",
-        "Quote Date",
-        "Index Name",
-        "Index Value",
-        "Index Date",
-        "Fetch Status",
-        "Order Qty",
-        "Gross Profit",
-        "Extension Summary",
-        "Extension Details",
     ]
     return " ".join(clean_text(record.get(field)) for field in fields if clean_text(record.get(field))).lower()
 
@@ -764,8 +348,6 @@ def _source_scope_match(record: dict[str, Any], scope: str) -> bool:
         return record.get("Source Module") in {"Sales Board", "Operation Board"}
     if scope == "Meeting Mode":
         return record.get("Source Module") == "Meeting Mode"
-    if scope in AI_EXTENSION_SCOPES:
-        return record.get("Source Module") == scope
     return True
 
 
@@ -828,14 +410,6 @@ def _intent_score(query: str, record: dict[str, Any]) -> tuple[set[str], float]:
         score += 1.2
     if "detail" in intents:
         score += 0.6
-    if "supplier_details" in intents and record.get("Source Module") == "Supplier Details":
-        score += 2.8
-    if "price_comparison" in intents and record.get("Source Module") == "Price Comparison":
-        score += 2.8
-    if "index_center" in intents and record.get("Source Module") == "Index Center":
-        score += 2.8
-    if "order_details" in intents and record.get("Source Module") == "Order Details":
-        score += 2.8
 
     return intents, score
 
@@ -905,7 +479,6 @@ def _load_records_for_scope(scope: str, record_type: str) -> list[dict[str, Any]
         records.extend(_load_operation_records())
     if scope in {"All", "Meeting Mode"}:
         records.extend(_load_meeting_records())
-    records.extend(_load_extension_records_for_scope(scope))
 
     # Remove duplicate exact rows that can occur when Scope=All; keep module-specific entries
     # because the user explicitly wants display by existing system architecture.
@@ -1017,15 +590,9 @@ def _apply_deterministic_filters(query: str, records: list[dict[str, Any]]) -> l
 
     operation_terms = ["operation order", "operation orders", "operation", "order", "orders", "订单", "出货", "付款", "交付"]
     sales_terms = ["sales project", "sales projects", "sales", "quotation", "quote", "sample", "报价", "打样", "销售项目"]
-    extension_terms = []
-    for key in ["supplier_details", "price_comparison", "index_center", "order_details"]:
-        extension_terms.extend(INTENT_KEYWORDS.get(key, []))
-    extension_specific = _has_any(lower, extension_terms)
     asks_operation = _has_any(lower, operation_terms)
     asks_sales = _has_any(lower, sales_terms)
-    if extension_specific:
-        pass
-    elif asks_operation and not asks_sales:
+    if asks_operation and not asks_sales:
         candidate = [r for r in filtered if r.get("Record Type") == "Operation"]
         if candidate:
             filtered = candidate
@@ -1419,24 +986,6 @@ def _prepare_ai_evidence(records: list[dict[str, Any]], dashboard_rows: list[dic
                 "history_note": row.get("History Note"),
                 "last_event": row.get("Last Event"),
                 "reference_link": row.get("Reference Link"),
-                "supplier_code": row.get("Supplier Code"),
-                "supplier_name": row.get("Supplier Name"),
-                "rfq_item_ref": row.get("RFQ Item Ref"),
-                "item_option": row.get("Item Option"),
-                "item_spec": row.get("Item Spec"),
-                "supplier_unit_cost": row.get("Supplier Unit Cost"),
-                "currency": row.get("Currency"),
-                "moq": row.get("MOQ"),
-                "lead_time": row.get("Lead Time"),
-                "quote_date": row.get("Quote Date"),
-                "index_name": row.get("Index Name"),
-                "index_value": row.get("Index Value"),
-                "index_date": row.get("Index Date"),
-                "fetch_status": row.get("Fetch Status"),
-                "order_qty": row.get("Order Qty"),
-                "gross_profit": row.get("Gross Profit"),
-                "extension_summary": row.get("Extension Summary"),
-                "extension_details": row.get("Extension Details"),
                 "match_reason": row.get("Match Reason"),
             }
         )
@@ -1461,11 +1010,6 @@ def _source_summary(records: list[dict[str, Any]], dashboard_rows: list[dict[str
         "operation_board_records": int(module_counts.get("Operation Board", 0)),
         "meeting_mode_records": int(module_counts.get("Meeting Mode", 0)),
         "project_history_records": int(module_counts.get("Project History", 0)),
-        "supplier_details_records": int(module_counts.get("Supplier Details", 0)),
-        "price_comparison_records": int(module_counts.get("Price Comparison", 0)),
-        "index_center_records": int(module_counts.get("Index Center", 0)),
-        "order_details_records": int(module_counts.get("Order Details", 0)),
-        "extension_records": int(type_counts.get("Extension", 0)),
     }
     if metadata.get("full_result_count") is not None:
         summary["total_final_answer_records"] = metadata.get("full_result_count")
@@ -1699,7 +1243,7 @@ def _format_record_line(record: dict[str, Any], *, lang: str) -> str:
     health = clean_text(record.get("Health Status"))
     next_step_owner = clean_text(record.get("Next Step Owner"))
     target_date = clean_text(record.get("Target Date"))
-    issue = clean_text(record.get("Main Issue") or record.get("Need From Meeting") or record.get("Meeting Focus Reason") or record.get("Next Step") or record.get("Extension Summary"))
+    issue = clean_text(record.get("Main Issue") or record.get("Need From Meeting") or record.get("Meeting Focus Reason") or record.get("Next Step"))
 
     if lang == "Chinese":
         bits = [name]
@@ -1754,10 +1298,6 @@ def _build_language_safe_final_answer(
 
     sales = [row for row in final_records if clean_text(row.get("Record Type")) == "Sales"]
     operation = [row for row in final_records if clean_text(row.get("Record Type")) == "Operation"]
-    extension_groups: dict[str, list[dict[str, Any]]] = {}
-    for row in final_records:
-        if clean_text(row.get("Record Type")) == "Extension":
-            extension_groups.setdefault(clean_text(row.get("Source Module")) or "Extension", []).append(row)
 
     names = [clean_text(row.get("Project Name")) or clean_text(row.get("Entity ID")) or clean_text(row.get("Project ID")) or clean_text(row.get("Order No")) for row in final_records]
     names = [name for name in names if name]
@@ -1770,8 +1310,6 @@ def _build_language_safe_final_answer(
             details.append("Sales Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang=lang)}" for idx, row in enumerate(sales, start=1)))
         if operation:
             details.append("Operation Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang=lang)}" for idx, row in enumerate(operation, start=1)))
-        for module_name, module_rows in extension_groups.items():
-            details.append(f"{module_name}:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang=lang)}" for idx, row in enumerate(module_rows, start=1)))
         if not details and dashboard_rows:
             details.append("Dashboard:\n" + "\n".join(f"- {row.get('Metric')}: {row.get('Value')}" for row in dashboard_rows))
         detailed = "\n\n".join(details) if details else "未找到可显示的最终记录。"
@@ -1787,8 +1325,6 @@ def _build_language_safe_final_answer(
             details.append("Sales Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(sales, start=1)))
         if operation:
             details.append("Operation Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(operation, start=1)))
-        for module_name, module_rows in extension_groups.items():
-            details.append(f"{module_name}:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(module_rows, start=1)))
         if not details and dashboard_rows:
             details.append("Dashboard:\n" + "\n".join(f"- {row.get('Metric')}: {row.get('Value')}" for row in dashboard_rows))
         detailed = "\n\n".join(details) if details else "未找到可显示的最终记录。 / No final records are available for display."
@@ -1800,8 +1336,6 @@ def _build_language_safe_final_answer(
             details.append("Sales Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(sales, start=1)))
         if operation:
             details.append("Operation Board:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(operation, start=1)))
-        for module_name, module_rows in extension_groups.items():
-            details.append(f"{module_name}:\n" + "\n".join(f"{idx}. {_format_record_line(row, lang='English')}" for idx, row in enumerate(module_rows, start=1)))
         if not details and dashboard_rows:
             details.append("Dashboard:\n" + "\n".join(f"- {row.get('Metric')}: {row.get('Value')}" for row in dashboard_rows))
         detailed = "\n\n".join(details) if details else f"Dashboard metrics returned: {metric_count}."
@@ -2012,7 +1546,6 @@ Hard rules:
 - Give the direct answer first, then evidence-based details.
 - For order association answers, respect the system order-link rule evidence rather than guessing from wording.
 - For boss, client and history summaries, summarise only the evidence rows provided.
-- Extension module records (Supplier Details, Price Comparison, Index Center, Order Details) are also read-only system records. Use them only when they are included in the provided evidence.
 - Keep the reply clear, concise, and complete.
 
 Language rule:
@@ -2047,7 +1580,7 @@ Important display rule:
             "special_intent": special_intent,
             "evidence": evidence_payload,
             "required_answer_style": (
-                "Direct answer first. Then summarize only the final answer records by Sales Board, Operation Board, Dashboard, Project Details, Meeting Mode, Supplier Details, Price Comparison, Index Center, and Order Details when applicable. "
+                "Direct answer first. Then summarize only the final answer records by Sales Board, Operation Board, Dashboard, Project Details, and Meeting Mode when applicable. "
                 "Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
             ),
         },
@@ -2179,7 +1712,6 @@ def build_text_export(result: dict[str, Any]) -> str:
                 f"Health: {record.get('Health Status') or '-'} | Result: {record.get('Result Status') or '-'} | "
                 f"Main Issue: {record.get('Main Issue') or '-'} | Next Step: {record.get('Next Step') or '-'} | "
                 f"Target Date: {record.get('Target Date') or '-'} | "
-                f"Extension: {record.get('Extension Summary') or '-'} | "
                 f"History: {record.get('History Type') or '-'} {record.get('History Time') or ''} {record.get('History Note') or ''}"
             )
 

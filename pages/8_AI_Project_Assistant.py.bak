@@ -242,14 +242,14 @@ _render_css()
 
 render_page_header(
     "AI Project Assistant",
-    "Read-only natural-language search over Sales, Operation, Dashboard, Project Details, Meeting Mode, Supplier Details, Price Comparison, Index Center, Order Details, and project history records.",
+    "Read-only natural-language search over Sales, Operation, Dashboard, Project Details, Meeting Mode, and project history records.",
 )
 
 st.markdown(
     _html(
         """
         <div class="zpa-note">
-        This assistant only searches current system records, including the new Supplier Details, Price Comparison, Index Center and Order Details modules. It does not change database records, does not update Meeting Prep, and uses the existing Sales Board / Dashboard order-link rule for order association questions.
+        This assistant only searches current system records. It does not change database records, does not update Meeting Prep, and uses the existing Sales Board / Dashboard order-link rule for order association questions.
         </div>
         """
     ),
@@ -278,8 +278,6 @@ with left_col:
             "- What should Ehab focus on this week?\n"
             "- What are all open issues for client Keter?\n"
             "- Summarize the project history for SDG-26-013\n"
-            "- Show supplier quotation records for SDG-26-013\n"
-            "- What is the latest USD/CNY index?\n"
             "- 哪些项目还没有订单？"
         ),
         key="ai_project_question",
@@ -387,31 +385,9 @@ with right_col:
         unsafe_allow_html=True,
     )
 
-    (
-        tab_answer,
-        tab_sales,
-        tab_operation,
-        tab_dashboard,
-        tab_detail,
-        tab_meeting,
-        tab_supplier,
-        tab_price,
-        tab_index,
-        tab_order_details,
-        tab_export,
-    ) = st.tabs([
-        "Answer",
-        "Sales Board",
-        "Operation Board",
-        "Dashboard",
-        "Project Details",
-        "Meeting Mode",
-        "Supplier Details",
-        "Price Comparison",
-        "Index Center",
-        "Order Details",
-        "Export",
-    ])
+    tab_answer, tab_sales, tab_operation, tab_dashboard, tab_detail, tab_meeting, tab_export = st.tabs(
+        ["Answer", "Sales Board", "Operation Board", "Dashboard", "Project Details", "Meeting Mode", "Export"]
+    )
 
     with tab_answer:
         st.markdown("#### Direct Answer")
@@ -447,18 +423,6 @@ with right_col:
 
     with tab_meeting:
         _render_records_by_module(records_frame, "Meeting Mode")
-
-    with tab_supplier:
-        _render_records_by_module(records_frame, "Supplier Details")
-
-    with tab_price:
-        _render_records_by_module(records_frame, "Price Comparison")
-
-    with tab_index:
-        _render_records_by_module(records_frame, "Index Center")
-
-    with tab_order_details:
-        _render_records_by_module(records_frame, "Order Details")
 
     with tab_export:
         st.markdown("#### Export Answer and Final Answer Records")
