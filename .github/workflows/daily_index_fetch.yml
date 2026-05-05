@@ -2,8 +2,8 @@ name: Daily Market Index Fetch
 
 on:
   schedule:
-    # 02:30 UTC = 10:30 Beijing/Singapore time
-    - cron: "30 2 * * *"
+    # 新时间是 UTC 00:00 (北京时间 08:00)
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 jobs:
