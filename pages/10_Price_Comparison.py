@@ -84,6 +84,19 @@ def _money(value: Any, currency: Any = None, *, detail: bool = False) -> str:
     return f"{prefix}{number:,.{decimals}f}"
 
 
+def _colored_money(value: Any, currency: Any = None, *, detail: bool = False, color: str = "green") -> str:
+    """Return Streamlit-coloured money text for compact expander labels.
+
+    Keep the label text outside the colour markup so captions read consistently:
+    Lowest: :green[$19.12] | Highest: :green[$19.12]
+    """
+    money = _money(value, currency, detail=detail)
+    if money == "-":
+        return money
+    safe_color = color if color in {"green", "blue", "orange", "red", "violet", "gray", "grey", "rainbow"} else "green"
+    return f":{safe_color}[{money}]"
+
+
 def _pct(value: float | None) -> str:
     return f"{value:.1f}%" if value is not None else "-"
 
@@ -1066,9 +1079,12 @@ with view_tab:
                 gap_pct = ((highest - lowest) / highest * 100) if lowest is not None and highest else None
                 need_review_count = sum(1 for r in group if _needs_review(r))
                 item_title = f"{_item_label((p, rfq, opt))} — {_item_spec_for_group(group)}"
+                currency_for_group = group[0].get("currency") if group else "USD"
                 item_caption = (
-                    f"Suppliers: {supplier_count} | Lowest: {_money(lowest, group[0].get('currency'))} | "
-                    f"Highest: {_money(highest, group[0].get('currency'))} | Gap: {_pct(gap_pct) if len(prices) > 1 else '-'} | "
+                    f"Suppliers: {supplier_count} | "
+                    f"Lowest: {_colored_money(lowest, currency_for_group)} | "
+                    f"Highest: {_colored_money(highest, currency_for_group)} | "
+                    f"Gap: {_pct(gap_pct) if len(prices) > 1 else '-'} | "
                     f"Need Review: {need_review_count}"
                 )
                 with st.expander(f"{item_title} — {item_caption}", expanded=False):
