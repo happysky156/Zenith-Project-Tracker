@@ -628,27 +628,94 @@ def _project_unit_total_rows(project_rows: list[dict[str, Any]]) -> list[dict[st
     return out
 
 
+def _excel_safe_value(value: Any) -> Any:
+    """Convert values to Excel-safe primitives before export.
+
+    Streamlit/Supabase rows may contain timezone-aware datetimes, lists, dicts,
+    pandas NA values or other objects. Writing through openpyxl after normalising
+    values prevents export from breaking the Price Comparison page.
+    """
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, (dict, list, tuple, set)):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    return value
+
+
+def _write_sheet(ws: Any, rows: list[dict[str, Any]], fallback_columns: list[str] | None = None) -> None:
+    columns: list[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in columns:
+                columns.append(key)
+    if not columns:
+        columns = fallback_columns or ["Note"]
+    ws.append(columns)
+    if not rows:
+        ws.append(["No records"] + [""] * (len(columns) - 1))
+        return
+    for row in rows:
+        ws.append([_excel_safe_value(row.get(col)) for col in columns])
+
+
 def _export_workbook(filtered_rows: list[dict[str, Any]], all_rows: list[dict[str, Any]], decisions: list[dict[str, Any]]) -> bytes:
+    """Build the Price Comparison Excel export without changing database state.
+
+    Use openpyxl directly instead of pandas.ExcelWriter so the workbook always
+    has at least one visible sheet, even when the current filter returns no rows.
+    """
+    from openpyxl import Workbook
+
     decision_lookup = _decision_map(decisions)
     summary = _project_summary(filtered_rows, decision_lookup)
-    comparison_rows = []
+    comparison_rows: list[dict[str, Any]] = []
     for group in _group_rows(_latest_rows(filtered_rows)).values():
         comparison_rows.extend(_comparison_table_rows(group, decision_lookup))
     risk_rows = _build_completeness_rows(_latest_rows(filtered_rows))
     saving_rows = _build_saving_rows(filtered_rows, decision_lookup)
     history = _history_rows(filtered_rows)
-    raw_df = pd.DataFrame(filtered_rows)
-    decisions_df = pd.DataFrame(decisions)
+
+    wb = Workbook()
+    readme = wb.active
+    readme.title = "Read Me"
+    _write_sheet(readme, [
+        {"Note": "Project Unit Total is the sum of RFQ Item Ref unit prices. It is not order total."},
+        {"Note": "RFQ Item Ref is the Price Comparison grouping reference. Item Option is optional; blank means no option."},
+    ])
+
+    sheets: list[tuple[str, list[dict[str, Any]], list[str]]] = [
+        ("Project Summary", summary, ["Project ID", "Items", "Suppliers", "Comparable Items", "Single Quote Items", "Need Review", "Comparison Status"]),
+        ("Item Supplier Comparison", comparison_rows, ["RFQ Item Ref", "Item Option", "Item Spec", "Supplier Code", "Supplier Name", "Unit Cost", "Currency", "MOQ", "Lead Time", "Quote Date"]),
+        ("Completeness Risk", risk_rows, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Supplier Code", "Supplier Name", "Completeness", "Risk", "Need Review", "Missing / Review Points"]),
+        ("Price Difference Saving", saving_rows, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Suppliers", "Lowest Supplier", "Lowest Price", "Highest Supplier", "Highest Price", "Saving %"]),
+        ("Supplier Quote History", history, ["Project ID", "RFQ Item Ref", "Item Option", "Item Spec", "Supplier Code", "Supplier Name", "Quote Date", "Unit Cost", "Previous Unit Cost", "Change", "Change %"]),
+        ("Selection Decisions", decisions, ["decision_level", "project_id", "rfq_item_ref", "item_option", "supplier_quote_id", "selected_supplier_code", "selection_status", "selection_note", "review_note"]),
+        ("Raw Records", filtered_rows, ["project_id", "rfq_item_ref", "item_option", "item_spec", "supplier_code", "supplier_name", "supplier_unit_cost", "currency", "quote_date"]),
+    ]
+    for title, sheet_rows, fallback_columns in sheets:
+        ws = wb.create_sheet(title=title[:31])
+        _write_sheet(ws, sheet_rows, fallback_columns)
+
+    # Freeze headers and enable filters for easier Excel review.
+    for ws in wb.worksheets:
+        ws.sheet_state = "visible"
+        ws.freeze_panes = "A2"
+        if ws.max_row >= 1 and ws.max_column >= 1:
+            ws.auto_filter.ref = ws.dimensions
+
     output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pd.DataFrame([{"Note": "Project Unit Total is the sum of RFQ Item Ref unit prices. It is not order total."}]).to_excel(writer, "Read Me", index=False)
-        pd.DataFrame(summary).to_excel(writer, "Project Summary", index=False)
-        pd.DataFrame(comparison_rows).to_excel(writer, "Item Supplier Comparison", index=False)
-        pd.DataFrame(risk_rows).to_excel(writer, "Completeness Risk", index=False)
-        pd.DataFrame(saving_rows).to_excel(writer, "Price Difference Saving", index=False)
-        pd.DataFrame(history).to_excel(writer, "Supplier Quote History", index=False)
-        decisions_df.to_excel(writer, "Selection Decisions", index=False)
-        raw_df.to_excel(writer, "Raw Records", index=False)
+    wb.save(output)
+    output.seek(0)
     return output.getvalue()
 
 

@@ -1043,8 +1043,24 @@ def init_extension_db(force: bool = False) -> None:
     try:
         if using_postgres():
             # Serialise extension DDL across concurrent Streamlit sessions.
-            execute(cur, f"SELECT pg_advisory_lock({_EXTENSION_LOCK_KEY})")
-            advisory_locked = True
+            # Use a non-blocking advisory lock so a page does not fail with
+            # statement_timeout if another session is already initialising the
+            # extension schema. If the lock is busy, assume the other session is
+            # doing or has just done the same idempotent setup and let page reads
+            # continue instead of blocking the user.
+            execute(cur, f"SELECT pg_try_advisory_lock({_EXTENSION_LOCK_KEY}) AS locked")
+            lock_row = cur.fetchone()
+            try:
+                advisory_locked = bool(lock_row["locked"])
+            except Exception:
+                advisory_locked = bool(lock_row[0]) if lock_row else False
+            if not advisory_locked:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                _EXT_INIT_DONE = True
+                return
 
         for sql in EXTENSION_TABLE_SQL:
             execute(cur, sql)
