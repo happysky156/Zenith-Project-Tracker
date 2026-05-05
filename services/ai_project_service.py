@@ -2234,16 +2234,35 @@ def _dedupe_final_records(records: list[dict[str, Any]], *, scope: str) -> list[
     chosen: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for row in records:
         module = clean_text(row.get("Source Module"))
-        if module == "Project History":
+        record_type = clean_text(row.get("Record Type"))
+
+        # Extension rows can represent multiple business lines under the same
+        # Project ID / Order No, especially Order Details item lines and Price
+        # Comparison supplier quotes. Do not collapse them into one row; otherwise
+        # the AI answer may incorrectly describe only the first item.
+        if record_type == "Extension" or module in {"Supplier Details", "Price Comparison", "Index Center", "Order Details"}:
             key = (
-                clean_text(row.get("Record Type")),
+                module,
+                clean_text(row.get("Source ID")) or clean_text(row.get("Entity ID")),
+                clean_text(row.get("Project ID")),
+                "|".join([
+                    clean_text(row.get("Order No")),
+                    clean_text(row.get("Supplier Code")),
+                    clean_text(row.get("RFQ Item Ref")),
+                    clean_text(row.get("Item Option")),
+                    clean_text(row.get("Item Spec"))[:80],
+                ]),
+            )
+        elif module == "Project History":
+            key = (
+                record_type,
                 clean_text(row.get("Project ID")),
                 clean_text(row.get("Order No")),
                 clean_text(row.get("Source ID")),
             )
         else:
             key = (
-                clean_text(row.get("Record Type")),
+                record_type,
                 clean_text(row.get("Project ID")),
                 clean_text(row.get("Order No")) or clean_text(row.get("Entity ID")),
                 "",
@@ -2555,6 +2574,40 @@ def _not_found_answer(output_language: str) -> dict[str, Any]:
     }
 
 
+def _polish_management_answer_text(answer: dict[str, Any], *, answer_intent: str = "") -> dict[str, Any]:
+    """Small deterministic wording polish for management answers.
+
+    This does not add business facts. It only standardises headings and makes
+    project-index/order-detail wording safer when the model uses generic phrases.
+    """
+    polished = dict(answer or {})
+    text_keys = ["direct_answer", "evidence_summary", "detailed_answer", "not_found_or_limitations"]
+    for key in text_keys:
+        value = clean_text(polished.get(key))
+        if not value:
+            polished[key] = value
+            continue
+        replacements = [
+            ("Missing or Not Found in Current System Records", "Information Gaps in Current System Records"),
+            ("Missing or not found in current system records", "Information gaps in current system records"),
+            ("Missing/not found", "Information gaps"),
+            ("Missing / not found", "Information gaps"),
+        ]
+        if answer_intent == "project":
+            replacements.extend([
+                ("No Index Center records found for this project", "No project-linked Index Snapshot or Index Center records were found for this project"),
+                ("No Index Center records found", "No project-linked Index Snapshot or Index Center records were found"),
+                ("No Index Center records were found", "No project-linked Index Snapshot or Index Center records were found"),
+                ("No price comparison or index records found", "No Price Comparison records or project-linked Index records were found"),
+                ("No Price Comparison or Index records were found", "No Price Comparison records or project-linked Index records were found"),
+                ("No Price Comparison or Index records found", "No Price Comparison records or project-linked Index records were found"),
+            ])
+        for old, new in replacements:
+            value = value.replace(old, new)
+        polished[key] = value
+    return polished
+
+
 def ask_ai_project_assistant(
     *,
     question: str,
@@ -2712,8 +2765,8 @@ Module source priority:
 - Meeting Mode and Project History for meeting/follow-up evidence.
 - Supplier Details for supplier master data and risk fields.
 - Price Comparison for supplier quotes, RFQ Item Ref, Item Option, Item Spec, price, MOQ, lead time, and selected/comparison status.
-- Order Details for order items, quantities, supplier cost, gross profit, production/inspection/shipment status.
-- Index Center for latest index values, source, fetch status, and confirmed status.
+- Order Details for order items, quantities, supplier cost, gross profit, production/inspection/shipment status. If multiple order item rows share the same order_no, summarize the item count and key financial/status facts; do not imply there is only one item unless the evidence has only one order item row.
+- Index Center for latest index values, source, fetch status, and confirmed status. For project questions, mention Index Center only when there is a project-linked Index Snapshot or project-linked index basis; otherwise say no project-linked Index Snapshot / Index Center record was found.
 
 Review rules:
 - Price Comparison may need review when price, currency, MOQ, lead time, quote date, supplier code, or supplier name is missing; supplier is not matched; or price is zero/negative.
@@ -2723,8 +2776,8 @@ Review rules:
 Answer format and management style:
 - Return JSON only.
 - Answer like a management meeting assistant, not a raw data export.
-- Use this structure unless the user asks for a different format: Direct Answer → Current situation → Confirmed facts → Main risk / impact → Missing or not found in current system records → Suggested next step → Evidence used.
-- Keep the answer concise. Do not dump every field from every evidence row.
+- Use this structure unless the user asks for a different format: Direct Answer → Current situation → Confirmed facts → Main risk / impact → Information gaps in current system records → Suggested next step → Evidence used.
+- Keep the answer concise. Do not dump every field from every evidence row. In the Direct Answer, emphasize the blocked point, main risk/impact, and next step before secondary details.
 - Include a module only if it is strongly related to the user question. If no strongly related records exist for a module, state that briefly and do not expand it.
 - final_source_ids must include only Source ID values that directly support the answer.
 - Do not mention candidate records, internal search counts, checked-record counts, or weak related records.
@@ -2757,10 +2810,10 @@ Required JSON keys exactly:
             "evidence": evidence_payload,
             "required_answer_style": (
                 "Direct answer first. Then give a boss-style management answer using only strongly related system records. "
-                "Structure the answer as: current situation, confirmed facts, main risk/impact, missing/not found, suggested next step, evidence used. "
+                "Structure the answer as: current situation, confirmed facts, main risk/impact, information gaps in current system records, suggested next step, evidence used. "
                 "When useful, connect modules only with project_id, supplier_code, supplier_id, order_no, rfq_item_ref, item_option, and index_name/index_code. Treat deterministic joined records as supporting evidence, not AI-created facts. "
                 "Use the readonly_analysis_context review rules to identify missing information or review points, but do not invent facts or make final decisions. "
-                "If data is not found, state that it was not found in current system records. "
+                "If data is not found, state that it was not found in current system records. For project index data, use 'No project-linked Index Snapshot or Index Center records were found' rather than implying the whole Index Center is empty. For Order Details, handle multiple order item rows safely and summarize item count when applicable. "
                 "Do not list raw records one by one unless the user explicitly asks for raw records. Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
             ),
         },
@@ -2780,6 +2833,7 @@ Required JSON keys exactly:
 
     for key in ["direct_answer", "evidence_summary", "detailed_answer", "not_found_or_limitations"]:
         answer[key] = clean_text(answer.get(key))
+    answer = _polish_management_answer_text(answer, answer_intent=clean_text(metadata.get("answer_intent")))
 
     if records and special_intent == "natural_search":
         final_records = _finalize_records_for_display(question=question, records=records, answer=answer, scope=scope)
@@ -2815,6 +2869,7 @@ Required JSON keys exactly:
         )
         answer.update(safe_answer)
 
+    answer = _polish_management_answer_text(answer, answer_intent=clean_text(metadata.get("answer_intent")))
     answer["not_found_or_limitations"] = limitation_text
     source_summary = _source_summary(final_records, dashboard_rows, metadata)
 
