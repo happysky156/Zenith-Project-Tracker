@@ -139,11 +139,14 @@ SUPPLIER_PRICE_FIELDS = (
     FieldSpec("supplier_quote_id", "Supplier Quote ID", "System-generated supplier quotation ID."),
     FieldSpec("project_id", "Project ID", "Linked Project ID.", True),
     FieldSpec("rfq_item_ref", "RFQ Item Ref", "Temporary RFQ-stage item reference used for quote comparison.", True),
+    FieldSpec("item_option", "Item Option", "Optional RFQ item option/branch under RFQ Item Ref. Blank means no option."),
+    FieldSpec("item_spec", "Item Spec", "Full item specification used for supplier price comparison."),
     FieldSpec("supplier_id", "Supplier ID", "Linked Supplier ID. Auto-created from supplier name/code when possible."),
     FieldSpec("supplier_code", "Supplier Code", "Internal supplier code, optional."),
     FieldSpec("supplier_name", "Supplier Name", "Supplier name.", True),
     FieldSpec("quote_round", "Quote Round", "Supplier quote round."),
     FieldSpec("quote_date", "Quote Date", "Supplier quote date."),
+    FieldSpec("quote_file_ref", "Quotation File / Source Ref", "Quotation file or source reference."),
     FieldSpec("supplier_unit_cost", "Supplier Unit Cost (USD)", "Supplier unit cost stored in USD. RMB/CNY input is converted using fixed rate 1 USD = 6.80 CNY.", numeric=True),
     FieldSpec("currency", "Currency", "Stored calculation currency. RMB/CNY input is converted to USD using fixed rate 1 USD = 6.80 CNY."),
     FieldSpec("moq", "MOQ", "Minimum order quantity."),
@@ -495,7 +498,10 @@ IMPORT_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
     },
     "Supplier Price Comparison": {
-        "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
+        "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Comparison Item Code", "Item Code"),
+        "item_option": ("Item Option", "Option", "RFQ Item Option"),
+        "item_spec": ("Item Spec", "Specification", "Item Specification", "Description"),
+        "quote_file_ref": ("Quotation File / Source Ref", "Supplier Quotation", "Source Ref", "Quotation File", "Quote File"),
     },
     "Client Quotation Lines": {
         "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
@@ -1493,9 +1499,102 @@ def _import_supplier_details_dataframe_bulk(mapped_df: pd.DataFrame, operator: s
     return {"inserted": inserted, "updated": updated, "failed": failed, "errors_count": len(errors)}
 
 
+
+def _find_existing_supplier_quote(cur, record: dict[str, Any]) -> dict[str, Any] | None:
+    """Find an existing quote using the agreed natural key.
+
+    Natural key:
+    Project ID + RFQ Item Ref + Item Option + Supplier Code + Quote Date + Currency
+    + optional Quotation File / Source Ref when present.
+    """
+    project_id = _normalize_text(record.get("project_id"))
+    rfq_item_ref = _normalize_text(record.get("rfq_item_ref"))
+    supplier_code = _normalize_text(record.get("supplier_code"))
+    quote_date = _normalize_text(record.get("quote_date"))
+    currency = _normalize_text(record.get("currency"))
+    if not (project_id and rfq_item_ref and supplier_code and quote_date and currency):
+        return None
+    item_option = _normalize_text(record.get("item_option")) or ""
+    quote_file_ref = _normalize_text(record.get("quote_file_ref"))
+    clauses = [
+        "project_id = ?",
+        "rfq_item_ref = ?",
+        "COALESCE(item_option, '') = ?",
+        "supplier_code = ?",
+        "quote_date = ?",
+        "currency = ?",
+    ]
+    params: list[Any] = [project_id, rfq_item_ref, item_option, supplier_code, quote_date, currency]
+    if quote_file_ref:
+        clauses.append("COALESCE(quote_file_ref, '') = ?")
+        params.append(quote_file_ref)
+    execute(cur, "SELECT * FROM supplier_price_comparisons WHERE " + " AND ".join(clauses) + " LIMIT 1", tuple(params))
+    return _fetchone_dict(cur)
+
+
+def _import_supplier_price_dataframe_bulk(mapped_df: pd.DataFrame, operator: str | None = None, source_file: str | None = None) -> dict[str, int]:
+    """Safe Supplier Price Comparison import.
+
+    Existing rows are updated by natural key; newer quote dates create quote
+    history; blank cells do not overwrite existing values.
+    """
+    ensure_ready()
+    inserted = 0
+    updated = 0
+    failed = 0
+    errors: list[str] = []
+    spec = MODULES["Supplier Price Comparison"]
+    all_fields = [f.name for f in spec.fields]
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        for _, row in mapped_df.iterrows():
+            try:
+                raw = {field: row.get(field) for field in all_fields}
+                record = _prepare_record("Supplier Price Comparison", raw, operator=operator)
+                existing = _find_existing_supplier_quote(cur, record)
+                if existing and existing.get("supplier_quote_id"):
+                    record["supplier_quote_id"] = existing.get("supplier_quote_id")
+                # Do not clear existing values: keep only non-empty fields.
+                record = {k: v for k, v in record.items() if v is not None}
+                action = _insert_or_update(spec.table, spec.id_field, spec.key_fields, record)
+                if action == "inserted":
+                    inserted += 1
+                elif action == "updated":
+                    updated += 1
+            except Exception as exc:
+                failed += 1
+                errors.append(f"Row {int(row.get('_source_row_number') or 0)}: {exc}")
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+    _clear_cache()
+    write_import_batch(
+        {
+            "batch_id": new_batch_id(),
+            "source_file": source_file or "extension_import.xlsx",
+            "import_time": now_iso(),
+            "imported_by": operator,
+            "import_type": "Supplier Price Comparison",
+            "new_count": inserted,
+            "update_count": updated,
+            "failed_count": failed,
+            "notes": "; ".join(errors[:5]) if errors else "supplier price comparison safe import",
+        }
+    )
+    return {"inserted": inserted, "updated": updated, "failed": failed, "errors_count": len(errors)}
+
 def import_module_dataframe(mapped_df: pd.DataFrame, module_name: str, operator: str | None = None, source_file: str | None = None) -> dict[str, int]:
     if module_name == "Supplier Details":
         return _import_supplier_details_dataframe_bulk(mapped_df, operator=operator, source_file=source_file)
+    if module_name == "Supplier Price Comparison":
+        return _import_supplier_price_dataframe_bulk(mapped_df, operator=operator, source_file=source_file)
 
     inserted = 0
     updated = 0
