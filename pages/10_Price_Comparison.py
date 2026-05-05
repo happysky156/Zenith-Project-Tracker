@@ -254,7 +254,15 @@ def _table(data: list[dict[str, Any]], *, key: str, height: int | None = None) -
     df = pd.DataFrame(data)
     for col in df.columns:
         df[col] = df[col].map(lambda v: "-" if v is None else str(v))
-    st.dataframe(df, hide_index=True, width="stretch", key=key, height=height)
+
+    # Streamlit 1.57 does not accept height=None.
+    # Only pass height when a real positive integer / supported string is provided.
+    kwargs = {"hide_index": True, "width": "stretch", "key": key}
+    if isinstance(height, int) and height > 0:
+        kwargs["height"] = height
+    elif isinstance(height, str) and height in {"auto", "content", "stretch"}:
+        kwargs["height"] = height
+    st.dataframe(df, **kwargs)
 
 
 # -----------------------------------------------------------------------------
