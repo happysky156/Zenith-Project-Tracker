@@ -68,6 +68,7 @@ EVIDENCE_COLUMNS = [
     "Last Event",
     "Reference Link",
     "Supplier Code",
+    "Supplier ID",
     "Supplier Name",
     "RFQ Item Ref",
     "Item Option",
@@ -496,6 +497,7 @@ def _normalise_extension_row(module_name: str, row: dict[str, Any], index: int) 
             "Next Step": "",
             "Reference Link": clean_text(row.get("website_primary")),
             "Supplier Code": clean_text(row.get("supplier_code")),
+            "Supplier ID": clean_text(row.get("supplier_id") or source_id),
             "Supplier Name": clean_text(row.get("supplier_name")),
             "Extension Summary": summary,
             "Extension Details": details,
@@ -551,6 +553,7 @@ def _normalise_extension_row(module_name: str, row: dict[str, Any], index: int) 
             "Next Step": clean_text(row.get("price_adjustment_note")),
             "Reference Link": clean_text(row.get("quote_file_ref")),
             "Supplier Code": clean_text(row.get("supplier_code")),
+            "Supplier ID": clean_text(row.get("supplier_id")),
             "Supplier Name": clean_text(row.get("supplier_name")),
             "RFQ Item Ref": clean_text(row.get("rfq_item_ref")),
             "Item Option": clean_text(row.get("item_option")),
@@ -684,6 +687,7 @@ def _normalise_extension_row(module_name: str, row: dict[str, Any], index: int) 
             "Target Date": clean_text(row.get("target_delivery_date")),
             "Reference Link": "",
             "Supplier Code": clean_text(row.get("supplier_code")),
+            "Supplier ID": clean_text(row.get("supplier_id")),
             "Supplier Name": clean_text(row.get("supplier_name")),
             "Order Qty": clean_text(row.get("order_qty")),
             "Currency": clean_text(row.get("currency")),
@@ -784,6 +788,7 @@ def _combined_text(record: dict[str, Any]) -> str:
         "Reference Link",
         "Meeting Reference Links",
         "Supplier Code",
+        "Supplier ID",
         "Supplier Name",
         "RFQ Item Ref",
         "Item Option",
@@ -1387,6 +1392,191 @@ def _build_order_association_answer(intent: str, *, output_language: str, record
         "not_found_or_limitations": "",
     }
 
+
+def _is_broad_integrated_question(query: str) -> bool:
+    """Return True when the user is asking for a broad cross-module overview."""
+    return _has_any(
+        query,
+        [
+            "all information",
+            "all info",
+            "everything about",
+            "current situation",
+            "current status",
+            "overall status",
+            "overview",
+            "full picture",
+            "integrated summary",
+            "show all",
+            "所有信息",
+            "全部信息",
+            "完整信息",
+            "整体情况",
+            "当前情况",
+            "综合信息",
+            "整合",
+            "总览",
+        ],
+    )
+
+
+def _split_join_list(value: Any) -> list[str]:
+    text = clean_text(value)
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"[,;，；|]+", text) if part.strip()]
+
+
+def _record_source_identity(record: dict[str, Any]) -> str:
+    return clean_text(record.get("Source ID")) or "|".join(
+        clean_text(record.get(field))
+        for field in ["Source Module", "Record Type", "Project ID", "Order No", "Entity ID", "Supplier Code", "RFQ Item Ref", "Item Option"]
+    )
+
+
+def _extract_join_values(records: list[dict[str, Any]]) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = {
+        "project_id": set(),
+        "supplier_code": set(),
+        "supplier_id": set(),
+        "order_no": set(),
+        "rfq_item_ref": set(),
+        "item_option": set(),
+        "index_name": set(),
+    }
+    for row in records:
+        for field, key in [
+            ("Project ID", "project_id"),
+            ("Supplier Code", "supplier_code"),
+            ("Supplier ID", "supplier_id"),
+            ("Order No", "order_no"),
+            ("RFQ Item Ref", "rfq_item_ref"),
+            ("Item Option", "item_option"),
+            ("Index Name", "index_name"),
+        ]:
+            value = clean_text(row.get(field))
+            if value:
+                values[key].add(value)
+        if clean_text(row.get("Source Module")) == "Supplier Details":
+            supplier_entity = clean_text(row.get("Entity ID"))
+            if supplier_entity:
+                values["supplier_id"].add(supplier_entity)
+        for order_no in _split_join_list(row.get("Linked Orders")):
+            values["order_no"].add(order_no)
+    return values
+
+
+def _record_join_match_reason(record: dict[str, Any], join_values: dict[str, set[str]]) -> str:
+    """Return a deterministic read-only join reason, or empty string if not linked."""
+    module = clean_text(record.get("Source Module"))
+    project_id = clean_text(record.get("Project ID"))
+    supplier_code = clean_text(record.get("Supplier Code"))
+    supplier_id = clean_text(record.get("Supplier ID"))
+    order_no = clean_text(record.get("Order No"))
+    index_name = clean_text(record.get("Index Name"))
+
+    # Project ID is the first-level commercial join key. It can connect core and extension records.
+    if project_id and project_id in join_values.get("project_id", set()):
+        return f"Deterministic cross-module join: Project ID = {project_id}"
+
+    # Supplier joins are especially important for project questions: Order Details / Price Comparison
+    # may reveal a supplier_code that must be joined back to Supplier Details.
+    if supplier_code and supplier_code in join_values.get("supplier_code", set()):
+        return f"Deterministic cross-module join: Supplier Code = {supplier_code}"
+    if supplier_id and supplier_id in join_values.get("supplier_id", set()):
+        return f"Deterministic cross-module join: Supplier ID = {supplier_id}"
+    if module == "Supplier Details" and clean_text(record.get("Entity ID")) in join_values.get("supplier_id", set()):
+        return f"Deterministic cross-module join: Supplier ID = {clean_text(record.get('Entity ID'))}"
+
+    if order_no and order_no in join_values.get("order_no", set()):
+        return f"Deterministic cross-module join: Order No = {order_no}"
+    if order_no:
+        for linked_order in join_values.get("order_no", set()):
+            if linked_order and linked_order in _split_join_list(record.get("Linked Orders")):
+                return f"Deterministic cross-module join: Linked Order No = {linked_order}"
+
+    # Only use index-name expansion for index-specific records, not for unrelated project questions.
+    if module == "Index Center" and index_name and index_name in join_values.get("index_name", set()):
+        return f"Deterministic cross-module join: Index Name = {index_name}"
+
+    return ""
+
+
+def _expand_records_by_join_keys(
+    *,
+    question: str,
+    seed_records: list[dict[str, Any]],
+    available_records: list[dict[str, Any]],
+    scope: str,
+    max_total: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Add deterministic read-only cross-module records using approved join keys.
+
+    This function never writes data and never invents records. It only adds records already
+    loaded from the current system when they are connected by project_id, supplier_code,
+    supplier_id, order_no, rfq_item_ref/item_option, or index_name/index_code.
+    """
+    if not seed_records or scope not in {"All", "Project Details"}:
+        return seed_records, {"join_expanded_records": 0, "join_keys_used": []}
+
+    expanded: list[dict[str, Any]] = [dict(row) for row in seed_records]
+    seen = {_record_source_identity(row) for row in expanded}
+    keys_used: set[str] = set()
+
+    # Broad project questions should include a wider evidence bundle; narrower queries still get
+    # direct supplier/order/project support records so statements such as supplier master data are grounded.
+    broad = _is_broad_integrated_question(question)
+    passes = 3 if broad else 2
+
+    for _ in range(passes):
+        join_values = _extract_join_values(expanded)
+        added_this_pass = 0
+        for record in available_records:
+            if len(expanded) >= max_total:
+                break
+            identity = _record_source_identity(record)
+            if not identity or identity in seen:
+                continue
+            reason = _record_join_match_reason(record, join_values)
+            if not reason:
+                continue
+            row = dict(record)
+            existing_reason = clean_text(row.get("Match Reason"))
+            row["Match Reason"] = f"{existing_reason}; {reason}" if existing_reason else reason
+            expanded.append(row)
+            seen.add(identity)
+            added_this_pass += 1
+            if "Project ID" in reason:
+                keys_used.add("project_id")
+            elif "Supplier Code" in reason:
+                keys_used.add("supplier_code")
+            elif "Supplier ID" in reason:
+                keys_used.add("supplier_id")
+            elif "Order No" in reason:
+                keys_used.add("order_no")
+            elif "Index Name" in reason:
+                keys_used.add("index_name")
+        if added_this_pass == 0:
+            break
+
+    # Keep module priority stable while retaining joined evidence.
+    priority = {module: idx for idx, module in enumerate(AI_MODULE_SOURCE_PRIORITY)}
+    expanded.sort(
+        key=lambda row: (
+            priority.get(clean_text(row.get("Source Module")), 99),
+            clean_text(row.get("Project ID")),
+            clean_text(row.get("Order No")),
+            clean_text(row.get("Supplier Code")),
+            clean_text(row.get("RFQ Item Ref")),
+            clean_text(row.get("Source ID")),
+        )
+    )
+    return expanded, {
+        "join_expanded_records": max(0, len(expanded) - len(seed_records)),
+        "join_keys_used": sorted(keys_used),
+        "join_expansion_mode": "broad_integrated_overview" if broad else "direct_related_records",
+    }
+
 def _search_records(query: str, *, scope: str, record_type: str, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     query = clean_text(query)
     tokens = _tokenize(query)
@@ -1413,15 +1603,24 @@ def _search_records(query: str, *, scope: str, record_type: str, limit: int) -> 
     )
 
     matched = [item[1] for item in scored[:limit]]
+    expanded, expansion_metadata = _expand_records_by_join_keys(
+        question=query,
+        seed_records=matched,
+        available_records=loaded_records,
+        scope=scope,
+        max_total=min(max(limit * 4, limit + 20), 100),
+    )
     metadata = {
-        "query_mode": "Natural Language Search",
+        "query_mode": "Natural Language Search + Deterministic Cross-Module Join",
         "total_searchable_records": len(loaded_records),
         "total_records_after_deterministic_filters": len(records),
         "total_matched_records": len(scored),
-        "returned_records": len(matched),
+        "returned_records": len(expanded),
+        "initial_matched_records": len(matched),
         "tokens": tokens,
     }
-    return matched, metadata
+    metadata.update(expansion_metadata)
+    return expanded, metadata
 
 
 def _looks_like_dashboard_question(query: str, scope: str) -> bool:
@@ -1587,6 +1786,7 @@ def _prepare_ai_evidence(records: list[dict[str, Any]], dashboard_rows: list[dic
                 "last_event": row.get("Last Event"),
                 "reference_link": row.get("Reference Link"),
                 "supplier_code": row.get("Supplier Code"),
+                "supplier_id": row.get("Supplier ID"),
                 "supplier_name": row.get("Supplier Name"),
                 "rfq_item_ref": row.get("RFQ Item Ref"),
                 "item_option": row.get("Item Option"),
@@ -1760,9 +1960,21 @@ def _finalize_records_for_display(
     if not records:
         return records
 
+    if _is_broad_integrated_question(question):
+        return _dedupe_final_records(records, scope=scope)
+
     selected_ids = _source_ids_mentioned_in_answer(answer, records)
     if selected_ids:
         selected = [row for row in records if clean_text(row.get("Source ID")) in selected_ids]
+        # Keep deterministic support records in the final evidence if they were added by approved join keys.
+        # This prevents a project answer from saying a supplier exists while the Supplier Details tab shows no row.
+        support = [
+            row for row in records
+            if "Deterministic cross-module join" in clean_text(row.get("Match Reason"))
+            and clean_text(row.get("Source ID")) not in selected_ids
+        ]
+        if support:
+            selected.extend(support)
     else:
         selected = _apply_final_condition_filters(question, records)
 
@@ -2162,7 +2374,7 @@ def ask_ai_project_assistant(
             "has_scope_limitations": has_scope_limitations,
         }
 
-    evidence_payload = _prepare_ai_evidence(records, dashboard_rows, max_rows=result_limit)
+    evidence_payload = _prepare_ai_evidence(records, dashboard_rows, max_rows=min(max(len(records), result_limit), 100))
 
     system_prompt = """
 You are the AI Project Assistant for Zenith Project Tracker System.
@@ -2174,6 +2386,7 @@ Definition:
 
 Hard data rules:
 - Use only dashboard_metrics, system_records, and readonly_analysis_context from the user payload.
+- Some system_records may be included by deterministic cross-module joins. Treat them as valid evidence only when their Match Reason or join keys support the answer.
 - If a module, field, supplier, quote, order, index, or project is not found in the evidence, say it was not found in current system records.
 - Do not turn "not found in system records" into "does not exist in real life".
 - Distinguish facts from record-based review notes. Use wording such as "System records show" and "This may need review because".
@@ -2236,7 +2449,7 @@ Required JSON keys exactly:
             "evidence": evidence_payload,
             "required_answer_style": (
                 "Direct answer first. Then give a concise module-based answer using only provided system records. "
-                "When useful, connect modules only with project_id, supplier_code, supplier_id, order_no, rfq_item_ref, item_option, and index_name/index_code. "
+                "When useful, connect modules only with project_id, supplier_code, supplier_id, order_no, rfq_item_ref, item_option, and index_name/index_code. Treat deterministic joined records as supporting evidence, not AI-created facts. "
                 "Use the readonly_analysis_context review rules to identify missing information or review points, but do not invent facts or make final decisions. "
                 "If data is not found, state that it was not found in current system records. "
                 "Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
