@@ -50,6 +50,30 @@ def _status_label(value: Any) -> str:
     return str(value or "-").strip() or "-"
 
 
+def _truthy_display(value: Any) -> bool:
+    return str(value or "0").strip().lower() in {"1", "true", "yes", "y", "active"}
+
+
+def _format_rule_label(rule: dict[str, Any]) -> str:
+    status = "Active" if _truthy_display(rule.get("active")) else "Inactive"
+    index_name = rule.get("index_name") or rule.get("index_code") or "-"
+    return f"{index_name} [{rule.get('index_code') or '-'}] | {rule.get('alert_type') or '-'} | {status}"
+
+
+def _event_status(value: Any) -> str:
+    return str(value or "New").strip() or "New"
+
+
+def _normalise_event_rows_for_display(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    for col in ["reference_value", "latest_value", "change_value", "change_percent"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
 def _build_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
@@ -350,27 +374,113 @@ with tab_overview:
 
 with tab_alerts:
     st.markdown("### Alert Rules and Alert Events")
-    st.caption("Rules are user-maintained thresholds. Events are generated system records for traceable review. Daily Change is already visible in Daily Market Indices; Fixed Baseline and Snapshot Deviation are designed for quotation risk control.")
+    st.caption(
+        "Rules are user-maintained thresholds. Events are traceable system records. "
+        "Open / New events need action; Reviewed and Closed events are kept as history and are hidden by default."
+    )
 
     left, right = st.columns([1, 1.45])
     with left:
         st.markdown("#### Index Alert Rules")
+        st.caption("Select an existing rule to edit it, or choose an index and alert type to create/update a rule.")
         if not configs:
             st.info("No index config records available for rule setup.")
         else:
             cfg_labels = [f"{cfg.get('display_name') or cfg.get('index_name')} [{cfg.get('index_code')}]" for cfg in configs]
             cfg_lookup = dict(zip(cfg_labels, configs))
-            with st.form("index_alert_rule_form"):
-                selected_cfg_label = st.selectbox("Index", cfg_labels)
+            cfg_code_to_label = {str(cfg.get("index_code") or ""): label for label, cfg in cfg_lookup.items()}
+
+            existing_rule_labels = ["Create / update by Index + Alert Type"]
+            existing_rule_lookup: dict[str, dict[str, Any] | None] = {existing_rule_labels[0]: None}
+            for rule in alert_rules:
+                label = _format_rule_label(rule)
+                existing_rule_labels.append(label)
+                existing_rule_lookup[label] = rule
+
+            selected_rule_label = st.selectbox(
+                "Existing Rule to Edit",
+                existing_rule_labels,
+                help="Reviewed/Closed alert events are history. To stop future alerts, edit the rule here and save it as inactive or change the baseline/threshold.",
+                key="idx_existing_rule_to_edit",
+            )
+            edit_rule = existing_rule_lookup.get(selected_rule_label)
+
+            default_cfg_label = cfg_labels[0]
+            default_rule_type = "Fixed Baseline"
+            default_direction = "Both"
+            default_medium = 0.5 if str(cfg_lookup[default_cfg_label].get('index_category')).lower() == 'fx' else 3.0
+            default_high = 1.0 if str(cfg_lookup[default_cfg_label].get('index_category')).lower() == 'fx' else 5.0
+            default_baseline = 0.0
+            default_active = False
+            default_remarks = ""
+            edit_suffix = "new"
+
+            if edit_rule:
+                default_cfg_label = cfg_code_to_label.get(str(edit_rule.get("index_code") or ""), default_cfg_label)
+                default_rule_type = str(edit_rule.get("alert_type") or default_rule_type)
+                default_direction = str(edit_rule.get("direction") or default_direction)
+                default_medium = _to_number(edit_rule.get("medium_threshold_percent")) or default_medium
+                default_high = _to_number(edit_rule.get("high_threshold_percent")) or default_high
+                default_baseline = _to_number(edit_rule.get("baseline_value")) or 0.0
+                default_active = _truthy_display(edit_rule.get("active"))
+                default_remarks = str(edit_rule.get("remarks") or "")
+                edit_suffix = str(edit_rule.get("alert_rule_id") or edit_rule.get("index_code") or "edit")
+
+            with st.form(f"index_alert_rule_form_{edit_suffix}"):
+                selected_cfg_label = st.selectbox(
+                    "Index",
+                    cfg_labels,
+                    index=cfg_labels.index(default_cfg_label) if default_cfg_label in cfg_labels else 0,
+                    key=f"idx_rule_cfg_{edit_suffix}",
+                )
                 selected_cfg = cfg_lookup[selected_cfg_label]
-                rule_type = st.selectbox("Alert Type", ["Fixed Baseline", "Snapshot Deviation"], help="Daily Change is already shown in Daily Market Indices. Fixed Baseline compares latest value with a manual baseline. Snapshot Deviation compares latest value with locked quotation snapshot.")
-                direction = st.selectbox("Direction", ["Both", "Up", "Down"])
+                rule_type_options = ["Fixed Baseline", "Snapshot Deviation"]
+                rule_type = st.selectbox(
+                    "Alert Type",
+                    rule_type_options,
+                    index=rule_type_options.index(default_rule_type) if default_rule_type in rule_type_options else 0,
+                    help="Daily Change is already shown in Daily Market Indices. Fixed Baseline compares latest value with a manual baseline. Snapshot Deviation compares latest value with locked quotation snapshot.",
+                    key=f"idx_rule_type_{edit_suffix}",
+                )
+                direction_options = ["Both", "Up", "Down"]
+                direction = st.selectbox(
+                    "Direction",
+                    direction_options,
+                    index=direction_options.index(default_direction) if default_direction in direction_options else 0,
+                    key=f"idx_rule_direction_{edit_suffix}",
+                )
                 r1, r2 = st.columns(2)
-                medium_threshold = r1.number_input("Medium Threshold %", min_value=0.0, value=0.5 if str(selected_cfg.get('index_category')).lower() == 'fx' else 3.0, step=0.1, format="%.3f")
-                high_threshold = r2.number_input("High Threshold %", min_value=0.0, value=1.0 if str(selected_cfg.get('index_category')).lower() == 'fx' else 5.0, step=0.1, format="%.3f")
-                baseline_value = st.number_input("Baseline Value (Fixed Baseline only)", min_value=0.0, value=0.0, step=0.0001, format="%.6f")
-                active = st.checkbox("Active", value=(rule_type == "Snapshot Deviation"))
-                remarks = st.text_area("Remarks", height=80)
+                medium_threshold = r1.number_input(
+                    "Medium Threshold %",
+                    min_value=0.0,
+                    value=float(default_medium),
+                    step=0.1,
+                    format="%.3f",
+                    key=f"idx_rule_medium_{edit_suffix}",
+                )
+                high_threshold = r2.number_input(
+                    "High Threshold %",
+                    min_value=0.0,
+                    value=float(default_high),
+                    step=0.1,
+                    format="%.3f",
+                    key=f"idx_rule_high_{edit_suffix}",
+                )
+                baseline_value = st.number_input(
+                    "Baseline Value (Fixed Baseline only)",
+                    min_value=0.0,
+                    value=float(default_baseline),
+                    step=0.0001,
+                    format="%.6f",
+                    key=f"idx_rule_baseline_{edit_suffix}",
+                )
+                active = st.checkbox(
+                    "Active",
+                    value=bool(default_active),
+                    help="Turn this off to stop future alerts from this rule. Existing alert events are kept as review history.",
+                    key=f"idx_rule_active_{edit_suffix}",
+                )
+                remarks = st.text_area("Remarks", value=default_remarks, height=80, key=f"idx_rule_remarks_{edit_suffix}")
                 submitted = st.form_submit_button("Save Alert Rule", type="primary")
                 if submitted:
                     try:
@@ -389,14 +499,15 @@ with tab_alerts:
                             },
                             operator=operator,
                         )
-                        st.success("Alert rule saved.")
+                        st.success("Alert rule saved. Click Refresh Index Alerts Now to evaluate current values with the updated rule.")
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Save alert rule failed: {type(exc).__name__}: {exc}")
 
+        st.markdown("#### Existing Rules")
         if alert_rules:
             rule_df = pd.DataFrame(alert_rules)
-            rule_cols = ["index_category", "index_code", "index_name", "alert_type", "direction", "medium_threshold_percent", "high_threshold_percent", "baseline_value", "active", "remarks"]
+            rule_cols = ["index_category", "index_code", "index_name", "alert_type", "direction", "medium_threshold_percent", "high_threshold_percent", "baseline_value", "active", "updated_at", "updated_by", "remarks"]
             rule_cols = [c for c in rule_cols if c in rule_df.columns]
             st.dataframe(rule_df[rule_cols], width="stretch", hide_index=True, column_config={
                 "medium_threshold_percent": st.column_config.NumberColumn("medium_threshold_percent", format="%.3f"),
@@ -408,6 +519,7 @@ with tab_alerts:
 
     with right:
         st.markdown("#### Index Alert Events")
+        st.caption("Default view shows Open / New alerts only. Reviewed and Closed alerts are kept for traceability under History / All.")
         c_eval, c_status = st.columns([1, 1])
         if c_eval.button("Refresh Index Alerts Now", type="primary"):
             try:
@@ -416,32 +528,47 @@ with tab_alerts:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Alert evaluation failed: {type(exc).__name__}: {exc}")
-        event_status_filter = c_status.selectbox("Status", ["All", "New", "Reviewed", "Closed"])
-        event_rows = alert_events
-        if event_status_filter != "All":
-            event_rows = [r for r in event_rows if str(r.get("alert_status") or "New") == event_status_filter]
-        if not event_rows:
-            st.info("No alert events found for this filter.")
+        event_status_filter = c_status.selectbox(
+            "Status View",
+            ["Open / New", "Reviewed", "Closed", "History / All"],
+            index=0,
+            help="Use Open / New for current items that need action. History / All includes reviewed and closed records.",
+        )
+        if event_status_filter == "Open / New":
+            event_rows = [r for r in alert_events if _event_status(r.get("alert_status")).lower() == "new"]
+        elif event_status_filter == "History / All":
+            event_rows = alert_events
         else:
-            event_df = pd.DataFrame(event_rows)
-            event_cols = ["alert_date", "alert_type", "index_code", "index_name", "alert_level", "direction", "reference_value", "latest_value", "change_percent", "related_project_id", "related_client_quote_id", "related_quote_version", "alert_status", "review_note", "source_note"]
+            event_rows = [r for r in alert_events if _event_status(r.get("alert_status")) == event_status_filter]
+
+        if not event_rows:
+            if event_status_filter == "Open / New":
+                st.success("No open index alerts. Reviewed and closed alerts are hidden in this default view.")
+            else:
+                st.info("No alert events found for this filter.")
+        else:
+            event_df = _normalise_event_rows_for_display(event_rows)
+            event_cols = ["alert_date", "alert_type", "index_code", "index_name", "alert_level", "direction", "reference_value", "latest_value", "change_percent", "related_project_id", "related_client_quote_id", "related_quote_version", "alert_status", "review_note", "reviewed_by", "reviewed_at", "source_note"]
             event_cols = [c for c in event_cols if c in event_df.columns]
             st.dataframe(event_df[event_cols], width="stretch", hide_index=True, column_config={
                 "reference_value": st.column_config.NumberColumn("reference_value", format="%.6f"),
                 "latest_value": st.column_config.NumberColumn("latest_value", format="%.6f"),
                 "change_percent": st.column_config.NumberColumn("change_percent", format="%.4f"),
             })
-            with st.expander("Mark Alert Reviewed / Closed", expanded=False):
-                labels = [f"{r.get('alert_event_id')} | {r.get('alert_type')} | {r.get('index_code')} | {r.get('alert_level')} | {r.get('related_project_id') or '-'}" for r in event_rows if r.get("alert_event_id")]
-                event_lookup = dict(zip(labels, [r for r in event_rows if r.get("alert_event_id")]))
-                if labels:
+            with st.expander("Mark Alert Reviewed / Closed", expanded=(event_status_filter == "Open / New" and bool(event_rows))):
+                action_rows = [r for r in event_rows if r.get("alert_event_id")]
+                if not action_rows:
+                    st.info("No selectable alert event in this view.")
+                else:
+                    labels = [f"{r.get('alert_event_id')} | {r.get('alert_type')} | {r.get('index_code')} | {r.get('alert_level')} | {r.get('related_project_id') or '-'} | {r.get('alert_status') or 'New'}" for r in action_rows]
+                    event_lookup = dict(zip(labels, action_rows))
                     selected_event = st.selectbox("Alert Event", labels)
                     new_status = st.selectbox("New Status", ["Reviewed", "Closed", "New"])
                     review_note = st.text_area("Review Note", height=80)
                     if st.button("Save Alert Review Status"):
                         try:
                             update_index_alert_event_status(event_lookup[selected_event]["alert_event_id"], new_status, review_note, operator)
-                            st.success("Alert status updated.")
+                            st.success("Alert status updated. Open alerts hide reviewed/closed events by default.")
                             st.rerun()
                         except Exception as exc:
                             st.error(f"Alert status update failed: {type(exc).__name__}: {exc}")
