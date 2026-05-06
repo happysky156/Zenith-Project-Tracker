@@ -296,7 +296,7 @@ def render_board_cards(
                 unsafe_allow_html=True,
             )
             nav_col, helper_col = st.columns([1, 4])
-            if nav_col.button("Open Detail", key=f"open_detail_{entity_type}_{entity_id}", type="primary"):
+            if nav_col.button("Open Detail", key=f"open_detail_{entity_type}_{entity_id}", type="secondary"):
                 open_detail_page(entity_type, entity_id)
             helper_col.caption("Open Project / Order Detail for full history, richer editing and lower-frequency actions.")
 

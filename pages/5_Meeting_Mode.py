@@ -45,6 +45,35 @@ def _plain(value: object, empty: str = "") -> str:
     return text
 
 
+
+
+def _flag_true(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _meeting_action_matches_current_state(row: dict, action_name: str) -> bool:
+    """Return True only when a Meeting Action represents current saved state."""
+    last_event = _plain(row.get("last_event"))
+    followup_status = _plain(row.get("followup_status")).lower()
+    health = _plain(row.get("health_status"))
+    request_type = _plain(row.get("request_type"))
+
+    if action_name == "Mark Follow-up Done":
+        return followup_status == "done"
+    if action_name == "High-Risk Follow-up":
+        return followup_status == "blocked" or health in {"Need Decision", "Blocked"} or request_type in {"Decision", "Approval"}
+    if action_name == "Review Next Meeting":
+        return last_event == action_name
+    if action_name == "Remove from Meeting":
+        return last_event == action_name
+    return last_event == action_name
+
 def _parse_date(value: str | None):
     if not value:
         return None
@@ -752,44 +781,6 @@ ACTION_HELP = {
 }
 
 
-
-def _flag_true(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, (int, float)):
-        return value != 0
-    text = str(value).strip().lower()
-    return text in {"1", "true", "yes", "y", "on"}
-
-
-def _meeting_action_matches_current_state(row: dict, action_name: str) -> bool:
-    """Highlight only the action that reflects the current stored meeting state.
-
-    Meeting action buttons are normal buttons by default. The red primary style is
-    reserved for an already-recorded state, not for high-impact/important actions.
-    """
-    last_event = str(row.get("last_event") or "").strip()
-    followup_status = str(row.get("followup_status") or "").strip()
-    health = str(row.get("health_status") or "").strip()
-    request_type = str(row.get("request_type") or "").strip()
-
-    if last_event == action_name:
-        return True
-
-    if action_name == "Mark Follow-up Done":
-        return followup_status == "Done"
-
-    if action_name == "High-Risk Follow-up":
-        return followup_status == "Blocked" or health in {"Need Decision", "Blocked"} or request_type == "Decision"
-
-    if action_name == "Discussed / Follow up":
-        return _flag_true(row.get("discussed_this_week")) and followup_status in {"Open", "In Progress"}
-
-    return False
-
-
 current_user = require_login()
 acting_user = current_user["display_name"]
 apply_theme()
@@ -1117,7 +1108,7 @@ for row in [selected_row]:
 
         st.markdown(
             "<div class='zt-action-header'><div class='zt-action-header-title'>Meeting Actions</div>"
-            "<div class='zt-action-header-note'>Select the meeting result for this item. High-impact actions will update status and history.</div></div>",
+            "<div class='zt-action-header-note'>Red buttons show the current recorded meeting status only. White buttons are available actions.</div></div>",
             unsafe_allow_html=True,
         )
 
@@ -1138,12 +1129,12 @@ for row in [selected_row]:
             cols = st.columns(len(action_names))
             for col, action_name in zip(cols, action_names):
                 with col:
-                    is_current_action_state = _meeting_action_matches_current_state(row, action_name)
+                    is_current_status = _meeting_action_matches_current_state(row, action_name)
                     if st.button(
                         action_name,
                         key=f"meeting_{row['entity_type']}_{entity_id}_{action_name}",
                         use_container_width=True,
-                        type="primary" if is_current_action_state else "secondary",
+                        type="primary" if is_current_status else "secondary",
                         help=ACTION_HELP.get(action_name),
                     ):
                         try:

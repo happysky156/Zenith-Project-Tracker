@@ -124,7 +124,7 @@ if show_table:
 _section_head(
     "Project cards",
     "Sales project cards",
-    "Red buttons are primary/high-impact shortcuts, not always negative. Use the grouped button rows to separate normal progress, waiting/risk and result/meeting actions.",
+    "Red buttons show the current recorded status only. White buttons are available actions.",
 )
 render_board_cards(
     rows,

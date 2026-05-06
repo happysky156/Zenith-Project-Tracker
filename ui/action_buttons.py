@@ -28,16 +28,6 @@ ACTION_LABELS = {
     "Mark Blocked": "Mark Blocked",
 }
 
-PRIMARY_ACTIONS = {
-    "Quote Sent",
-    "Sample Sent",
-    "Need Decision",
-    "Close Won",
-    "Prepayment Received",
-    "Production Started",
-    "Shipment Paid",
-}
-
 ACTION_GROUPS = {
     "Sales": [
         (
@@ -92,11 +82,14 @@ def _flag_true(value: object) -> bool:
 
 
 def _action_matches_current_state(entity_type: str, row: dict | None, action_name: str) -> bool:
-    """Return True only when the shortcut represents the current stored state.
+    """Return True only when this shortcut represents the current stored state.
 
-    Buttons remain normal secondary actions by default. Primary/red is reserved
-    for the shortcut that matches the record's current phase/health/result or
-    the latest saved action where the business field is not unique.
+    Management rule:
+    - White button = available action.
+    - Red button = current recorded state only.
+    - Red is not used to mark a shortcut as generally important.
+    - For closed Sales results, only the relevant Close Won / Close Lost button
+      is highlighted; progress and risk shortcuts stay neutral.
     """
     if not row:
         return False
@@ -104,24 +97,27 @@ def _action_matches_current_state(entity_type: str, row: dict | None, action_nam
     phase = _clean_status(row.get("phase"))
     health = _clean_status(row.get("health_status"))
     result = _clean_status(row.get("result_status"))
-    last_event = _clean_status(row.get("last_event"))
     review_this_week = _flag_true(row.get("review_this_week"))
-
-    if last_event == action_name:
-        return True
 
     if action_name == "Add to This Week Meeting":
         return review_this_week
 
     if entity_type == "Sales":
+        # Once a sales project is closed won/lost, the result is the only status
+        # that should be highlighted. Old quotation/sample/risk actions should
+        # not remain visually active.
+        if result == "Won":
+            return action_name == "Close Won"
+        if result == "Lost":
+            return action_name == "Close Lost"
+
         quote_round = int(row.get("quote_round") or 0)
-        sample_round = int(row.get("sample_round") or 0)
         if action_name == "Quote Sent":
             return phase == "Quotation" and quote_round <= 1
         if action_name == "Quote Revised":
             return phase == "Quotation" and quote_round > 1
         if action_name == "Sample Sent":
-            return phase == "Sampling" and health not in {"Need Alignment"}
+            return phase == "Sampling" and health != "Need Alignment"
         if action_name == "Sample Feedback NG":
             return phase == "Sampling" and health == "Need Alignment"
         if action_name == "Waiting Client":
@@ -132,13 +128,14 @@ def _action_matches_current_state(entity_type: str, row: dict | None, action_nam
             return health == "Need Decision"
         if action_name == "Need Alignment":
             return health == "Need Alignment"
-        if action_name == "Close Won":
-            return result == "Won"
-        if action_name == "Close Lost":
-            return result == "Lost"
         return False
 
     if entity_type == "Operation":
+        # Paid Closed is the final operation state. Only Shipment Paid should be
+        # highlighted in that situation.
+        if result == "Paid Closed":
+            return action_name == "Shipment Paid"
+
         if action_name == "Prepayment Received":
             return phase == "Payment"
         if action_name == "Production Started":
@@ -148,7 +145,7 @@ def _action_matches_current_state(entity_type: str, row: dict | None, action_nam
         if action_name == "Complete Shipment":
             return result == "Complete Shipped"
         if action_name == "Shipment Paid":
-            return result == "Paid Closed" or phase == "Closure"
+            return phase == "Closure"
         if action_name == "Waiting Supplier":
             return health == "Waiting Supplier"
         if action_name == "Waiting Internal":
@@ -211,12 +208,28 @@ def _render_action_group(
                     st.error(str(exc))
 
 
-def render_board_action_buttons(entity_type: str, entity_id: str, operator: str, source_page: str, current_row: dict | None = None) -> None:
+def render_board_action_buttons(
+    entity_type: str,
+    entity_id: str,
+    operator: str,
+    source_page: str,
+    current_row: dict | None = None,
+) -> None:
     actions = _get_actions(entity_type)
     grouped_actions = set()
     for title, note, group_actions in ACTION_GROUPS.get(entity_type, []):
         grouped_actions.update(group_actions)
-        _render_action_group(entity_type, entity_id, operator, source_page, title, note, group_actions, actions, current_row=current_row)
+        _render_action_group(
+            entity_type,
+            entity_id,
+            operator,
+            source_page,
+            title,
+            note,
+            group_actions,
+            actions,
+            current_row=current_row,
+        )
 
     remaining_actions = [action for action in actions if action not in grouped_actions]
     if remaining_actions:

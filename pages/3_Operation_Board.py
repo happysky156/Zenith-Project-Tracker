@@ -138,7 +138,7 @@ if show_table:
 _section_head(
     "Order cards",
     "Operation order cards",
-    "Red buttons are primary/high-impact shortcuts, not always negative. Use the grouped button rows to separate normal execution, waiting/risk and meeting actions.",
+    "Red buttons show the current recorded status only. White buttons are available actions.",
 )
 render_board_cards(
     rows,
