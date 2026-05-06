@@ -1140,6 +1140,7 @@ def _update_or_insert_daily(conn, cols: set[str], config: dict[str, Any], target
 
 def run_daily_index_fetch(target_date: str | None = None, operator: str = "GitHub Actions") -> dict[str, int]:
     target_date = target_date or today_local()
+    _ensure_index_alert_schema()
     configs = list_index_configs()
     results = fetch_external_values(configs, target_date=target_date)
 
@@ -1184,6 +1185,13 @@ def run_daily_index_fetch(target_date: str | None = None, operator: str = "GitHu
                 summary["need_confirm"] += 1
 
         conn.commit()
+        # Generate internal alert events after the daily values are written.
+        # This is safe and read-only with respect to index values/snapshots.
+        try:
+            alert_summary = run_index_alert_evaluation(target_date=target_date, operator=operator)
+            summary["alert_events"] = alert_summary.get("events", 0)
+        except Exception as alert_exc:
+            summary["alert_error"] = str(alert_exc)
         return summary
     except Exception:
         conn.rollback()
@@ -1294,3 +1302,570 @@ def save_manual_index(config: dict[str, Any], index_date: str, value: float, sou
         raise
     finally:
         conn.close()
+
+# -----------------------------------------------------------------------------
+# Index alert rules / events and quotation snapshot locking
+# -----------------------------------------------------------------------------
+
+def _ensure_index_alert_schema() -> None:
+    """Ensure extension tables exist before alert/snapshot helpers run.
+
+    This keeps Index Center and GitHub Actions safe when they are opened before
+    another extension page has initialised the schema.
+    """
+    try:
+        from database.schema import init_extension_db
+        init_extension_db()
+    except Exception:
+        # The caller will still surface any real table/column error from its own
+        # read/write step.  Avoid hiding the original problem with an init error.
+        pass
+
+
+def _alert_thresholds_for_category(category: Any) -> tuple[float, float]:
+    text = str(category or "").strip().lower()
+    if text == "fx":
+        return 0.5, 1.0
+    if text in {"metal", "plastic"}:
+        return 3.0, 5.0
+    if text == "freight":
+        return 5.0, 10.0
+    return 3.0, 5.0
+
+
+def _normalise_alert_type(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    if "baseline" in text:
+        return "Fixed Baseline"
+    if "snapshot" in text:
+        return "Snapshot Deviation"
+    if "daily" in text:
+        return "Daily Change"
+    return str(value or "").strip() or "Snapshot Deviation"
+
+
+def _normalise_direction(value: Any) -> str:
+    text = str(value or "Both").strip().lower()
+    if text in {"up", "increase", "higher"}:
+        return "Up"
+    if text in {"down", "decrease", "lower"}:
+        return "Down"
+    return "Both"
+
+
+def ensure_default_index_alert_rules() -> None:
+    """Seed safe default alert rules without overwriting user thresholds.
+
+    First version policy:
+    - Snapshot Deviation rules are active by default because they protect locked
+      client quotations against market movement.
+    - Fixed Baseline rules are created inactive by default; users enable them
+      after setting a manual baseline value.
+    - Daily Change is already visible in the current index table, so no default
+      Daily Change event rule is created here.
+    """
+    _ensure_index_alert_schema()
+    configs = list_index_configs()
+    if not configs:
+        return
+
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_alert_rules")
+        if not cols:
+            return
+        cur = conn.cursor()
+        now = _now_iso()
+        for cfg in configs:
+            index_code = _normalise_code(cfg.get("index_code") or cfg.get("index_name"))
+            if not index_code:
+                continue
+            medium, high = _alert_thresholds_for_category(cfg.get("index_category"))
+            for alert_type, active in [("Snapshot Deviation", 1), ("Fixed Baseline", 0)]:
+                execute(
+                    cur,
+                    "select * from index_alert_rules where index_code = ? and alert_type = ? limit 1",
+                    (index_code, alert_type),
+                )
+                existing = _fetchone(cur)
+                if existing:
+                    continue
+                row = {
+                    "alert_rule_id": _new_id("IDXALR"),
+                    "index_code": index_code,
+                    "index_name": cfg.get("display_name") or cfg.get("index_name") or index_code,
+                    "index_category": cfg.get("index_category"),
+                    "alert_type": alert_type,
+                    "direction": "Both",
+                    "medium_threshold_percent": medium,
+                    "high_threshold_percent": high,
+                    "baseline_value": None,
+                    "active": active,
+                    "remarks": "Default rule. Fixed Baseline stays inactive until a baseline value is set.",
+                    "created_at": now,
+                    "created_by": "System",
+                    "updated_at": now,
+                    "updated_by": "System",
+                }
+                insert_cols = [c for c in row if c in cols]
+                placeholders = ", ".join(["?" for _ in insert_cols])
+                execute(cur, f"insert into index_alert_rules ({', '.join(insert_cols)}) values ({placeholders})", [row[c] for c in insert_cols])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def list_index_alert_rules(include_inactive: bool = True) -> list[dict[str, Any]]:
+    ensure_default_index_alert_rules()
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_alert_rules")
+        if not cols:
+            return []
+        cur = conn.cursor()
+        sql = "select * from index_alert_rules"
+        params: list[Any] = []
+        if not include_inactive and "active" in cols:
+            sql += " where coalesce(active, 0) = 1"
+        sql += " order by index_category, index_code, alert_type"
+        execute(cur, sql, params)
+        return _fetchall(cur)
+    finally:
+        conn.close()
+
+
+def save_index_alert_rule(rule: dict[str, Any], operator: str = "User") -> str:
+    """Create/update one alert rule from Index Center.
+
+    This only changes alert configuration. It never changes daily index values
+    or locked quotation snapshots.
+    """
+    _ensure_index_alert_schema()
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_alert_rules")
+        if not cols:
+            raise RuntimeError("Table index_alert_rules was not found or has no columns.")
+        now = _now_iso()
+        index_code = _normalise_code(rule.get("index_code"))
+        alert_type = _normalise_alert_type(rule.get("alert_type"))
+        if not index_code:
+            raise ValueError("Index Code is required.")
+        if not alert_type:
+            raise ValueError("Alert Type is required.")
+        cur = conn.cursor()
+        execute(cur, "select * from index_alert_rules where index_code = ? and alert_type = ? limit 1", (index_code, alert_type))
+        existing = _fetchone(cur)
+        row = {
+            "alert_rule_id": existing.get("alert_rule_id") if existing else _new_id("IDXALR"),
+            "index_code": index_code,
+            "index_name": rule.get("index_name") or index_code,
+            "index_category": rule.get("index_category"),
+            "alert_type": alert_type,
+            "direction": _normalise_direction(rule.get("direction")),
+            "medium_threshold_percent": _safe_float(rule.get("medium_threshold_percent")),
+            "high_threshold_percent": _safe_float(rule.get("high_threshold_percent")),
+            "baseline_value": _safe_float(rule.get("baseline_value")),
+            "active": 1 if _truthy(rule.get("active"), default=True) else 0,
+            "remarks": rule.get("remarks"),
+            "updated_at": now,
+            "updated_by": operator,
+        }
+        if not existing:
+            row["created_at"] = now
+            row["created_by"] = operator
+            insert_cols = [c for c in row if c in cols]
+            placeholders = ", ".join(["?" for _ in insert_cols])
+            execute(cur, f"insert into index_alert_rules ({', '.join(insert_cols)}) values ({placeholders})", [row[c] for c in insert_cols])
+        else:
+            update_cols = [c for c in row if c in cols and c != "alert_rule_id"]
+            set_sql = ", ".join([f"{c} = ?" for c in update_cols])
+            execute(cur, f"update index_alert_rules set {set_sql} where alert_rule_id = ?", [row[c] for c in update_cols] + [existing.get("alert_rule_id")])
+        conn.commit()
+        return str(row["alert_rule_id"])
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _is_rule_active(rule: dict[str, Any]) -> bool:
+    return _truthy(rule.get("active"), default=False)
+
+
+def _rule_matches_direction(rule: dict[str, Any], change_percent: float | None) -> bool:
+    if change_percent is None:
+        return False
+    direction = _normalise_direction(rule.get("direction"))
+    if direction == "Up" and change_percent <= 0:
+        return False
+    if direction == "Down" and change_percent >= 0:
+        return False
+    return True
+
+
+def _alert_level(rule: dict[str, Any], change_percent: float | None) -> str | None:
+    if change_percent is None:
+        return None
+    if not _rule_matches_direction(rule, change_percent):
+        return None
+    magnitude = abs(float(change_percent))
+    high = _safe_float(rule.get("high_threshold_percent"))
+    medium = _safe_float(rule.get("medium_threshold_percent"))
+    if high is not None and magnitude >= high:
+        return "High"
+    if medium is not None and magnitude >= medium:
+        return "Medium"
+    return None
+
+
+def _rule_lookup(rules: list[dict[str, Any]], alert_type: str) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for rule in rules:
+        if not _is_rule_active(rule):
+            continue
+        if _normalise_alert_type(rule.get("alert_type")) != alert_type:
+            continue
+        lookup[_normalise_code(rule.get("index_code"))] = rule
+    return lookup
+
+
+def _latest_index_lookup() -> dict[str, dict[str, Any]]:
+    return {str(row.get("index_code") or ""): row for row in latest_daily_indices() if row.get("index_code")}
+
+
+def _upsert_index_alert_event(event: dict[str, Any], operator: str = "System") -> str:
+    _ensure_index_alert_schema()
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_alert_events")
+        if not cols:
+            raise RuntimeError("Table index_alert_events was not found or has no columns.")
+        cur = conn.cursor()
+        # One alert per day/type/index/snapshot-or-project/baseline combination.
+        where = ["alert_date = ?", "alert_type = ?", "index_code = ?"]
+        params: list[Any] = [event.get("alert_date"), event.get("alert_type"), event.get("index_code")]
+        for col in ["related_snapshot_id", "related_project_id", "related_client_quote_id", "related_quote_version"]:
+            if col in cols:
+                val = event.get(col)
+                if val in (None, ""):
+                    where.append(f"({col} is null or {col} = '')")
+                else:
+                    where.append(f"{col} = ?")
+                    params.append(val)
+        execute(cur, f"select * from index_alert_events where {' and '.join(where)} limit 1", params)
+        existing = _fetchone(cur)
+        now = _now_iso()
+        row = dict(event)
+        row.setdefault("alert_event_id", existing.get("alert_event_id") if existing else _new_id("IDXEVT"))
+        row.setdefault("alert_status", existing.get("alert_status") if existing else "New")
+        row.setdefault("created_at", existing.get("created_at") if existing else now)
+        row.setdefault("created_by", existing.get("created_by") if existing else operator)
+        if existing:
+            update_cols = [c for c in row if c in cols and c not in {"alert_event_id", "created_at", "created_by", "review_note", "reviewed_at", "reviewed_by"}]
+            # Do not reopen a reviewed/closed alert just because the page re-evaluates.
+            if str(existing.get("alert_status") or "").lower() in {"reviewed", "closed"}:
+                update_cols = [c for c in update_cols if c != "alert_status"]
+            set_sql = ", ".join([f"{c} = ?" for c in update_cols])
+            if set_sql:
+                execute(cur, f"update index_alert_events set {set_sql} where alert_event_id = ?", [row[c] for c in update_cols] + [existing.get("alert_event_id")])
+        else:
+            insert_cols = [c for c in row if c in cols]
+            placeholders = ", ".join(["?" for _ in insert_cols])
+            execute(cur, f"insert into index_alert_events ({', '.join(insert_cols)}) values ({placeholders})", [row[c] for c in insert_cols])
+        conn.commit()
+        return str(row.get("alert_event_id"))
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def list_index_alert_events(limit: int = 1000, project_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    _ensure_index_alert_schema()
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_alert_events")
+        if not cols:
+            return []
+        where: list[str] = []
+        params: list[Any] = []
+        if project_id and "related_project_id" in cols:
+            where.append("related_project_id = ?")
+            params.append(project_id)
+        if status and "alert_status" in cols:
+            where.append("alert_status = ?")
+            params.append(status)
+        sql = "select * from index_alert_events"
+        if where:
+            sql += " where " + " and ".join(where)
+        sql += " order by alert_date desc, alert_level desc, created_at desc limit ?"
+        params.append(limit)
+        cur = conn.cursor()
+        execute(cur, sql, params)
+        return _fetchall(cur)
+    finally:
+        conn.close()
+
+
+def update_index_alert_event_status(alert_event_id: str, status: str, review_note: str, operator: str = "User") -> None:
+    _ensure_index_alert_schema()
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_alert_events")
+        if not cols:
+            return
+        updates = {"alert_status": status, "review_note": review_note, "reviewed_at": _now_iso(), "reviewed_by": operator}
+        updates = {k: v for k, v in updates.items() if k in cols}
+        if not updates:
+            return
+        set_sql = ", ".join([f"{k} = ?" for k in updates])
+        cur = conn.cursor()
+        execute(cur, f"update index_alert_events set {set_sql} where alert_event_id = ?", list(updates.values()) + [alert_event_id])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _read_all_index_snapshots() -> list[dict[str, Any]]:
+    _ensure_index_alert_schema()
+    conn = get_connection()
+    try:
+        cols = get_table_columns(conn, "index_snapshots")
+        if not cols:
+            return []
+        cur = conn.cursor()
+        order_col = "locked_at" if "locked_at" in cols else "snapshot_date"
+        execute(cur, f"select * from index_snapshots order by {order_col} desc")
+        return _fetchall(cur)
+    finally:
+        conn.close()
+
+
+def _snapshot_points(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    # New unified snapshot columns.
+    if snapshot.get("index_code") and snapshot.get("snapshot_value") not in (None, ""):
+        points.append({
+            "index_code": _normalise_code(snapshot.get("index_code")),
+            "index_name": snapshot.get("index_display_name") or snapshot.get("index_code"),
+            "index_category": snapshot.get("index_category"),
+            "reference_value": _safe_float(snapshot.get("snapshot_value")),
+            "unit": snapshot.get("snapshot_unit"),
+            "snapshot": snapshot,
+        })
+        return points
+
+    # Compatibility with older dedicated columns.
+    legacy_candidates = [
+        (snapshot.get("exchange_rate_pair"), snapshot.get("exchange_rate_value"), "FX", "rate"),
+        (snapshot.get("material_index_name"), snapshot.get("material_index_value"), "Material", snapshot.get("material_index_unit")),
+        (snapshot.get("freight_index_name") or snapshot.get("freight_route"), snapshot.get("freight_index_value"), "Freight", snapshot.get("freight_unit")),
+    ]
+    for name, value, category, unit in legacy_candidates:
+        ref = _safe_float(value)
+        if name and ref is not None:
+            points.append({
+                "index_code": _normalise_code(name),
+                "index_name": name,
+                "index_category": category,
+                "reference_value": ref,
+                "unit": unit,
+                "snapshot": snapshot,
+            })
+    return points
+
+
+def _calc_percent(latest_value: float | None, reference_value: float | None) -> tuple[float | None, float | None]:
+    if latest_value is None or reference_value is None:
+        return None, None
+    change_value = latest_value - reference_value
+    if reference_value == 0:
+        return change_value, None
+    return change_value, (change_value / reference_value) * 100
+
+
+def run_index_alert_evaluation(target_date: str | None = None, operator: str = "System") -> dict[str, int]:
+    """Evaluate Fixed Baseline and Snapshot Deviation rules and write events.
+
+    Daily Change is already visible in Daily Market Indices; users can enable it
+    later by adding Daily Change rules, but the first system focus is quotation
+    risk control through Fixed Baseline and Snapshot Deviation.
+    """
+    target_date = target_date or today_local()
+    ensure_default_index_alert_rules()
+    rules = list_index_alert_rules(include_inactive=False)
+    latest = _latest_index_lookup()
+    summary = {"rules": len(rules), "fixed_baseline": 0, "snapshot_deviation": 0, "events": 0}
+
+    # Fixed Baseline rules: latest value vs user-maintained baseline.
+    for rule in rules:
+        alert_type = _normalise_alert_type(rule.get("alert_type"))
+        if alert_type != "Fixed Baseline":
+            continue
+        index_code = _normalise_code(rule.get("index_code"))
+        latest_row = latest.get(index_code)
+        baseline = _safe_float(rule.get("baseline_value"))
+        latest_value = _safe_float((latest_row or {}).get("value"))
+        change_value, change_percent = _calc_percent(latest_value, baseline)
+        level = _alert_level(rule, change_percent)
+        if not level:
+            continue
+        _upsert_index_alert_event({
+            "alert_date": target_date,
+            "alert_type": "Fixed Baseline",
+            "index_code": index_code,
+            "index_name": rule.get("index_name") or (latest_row or {}).get("display_name") or index_code,
+            "index_category": rule.get("index_category") or (latest_row or {}).get("index_category"),
+            "alert_level": level,
+            "direction": "Up" if (change_percent or 0) > 0 else "Down",
+            "reference_value": baseline,
+            "latest_value": latest_value,
+            "change_value": change_value,
+            "change_percent": change_percent,
+            "alert_status": "New",
+            "source_note": "Latest index value compared with manual baseline value.",
+        }, operator=operator)
+        summary["fixed_baseline"] += 1
+        summary["events"] += 1
+
+    # Snapshot Deviation rules: latest value vs locked quotation snapshot.
+    snapshot_rules = _rule_lookup(rules, "Snapshot Deviation")
+    if snapshot_rules:
+        for snapshot in _read_all_index_snapshots():
+            for point in _snapshot_points(snapshot):
+                index_code = _normalise_code(point.get("index_code"))
+                rule = snapshot_rules.get(index_code)
+                latest_row = latest.get(index_code)
+                if not rule or not latest_row:
+                    continue
+                latest_value = _safe_float(latest_row.get("value"))
+                reference_value = _safe_float(point.get("reference_value"))
+                change_value, change_percent = _calc_percent(latest_value, reference_value)
+                level = _alert_level(rule, change_percent)
+                if not level:
+                    continue
+                _upsert_index_alert_event({
+                    "alert_date": target_date,
+                    "alert_type": "Snapshot Deviation",
+                    "index_code": index_code,
+                    "index_name": point.get("index_name") or latest_row.get("display_name") or index_code,
+                    "index_category": rule.get("index_category") or latest_row.get("index_category") or point.get("index_category"),
+                    "alert_level": level,
+                    "direction": "Up" if (change_percent or 0) > 0 else "Down",
+                    "reference_value": reference_value,
+                    "latest_value": latest_value,
+                    "change_value": change_value,
+                    "change_percent": change_percent,
+                    "related_project_id": snapshot.get("project_id"),
+                    "related_client_quote_id": snapshot.get("client_quote_id"),
+                    "related_quote_version": snapshot.get("quote_version"),
+                    "related_snapshot_id": snapshot.get("index_snapshot_id"),
+                    "alert_status": "New",
+                    "source_note": "Latest index value compared with locked client quotation snapshot.",
+                }, operator=operator)
+                summary["snapshot_deviation"] += 1
+                summary["events"] += 1
+    return summary
+
+
+def lock_client_quotation_index_snapshots(
+    client_quote: dict[str, Any],
+    selected_indices: list[str],
+    operator: str = "User",
+    rfq_item_ref: str | None = None,
+    snapshot_date: str | None = None,
+) -> dict[str, int]:
+    """Lock current index values for one client quotation.
+
+    Existing snapshots for the same quote/index are not overwritten.  Historical
+    quotation evidence remains fixed even when Daily Market Indices change later.
+    """
+    _ensure_index_alert_schema()
+    snapshot_date = snapshot_date or today_local()
+    selected_codes = {_normalise_code(code) for code in selected_indices if _normalise_code(code)}
+    if not selected_codes:
+        return {"created": 0, "skipped_existing": 0, "missing_latest": 0}
+    latest = _latest_index_lookup()
+    conn = get_connection()
+    summary = {"created": 0, "skipped_existing": 0, "missing_latest": 0}
+    try:
+        cols = get_table_columns(conn, "index_snapshots")
+        if not cols:
+            raise RuntimeError("Table index_snapshots was not found or has no columns.")
+        cur = conn.cursor()
+        now = _now_iso()
+        project_id = client_quote.get("project_id")
+        client_quote_id = client_quote.get("client_quote_id")
+        quote_version = client_quote.get("quote_version")
+        for index_code in selected_codes:
+            latest_row = latest.get(index_code)
+            if not latest_row or _safe_float(latest_row.get("value")) is None:
+                summary["missing_latest"] += 1
+                continue
+            # Prevent duplicate locked snapshot for the same quote/index.
+            duplicate_found = False
+            if "index_code" in cols:
+                execute(
+                    cur,
+                    "select 1 from index_snapshots where client_quote_id = ? and project_id = ? and coalesce(quote_version, '') = coalesce(?, '') and index_code = ? limit 1",
+                    (client_quote_id, project_id, quote_version, index_code),
+                )
+                duplicate_found = cur.fetchone() is not None
+            if duplicate_found:
+                summary["skipped_existing"] += 1
+                continue
+            display_name = latest_row.get("display_name") or index_code
+            category = latest_row.get("index_category")
+            value = _safe_float(latest_row.get("value"))
+            unit = latest_row.get("unit")
+            row = {
+                "index_snapshot_id": _new_id("SNAP"),
+                "client_quote_id": client_quote_id,
+                "project_id": project_id,
+                "rfq_item_ref": rfq_item_ref,
+                "quote_version": quote_version,
+                "snapshot_date": snapshot_date,
+                "index_code": index_code,
+                "index_category": category,
+                "index_display_name": display_name,
+                "snapshot_value": value,
+                "snapshot_unit": unit,
+                "snapshot_source_status": latest_row.get("fetch_status"),
+                "source_name": latest_row.get("source_name"),
+                "source_url": latest_row.get("source_url"),
+                "locked_at": now,
+                "locked_by": operator,
+                "remarks": "Locked from Client Quotation page. Daily Market Indices after this date will not change this snapshot.",
+            }
+            # Fill legacy columns so existing pages can still read the snapshot.
+            if str(category or "").lower() == "fx":
+                row.update({"exchange_rate_pair": display_name, "exchange_rate_value": value, "exchange_rate_source": latest_row.get("source_name")})
+            elif str(category or "").lower() == "freight":
+                row.update({"freight_index_name": display_name, "freight_index_value": value, "freight_route": display_name, "freight_unit": unit})
+            else:
+                row.update({"material_index_name": display_name, "material_index_value": value, "material_index_unit": unit})
+            insert_cols = [c for c in row if c in cols]
+            placeholders = ", ".join(["?" for _ in insert_cols])
+            execute(cur, f"insert into index_snapshots ({', '.join(insert_cols)}) values ({placeholders})", [row[c] for c in insert_cols])
+            summary["created"] += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    # New snapshots may immediately trigger deviation alerts if already outside thresholds.
+    try:
+        run_index_alert_evaluation(target_date=snapshot_date, operator=operator)
+    except Exception:
+        pass
+    return summary

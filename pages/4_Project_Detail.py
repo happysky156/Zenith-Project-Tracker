@@ -5,6 +5,7 @@ from html import escape
 from textwrap import dedent
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 from core.auth import require_login
@@ -32,6 +33,7 @@ from services.upgrade_service import (
     get_project_extension_rows,
     get_related_suppliers,
 )
+from services.market_index_service import list_index_alert_events
 from services.project_service import (
     get_record_detail,
     get_record_lifecycle_view,
@@ -80,6 +82,26 @@ SEARCH_FIELDS = [
     "request_note",
     "pattern_note",
 ]
+
+
+def _render_project_index_alerts(project_id: str | None, key_prefix: str) -> None:
+    if not project_id:
+        return
+    try:
+        alerts = list_index_alert_events(limit=200, project_id=str(project_id))
+    except Exception as exc:
+        st.caption(f"Quotation index alerts are temporarily unavailable: {type(exc).__name__}: {exc}")
+        return
+    if not alerts:
+        st.info("No project-linked quotation index alerts found for this project.")
+        return
+    new_alerts = [r for r in alerts if str(r.get("alert_status") or "New").lower() == "new"]
+    if new_alerts:
+        st.warning(f"This project has {len(new_alerts)} new quotation index alert(s). Review the locked index snapshot before using the quotation.")
+    df = pd.DataFrame(alerts)
+    cols = ["alert_date", "alert_type", "index_code", "index_name", "alert_level", "reference_value", "latest_value", "change_percent", "related_client_quote_id", "related_quote_version", "alert_status", "source_note"]
+    cols = [c for c in cols if c in df.columns]
+    st.dataframe(df[cols], width="stretch", hide_index=True, key=f"{key_prefix}_index_alerts")
 
 
 def _html(markup: str) -> str:
@@ -1191,6 +1213,8 @@ if selected_type == "Sales":
         )
 
     with tab_map["Client Quotation"]:
+        st.markdown("### Quotation Index Alerts")
+        _render_project_index_alerts(str(ext_project_id or ""), f"detail_sales_{record_key}")
         st.markdown("### Client Quotation Versions")
         render_layered_records(
             "Client Quotation Header",
@@ -1211,7 +1235,7 @@ if selected_type == "Sales":
             "Index Snapshot",
             ext_rows.get("Index Snapshot", []),
             key_prefix=f"detail_index_snapshots_{record_key}",
-            preview_columns=["project_id", "rfq_item_ref", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
+            preview_columns=["project_id", "rfq_item_ref", "quote_version", "snapshot_date", "index_code", "index_display_name", "snapshot_value", "snapshot_unit", "snapshot_source_status", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
         )
 
     with tab_map["Sample Tracking"]:
@@ -1242,6 +1266,8 @@ else:
         )
 
     with tab_map["Client Quotation"]:
+        st.markdown("### Quotation Index Alerts")
+        _render_project_index_alerts(str(ext_project_id or ""), f"detail_operation_{record_key}")
         st.markdown("### Linked Client Quotation Versions")
         render_layered_records(
             "Client Quotation Header",
@@ -1255,7 +1281,7 @@ else:
             "Index Snapshot",
             ext_rows.get("Index Snapshot", []),
             key_prefix=f"detail_op_snapshots_{record_key}",
-            preview_columns=["project_id", "rfq_item_ref", "quote_version", "snapshot_date", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
+            preview_columns=["project_id", "rfq_item_ref", "quote_version", "snapshot_date", "index_code", "index_display_name", "snapshot_value", "snapshot_unit", "snapshot_source_status", "material_index_name", "material_index_value", "freight_route", "exchange_rate_pair", "exchange_rate_value"],
         )
 
 with timeline_tab:

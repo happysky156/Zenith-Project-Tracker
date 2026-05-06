@@ -393,7 +393,7 @@ AI_EXTENSION_SCOPES = {"Supplier Details", "Price Comparison", "Index Center", "
 AI_SCOPE_TO_EXTENSION_MODULES: dict[str, tuple[str, ...]] = {
     "Supplier Details": ("Supplier Details",),
     "Price Comparison": ("Supplier Price Comparison",),
-    "Index Center": ("Daily Market Indices", "Index Config", "Index Snapshot", "Freight Index"),
+    "Index Center": ("Daily Market Indices", "Index Config", "Index Snapshot", "Index Alert Rules", "Index Alert Events", "Freight Index"),
     "Order Details": ("Order Details",),
 }
 
@@ -403,6 +403,8 @@ AI_EXTENSION_SOURCE_NAMES: dict[str, str] = {
     "Daily Market Indices": "Index Center",
     "Index Config": "Index Center",
     "Index Snapshot": "Index Center",
+    "Index Alert Rules": "Index Center",
+    "Index Alert Events": "Index Center",
     "Freight Index": "Index Center",
     "Order Details": "Order Details",
 }
@@ -430,6 +432,8 @@ def _normalise_extension_row(module_name: str, row: dict[str, Any], index: int) 
         "Daily Market Indices": "IDX",
         "Index Config": "ICFG",
         "Index Snapshot": "ISNP",
+        "Index Alert Rules": "IAR",
+        "Index Alert Events": "IAE",
         "Freight Index": "FRT",
         "Order Details": "OD",
     }.get(module_name, "EXT")
@@ -738,6 +742,8 @@ def _load_extension_records_for_scope(scope: str) -> list[dict[str, Any]]:
         "Daily Market Indices": 1200,
         "Index Config": 300,
         "Index Snapshot": 1200,
+        "Index Alert Rules": 600,
+        "Index Alert Events": 1200,
         "Freight Index": 500,
         "Order Details": 3000,
     }
