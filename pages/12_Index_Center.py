@@ -49,6 +49,17 @@ def _build_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
+
+    # Streamlit can render Decimal/object numeric columns inconsistently,
+    # especially small negative values such as -0.0066.  Convert numeric
+    # index columns to real floats before display/export so negative signs
+    # stay in the correct position. This is a UI/export normalisation only;
+    # it does not change stored database values or calculation logic.
+    numeric_cols = ["value", "previous_value", "change_value", "change_percent"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
     preferred = [
         "index_date",
         "index_category",
@@ -71,6 +82,18 @@ def _build_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return df[cols]
 
 
+def _index_column_config() -> dict[str, Any]:
+    """Consistent display formatting for index numeric columns.
+
+    Keeps small FX changes readable and prevents object/Decimal rendering
+    glitches such as showing -0.0066 as 0.0-66.
+    """
+    return {
+        "value": st.column_config.NumberColumn("value", format="%.6f"),
+        "previous_value": st.column_config.NumberColumn("previous_value", format="%.6f"),
+        "change_value": st.column_config.NumberColumn("change_value", format="%.6f"),
+        "change_percent": st.column_config.NumberColumn("change_percent", format="%.4f"),
+    }
 
 
 def _excel_safe_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -258,7 +281,7 @@ else:
     show_df = latest_df.copy()
     if selected_category != "All" and "index_category" in show_df:
         show_df = show_df[show_df["index_category"] == selected_category]
-    st.dataframe(show_df, width="stretch", hide_index=True)
+    st.dataframe(show_df, width="stretch", hide_index=True, column_config=_index_column_config())
 
 with st.expander("Manual Override / Confirm", expanded=False):
     if not configs:
@@ -295,7 +318,7 @@ else:
         text = search.lower().strip()
         mask = show_all.astype(str).apply(lambda col: col.str.lower().str.contains(text, na=False)).any(axis=1)
         show_all = show_all[mask]
-    st.dataframe(show_all, width="stretch", hide_index=True)
+    st.dataframe(show_all, width="stretch", hide_index=True, column_config=_index_column_config())
 
 with st.expander("Index Config Records", expanded=False):
     cfg_df = pd.DataFrame(configs)
