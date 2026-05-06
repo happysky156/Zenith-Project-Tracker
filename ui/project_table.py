@@ -305,4 +305,5 @@ def render_board_cards(
                 entity_id=entity_id,
                 operator=operator,
                 source_page=source_page,
+                current_row=row,
             )

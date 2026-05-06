@@ -752,6 +752,44 @@ ACTION_HELP = {
 }
 
 
+
+def _flag_true(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _meeting_action_matches_current_state(row: dict, action_name: str) -> bool:
+    """Highlight only the action that reflects the current stored meeting state.
+
+    Meeting action buttons are normal buttons by default. The red primary style is
+    reserved for an already-recorded state, not for high-impact/important actions.
+    """
+    last_event = str(row.get("last_event") or "").strip()
+    followup_status = str(row.get("followup_status") or "").strip()
+    health = str(row.get("health_status") or "").strip()
+    request_type = str(row.get("request_type") or "").strip()
+
+    if last_event == action_name:
+        return True
+
+    if action_name == "Mark Follow-up Done":
+        return followup_status == "Done"
+
+    if action_name == "High-Risk Follow-up":
+        return followup_status == "Blocked" or health in {"Need Decision", "Blocked"} or request_type == "Decision"
+
+    if action_name == "Discussed / Follow up":
+        return _flag_true(row.get("discussed_this_week")) and followup_status in {"Open", "In Progress"}
+
+    return False
+
+
 current_user = require_login()
 acting_user = current_user["display_name"]
 apply_theme()
@@ -1100,13 +1138,12 @@ for row in [selected_row]:
             cols = st.columns(len(action_names))
             for col, action_name in zip(cols, action_names):
                 with col:
-                    is_high_impact = action_name in {"Decision Made / Close", "High-Risk Follow-up", "Mark Follow-up Done", "Remove from Meeting"}
-                    label = f"**{action_name}**" if is_high_impact else action_name
+                    is_current_action_state = _meeting_action_matches_current_state(row, action_name)
                     if st.button(
-                        label,
+                        action_name,
                         key=f"meeting_{row['entity_type']}_{entity_id}_{action_name}",
                         use_container_width=True,
-                        type="secondary",
+                        type="primary" if is_current_action_state else "secondary",
                         help=ACTION_HELP.get(action_name),
                     ):
                         try:

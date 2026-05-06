@@ -76,11 +76,109 @@ ACTION_GROUPS = {
 }
 
 
+def _clean_status(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _flag_true(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _action_matches_current_state(entity_type: str, row: dict | None, action_name: str) -> bool:
+    """Return True only when the shortcut represents the current stored state.
+
+    Buttons remain normal secondary actions by default. Primary/red is reserved
+    for the shortcut that matches the record's current phase/health/result or
+    the latest saved action where the business field is not unique.
+    """
+    if not row:
+        return False
+
+    phase = _clean_status(row.get("phase"))
+    health = _clean_status(row.get("health_status"))
+    result = _clean_status(row.get("result_status"))
+    last_event = _clean_status(row.get("last_event"))
+    review_this_week = _flag_true(row.get("review_this_week"))
+
+    if last_event == action_name:
+        return True
+
+    if action_name == "Add to This Week Meeting":
+        return review_this_week
+
+    if entity_type == "Sales":
+        quote_round = int(row.get("quote_round") or 0)
+        sample_round = int(row.get("sample_round") or 0)
+        if action_name == "Quote Sent":
+            return phase == "Quotation" and quote_round <= 1
+        if action_name == "Quote Revised":
+            return phase == "Quotation" and quote_round > 1
+        if action_name == "Sample Sent":
+            return phase == "Sampling" and health not in {"Need Alignment"}
+        if action_name == "Sample Feedback NG":
+            return phase == "Sampling" and health == "Need Alignment"
+        if action_name == "Waiting Client":
+            return health == "Waiting Client"
+        if action_name == "Waiting Supplier":
+            return health == "Waiting Supplier"
+        if action_name == "Need Decision":
+            return health == "Need Decision"
+        if action_name == "Need Alignment":
+            return health == "Need Alignment"
+        if action_name == "Close Won":
+            return result == "Won"
+        if action_name == "Close Lost":
+            return result == "Lost"
+        return False
+
+    if entity_type == "Operation":
+        if action_name == "Prepayment Received":
+            return phase == "Payment"
+        if action_name == "Production Started":
+            return phase == "Execution"
+        if action_name == "Partial Shipment":
+            return result == "Partial Shipped"
+        if action_name == "Complete Shipment":
+            return result == "Complete Shipped"
+        if action_name == "Shipment Paid":
+            return result == "Paid Closed" or phase == "Closure"
+        if action_name == "Waiting Supplier":
+            return health == "Waiting Supplier"
+        if action_name == "Waiting Internal":
+            return health == "Waiting Internal"
+        if action_name == "Delay Confirmed":
+            return health == "Delayed"
+        if action_name == "Mark Blocked":
+            return health == "Blocked"
+        if action_name == "Need Decision":
+            return health == "Need Decision"
+        return False
+
+    return False
+
+
 def _get_actions(entity_type: str) -> list[str]:
     return SALES_BOARD_ACTIONS if entity_type == "Sales" else OPERATION_BOARD_ACTIONS
 
 
-def _render_action_group(entity_type: str, entity_id: str, operator: str, source_page: str, title: str, note: str, group_actions: list[str], actions: list[str]) -> None:
+def _render_action_group(
+    entity_type: str,
+    entity_id: str,
+    operator: str,
+    source_page: str,
+    title: str,
+    note: str,
+    group_actions: list[str],
+    actions: list[str],
+    current_row: dict | None = None,
+) -> None:
     row_actions = [action for action in group_actions if action in actions]
     if not row_actions:
         return
@@ -92,11 +190,12 @@ def _render_action_group(entity_type: str, entity_id: str, operator: str, source
     cols = st.columns(len(row_actions))
     for col, action_name in zip(cols, row_actions):
         with col:
+            is_current_status = _action_matches_current_state(entity_type, current_row, action_name)
             if st.button(
                 ACTION_LABELS.get(action_name, action_name),
                 key=f"{source_page}_{entity_type}_{entity_id}_{action_name}",
                 use_container_width=True,
-                type="primary" if action_name in PRIMARY_ACTIONS else "secondary",
+                type="primary" if is_current_status else "secondary",
             ):
                 try:
                     apply_button_action(
@@ -112,12 +211,12 @@ def _render_action_group(entity_type: str, entity_id: str, operator: str, source
                     st.error(str(exc))
 
 
-def render_board_action_buttons(entity_type: str, entity_id: str, operator: str, source_page: str) -> None:
+def render_board_action_buttons(entity_type: str, entity_id: str, operator: str, source_page: str, current_row: dict | None = None) -> None:
     actions = _get_actions(entity_type)
     grouped_actions = set()
     for title, note, group_actions in ACTION_GROUPS.get(entity_type, []):
         grouped_actions.update(group_actions)
-        _render_action_group(entity_type, entity_id, operator, source_page, title, note, group_actions, actions)
+        _render_action_group(entity_type, entity_id, operator, source_page, title, note, group_actions, actions, current_row=current_row)
 
     remaining_actions = [action for action in actions if action not in grouped_actions]
     if remaining_actions:
@@ -130,4 +229,5 @@ def render_board_action_buttons(entity_type: str, entity_id: str, operator: str,
             "Additional status shortcuts kept from the original board logic.",
             remaining_actions,
             actions,
+            current_row=current_row,
         )
