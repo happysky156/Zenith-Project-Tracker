@@ -46,6 +46,7 @@ EVIDENCE_COLUMNS = [
     "Phase",
     "Health Status",
     "Result Status",
+    "Archive Status",
     "Current Progress",
     "Main Issue",
     "Blocked At",
@@ -130,6 +131,18 @@ STOPWORDS = {
     "show", "me", "what", "which", "who", "when", "where", "why", "how", "many", "all",
     "please", "project", "projects", "order", "orders", "current", "system", "records", "record",
 }
+
+
+ARCHIVE_REQUEST_KEYWORDS = [
+    "include archived", "including archived", "archived orders", "archive orders", "archived",
+    "include archive", "all orders including archive", "history orders", "historical orders",
+    "包括归档", "包含归档", "归档订单", "历史订单", "archive",
+]
+
+
+def _include_archived_requested(query: str) -> bool:
+    lower = _lower(query)
+    return any(keyword.lower() in lower for keyword in ARCHIVE_REQUEST_KEYWORDS)
 
 # Read-only AI configuration. These rules help the assistant connect existing records
 # without changing business logic or writing data.
@@ -255,6 +268,7 @@ def _normalise_sales_row(row: dict[str, Any], *, source_module: str = "Sales Boa
         "Phase": clean_text(row.get("phase")),
         "Health Status": clean_text(row.get("health_status")),
         "Result Status": clean_text(row.get("result_status")),
+        "Archive Status": "Archived" if bool(row.get("is_archived")) else "Active",
         "Client Waiting For": clean_text(row.get("client_waiting_for")),
         "Current Progress": clean_text(row.get("progress_summary")),
         "Main Issue": clean_text(row.get("main_issue")),
@@ -310,6 +324,7 @@ def _normalise_operation_row(row: dict[str, Any], *, source_module: str = "Opera
         "Phase": clean_text(row.get("phase")),
         "Health Status": clean_text(row.get("health_status")),
         "Result Status": clean_text(row.get("result_status")),
+        "Archive Status": "Archived" if bool(row.get("is_archived")) else "Active",
         "Client Waiting For": clean_text(row.get("client_waiting_for")),
         "Current Progress": clean_text(row.get("progress_summary")),
         "Main Issue": clean_text(row.get("main_issue")),
@@ -343,12 +358,12 @@ def _normalise_operation_row(row: dict[str, Any], *, source_module: str = "Opera
     }
 
 
-def _load_sales_records() -> list[dict[str, Any]]:
-    return [_normalise_sales_row(row, source_id=f"S{idx + 1}") for idx, row in enumerate(list_sales_projects())]
+def _load_sales_records(include_archived: bool = False) -> list[dict[str, Any]]:
+    return [_normalise_sales_row(row, source_id=f"S{idx + 1}") for idx, row in enumerate(list_sales_projects(include_archived=include_archived))]
 
 
-def _load_operation_records() -> list[dict[str, Any]]:
-    return [_normalise_operation_row(row, source_id=f"O{idx + 1}") for idx, row in enumerate(list_operation_orders())]
+def _load_operation_records(include_archived: bool = False) -> list[dict[str, Any]]:
+    return [_normalise_operation_row(row, source_id=f"O{idx + 1}") for idx, row in enumerate(list_operation_orders(include_archived=include_archived))]
 
 
 def _load_meeting_records() -> list[dict[str, Any]]:
@@ -687,6 +702,7 @@ def _normalise_extension_row(module_name: str, row: dict[str, Any], index: int) 
             "Phase": clean_text(row.get("production_status")),
             "Health Status": clean_text(row.get("main_issue")),
             "Result Status": clean_text(row.get("shipment_status") or row.get("payment_status")),
+            "Archive Status": clean_text(row.get("archive_status")) or ("Archived" if str(row.get("inherited_order_archived") or "0") in {"1", "true", "True"} else "Active"),
             "Current Progress": summary,
             "Main Issue": clean_text(row.get("main_issue")),
             "Next Step": clean_text(row.get("next_step")),
@@ -717,7 +733,7 @@ def _normalise_extension_row(module_name: str, row: dict[str, Any], index: int) 
     }
 
 
-def _load_extension_records_for_scope(scope: str) -> list[dict[str, Any]]:
+def _load_extension_records_for_scope(scope: str, include_archived: bool = False) -> list[dict[str, Any]]:
     if scope == "Dashboard" or scope == "Meeting Mode":
         return []
     module_names: list[str] = []
@@ -730,7 +746,7 @@ def _load_extension_records_for_scope(scope: str) -> list[dict[str, Any]]:
         return []
 
     try:
-        from services.upgrade_service import list_module_records
+        from services.upgrade_service import list_module_records, list_order_module_records_by_archive_view
     except Exception:
         return []
 
@@ -749,7 +765,14 @@ def _load_extension_records_for_scope(scope: str) -> list[dict[str, Any]]:
     }
     for module_name in module_names:
         try:
-            rows = list_module_records(module_name, limit=limits.get(module_name, 1000))
+            if module_name == "Order Details":
+                rows = list_order_module_records_by_archive_view(
+                    "Order Details",
+                    limit=limits.get(module_name, 1000),
+                    archive_view="All" if include_archived else "Active only",
+                )
+            else:
+                rows = list_module_records(module_name, limit=limits.get(module_name, 1000))
         except Exception:
             continue
         for idx, row in enumerate(rows):
@@ -773,6 +796,7 @@ def _combined_text(record: dict[str, Any]) -> str:
         "Phase",
         "Health Status",
         "Result Status",
+        "Archive Status",
         "Client Waiting For",
         "Current Progress",
         "Main Issue",
@@ -963,15 +987,15 @@ def _score_record(query: str, record: dict[str, Any], tokens: list[str]) -> tupl
     return score, reasons
 
 
-def _load_records_for_scope(scope: str, record_type: str) -> list[dict[str, Any]]:
+def _load_records_for_scope(scope: str, record_type: str, include_archived: bool = False) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if scope in {"All", "Sales Board", "Project Details"}:
-        records.extend(_load_sales_records())
+        records.extend(_load_sales_records(include_archived=include_archived))
     if scope in {"All", "Operation Board", "Project Details"}:
-        records.extend(_load_operation_records())
+        records.extend(_load_operation_records(include_archived=include_archived))
     if scope in {"All", "Meeting Mode"}:
         records.extend(_load_meeting_records())
-    records.extend(_load_extension_records_for_scope(scope))
+    records.extend(_load_extension_records_for_scope(scope, include_archived=include_archived))
 
     # Remove duplicate exact rows that can occur when Scope=All; keep module-specific entries
     # because the user explicitly wants display by existing system architecture.
@@ -1875,7 +1899,8 @@ def _expand_records_by_join_keys(
 def _search_records(query: str, *, scope: str, record_type: str, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     query = clean_text(query)
     tokens = _tokenize(query)
-    loaded_records = _load_records_for_scope(scope, record_type)
+    include_archived = _include_archived_requested(query)
+    loaded_records = _load_records_for_scope(scope, record_type, include_archived=include_archived)
 
     strong_result = _strong_relevance_records_for_query(
         query=query,
@@ -1923,6 +1948,7 @@ def _search_records(query: str, *, scope: str, record_type: str, limit: int) -> 
         "returned_records": len(expanded),
         "initial_matched_records": len(matched),
         "tokens": tokens,
+        "include_archived": include_archived,
     }
     metadata.update(expansion_metadata)
     return expanded, metadata
@@ -2753,6 +2779,7 @@ Hard data rules:
 - Some system_records may be included by deterministic cross-module joins. Treat them as valid evidence only when their Match Reason or join keys support the answer.
 - If a module, field, supplier, quote, order, index, or project is not found in the evidence, say it was not found in current system records.
 - Do not turn "not found in system records" into "does not exist in real life".
+- Archived records are excluded by default. Only include archived records when the user explicitly asks to include archived / archive / historical records.
 - Distinguish facts from record-based review notes. Use wording such as "System records show" and "This may need review because".
 - Do not make final business decisions for the user. You may identify lowest price, missing information, selected status, or review points from records.
 
@@ -2820,7 +2847,7 @@ Required JSON keys exactly:
                 "When useful, connect modules only with project_id, supplier_code, supplier_id, order_no, rfq_item_ref, item_option, and index_name/index_code. Treat deterministic joined records as supporting evidence, not AI-created facts. "
                 "Use the readonly_analysis_context review rules to identify missing information or review points, but do not invent facts or make final decisions. "
                 "If data is not found, state that it was not found in current system records. For project index data, use 'No project-linked Index Snapshot or Index Center records were found' rather than implying the whole Index Center is empty. For Order Details, handle multiple order item rows safely and summarize item count when applicable. "
-                "Do not list raw records one by one unless the user explicitly asks for raw records. Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
+                "Do not list raw records one by one unless the user explicitly asks for raw records. Archived records are excluded by default; if they are included because the user explicitly requested them, state that archived records are included. Do not mention candidate records or internal checked records. Follow requested_output_language strictly; do not mix languages unless bilingual output is selected."
             ),
         },
         ensure_ascii=False,

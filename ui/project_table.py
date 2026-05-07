@@ -53,6 +53,9 @@ COLUMN_LABELS_COMMON = {
     "days_since_status_update": "Days Since Status",
     "days_since_review": "Days Since Review",
     "review_this_week": "Review This Week",
+    "is_archived": "Archived",
+    "archive_status": "Archive Status",
+    "inherited_order_archived": "Order Archived",
     "order_no": "Order No",
     "linked_project_name": "Project Name",
     "result_status": "Result",
@@ -83,6 +86,10 @@ def _display_frame(frame: pd.DataFrame, present_columns: list[str], rows: list[d
     display = frame[present_columns].copy()
     if "review_this_week" in display.columns:
         display["review_this_week"] = display["review_this_week"].map(lambda v: "Yes" if bool(v) else "No")
+    if "is_archived" in display.columns:
+        display["is_archived"] = display["is_archived"].map(lambda v: "Yes" if bool(v) else "No")
+    if "inherited_order_archived" in display.columns:
+        display["inherited_order_archived"] = display["inherited_order_archived"].map(lambda v: "Yes" if bool(v) else "No")
 
     is_operation = any((r.get("entity_type") == "Operation" or r.get("order_no")) for r in rows)
     label_map = OPERATION_TABLE_LABELS if is_operation else SALES_TABLE_LABELS

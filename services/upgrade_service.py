@@ -1728,6 +1728,84 @@ def list_module_records(module_name: str, limit: int = 500, filters: dict[str, A
     return rows
 
 
+
+
+def list_order_module_records_by_archive_view(module_name: str, limit: int = 500, archive_view: str = "Active only", filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """List Order Details / Order Costs with archive status inherited from Operation Order.
+
+    Archive is controlled at Order No level in operation_orders. Extension item/cost
+    rows are not deleted or individually archived; they are shown/hidden according to
+    the linked operation order's is_archived flag. Rows whose Order No is not yet in
+    Operation Board are treated as active so imports remain visible for review.
+    """
+    ensure_ready()
+    if module_name not in {"Order Details", "Order Costs"}:
+        return list_module_records(module_name, limit=limit, filters=filters)
+
+    spec = MODULES[module_name]
+    filters = filters or {}
+    table_columns = _table_columns(spec.table)
+    alias = "m"
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    for field, value in filters.items():
+        if value in (None, ""):
+            continue
+        if field.endswith("__contains"):
+            field_name = field.replace("__contains", "")
+            if field_name not in table_columns:
+                continue
+            clauses.append(f"lower({alias}.{field_name}) LIKE lower(?)")
+            params.append(f"%{value}%")
+        else:
+            if field not in table_columns:
+                continue
+            clauses.append(f"{alias}.{field} = ?")
+            params.append(value)
+
+    normalized_view = str(archive_view or "Active only").strip().lower()
+    if normalized_view in {"active only", "active"}:
+        clauses.append("COALESCE(o.is_archived, 0) = 0")
+    elif normalized_view in {"archived only", "archived"}:
+        clauses.append("COALESCE(o.is_archived, 0) = 1")
+    # "All" intentionally adds no archive clause.
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    preferred_order_fields = [
+        "last_updated_at",
+        "created_at",
+        "imported_at",
+        "cost_date",
+        spec.fields[0].name,
+    ]
+    order_field = next((field for field in preferred_order_fields if field in table_columns), None)
+    order_sql = f"ORDER BY {alias}.{order_field} DESC" if order_field else ""
+
+    conn = get_connection()
+    cur = conn.cursor()
+    execute(
+        cur,
+        f"""
+        SELECT {alias}.*, COALESCE(o.is_archived, 0) AS inherited_order_archived
+        FROM {spec.table} {alias}
+        LEFT JOIN operation_orders o ON lower({alias}.order_no) = lower(o.order_no)
+        {where}
+        {order_sql}
+        LIMIT ?
+        """,
+        tuple(params + [int(limit)]),
+    )
+    rows = _rows_to_dicts(cur.fetchall())
+    conn.close()
+
+    for row in rows:
+        row["archive_status"] = "Archived" if str(row.get("inherited_order_archived") or "0") in {"1", "true", "True"} else "Active"
+
+    if module_name == "Order Details":
+        rows = _decorate_order_details_many(rows)
+    return rows
+
 def _decorate_supplier_active_many(suppliers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not suppliers:
         return suppliers

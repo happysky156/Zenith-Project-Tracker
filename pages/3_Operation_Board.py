@@ -73,12 +73,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-operator_col, view_col = st.columns([1, 2])
+operator_col, archive_col, view_col = st.columns([1, 1.4, 1.6])
 operator_col.text_input("Acting User", value=operator, disabled=True)
+archive_view = archive_col.radio(
+    "Archive view",
+    options=["Active only", "Archived only", "All"],
+    index=0,
+    horizontal=True,
+    help="Archived orders are hidden by default but kept for history and audit.",
+)
 show_table = view_col.toggle("Also show compact table view", value=False, key="operation_show_table")
 
 filters = render_common_filters("operation", "Operation")
-rows = apply_board_filters(list_board_projects("Operation"), filters, "Operation")
+base_rows = list_board_projects("Operation", include_archived=(archive_view != "Active only"))
+if archive_view == "Archived only":
+    base_rows = [r for r in base_rows if bool(r.get("is_archived"))]
+rows = apply_board_filters(base_rows, filters, "Operation")
 
 blocked_delayed = sum(1 for r in rows if (r.get("health_status") or "") in {"Delayed", "Blocked"})
 review_this_week = sum(1 for r in rows if bool(r.get("review_this_week")))
@@ -89,7 +99,7 @@ st.markdown(
     _html(
         f"""
         <div class='zt-board-metric-grid'>
-            {_metric_card('Visible Orders', len(rows), 'Filtered Operation orders currently shown', '#111111')}
+            {_metric_card('Visible Orders', len(rows), f'Filtered Operation orders currently shown ({archive_view})', '#111111')}
             {_metric_card('Delayed / Blocked', blocked_delayed, 'Orders needing execution attention', '#c5161d' if blocked_delayed else '#111111')}
             {_metric_card('Review This Week', review_this_week, 'Orders selected for weekly review', '#c5161d' if review_this_week else '#111111')}
             {_metric_card('Shipment Progress', shipment_progress, 'Partial shipped, complete shipped or paid closed', '#2c2c2c')}
@@ -128,6 +138,7 @@ if show_table:
             "need_from_meeting",
             "next_step_owner",
             "target_date",
+            "is_archived",
             "last_event",
             "days_since_status_update",
             "days_since_review",
@@ -138,7 +149,7 @@ if show_table:
 _section_head(
     "Order cards",
     "Operation order cards",
-    "Red buttons show the current recorded status only. White buttons are available actions.",
+    f"Red buttons show the current recorded status only. White buttons are available actions. Archive view: {archive_view}.",
 )
 render_board_cards(
     rows,

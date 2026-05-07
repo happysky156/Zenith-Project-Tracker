@@ -5,7 +5,7 @@ import time
 import streamlit as st
 
 from core.auth import require_login
-from services.upgrade_service import list_module_records, upsert_module_record
+from services.upgrade_service import list_order_module_records_by_archive_view, upsert_module_record
 from ui.theme import apply_theme, render_page_header
 from ui.upgrade_ui import render_upgrade_css, render_upgrade_intro, render_metric_grid, render_layered_records, render_simple_filter_bar
 
@@ -19,26 +19,35 @@ render_upgrade_intro(
     "Order Details supplements Operation Board without changing original operation status logic. Sales Revenue, Supplier Cost, Order Costs and Gross Profit are calculated in USD. RMB/CNY input is converted using the fixed rate 1 USD = 6.80 CNY.",
 )
 
-record_limit = st.selectbox(
+control_col1, control_col2 = st.columns([1, 1])
+record_limit = control_col1.selectbox(
     "Load recent order detail rows",
     options=[100, 300, 500, 1000, 2000],
     index=1,
     help="Use a smaller limit for faster weekly review. Increase only when you need to audit older rows.",
 )
+archive_view = control_col2.radio(
+    "Archive view",
+    options=["Active only", "Archived only", "All"],
+    index=0,
+    horizontal=True,
+    help="Archive is inherited from Operation Order by Order No. Active only is the default for daily follow-up.",
+)
 
 load_start = time.perf_counter()
 with st.spinner("Loading Order Details and Order Costs..."):
     # Performance note:
-    # list_module_records('Order Details') now batch-calculates extra cost and GP.
-    # It no longer queries Order Costs once per order row.
-    order_rows = list_module_records("Order Details", limit=int(record_limit))
-    cost_rows = list_module_records("Order Costs", limit=max(1000, int(record_limit)))
+    # Order Details and Costs inherit archive status from Operation Order by Order No.
+    # The page defaults to Active only, so shipped/closed archived orders stay searchable
+    # through Archived only / All without cluttering daily follow-up.
+    order_rows = list_order_module_records_by_archive_view("Order Details", limit=int(record_limit), archive_view=archive_view)
+    cost_rows = list_order_module_records_by_archive_view("Order Costs", limit=max(1000, int(record_limit)), archive_view=archive_view)
 load_seconds = time.perf_counter() - load_start
-st.caption(f"Loaded {len(order_rows)} order detail rows and {len(cost_rows)} cost rows in {load_seconds:.1f}s.")
+st.caption(f"Loaded {len(order_rows)} order detail rows and {len(cost_rows)} cost rows in {load_seconds:.1f}s. Archive view: {archive_view}.")
 
 revenue = sum(float(r.get("sales_revenue") or 0) for r in order_rows)
 gp = sum(float(r.get("gross_profit") or 0) for r in order_rows)
-render_metric_grid({"Order Detail Rows": len(order_rows), "Cost Rows": len(cost_rows), "Sales Revenue (USD)": f"{revenue:,.2f}", "Gross Profit (USD)": f"{gp:,.2f}"})
+render_metric_grid({"Order Detail Rows": len(order_rows), "Cost Rows": len(cost_rows), "Archive View": archive_view, "Sales Revenue (USD)": f"{revenue:,.2f}", "Gross Profit (USD)": f"{gp:,.2f}"})
 
 with st.expander("Add order cost", expanded=False):
     with st.form("order_cost_form"):
@@ -63,7 +72,7 @@ with st.expander("Add order cost", expanded=False):
 view = st.radio("View", ["Order Details", "Order Costs"], horizontal=True)
 if view == "Order Details":
     filtered = render_simple_filter_bar("Order Details", order_rows)
-    render_layered_records("Order Details", filtered, key_prefix="order_detail_page", summary_field="shipment_status", preview_columns=["order_no", "project_id", "order_item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "currency", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status"])
+    render_layered_records("Order Details", filtered, key_prefix="order_detail_page", summary_field="shipment_status", preview_columns=["order_no", "project_id", "order_item_code", "supplier_name", "order_qty", "client_unit_price", "supplier_unit_cost", "currency", "extra_cost", "gross_profit", "gross_profit_percent", "shipment_status", "archive_status"])
 else:
     filtered = render_simple_filter_bar("Order Costs", cost_rows)
-    render_layered_records("Order Costs", filtered, key_prefix="order_cost_page", summary_field="cost_type", preview_columns=["order_no", "project_id", "order_item_code", "cost_type", "cost_amount", "currency", "paid_by", "charge_to_client", "cost_date"])
+    render_layered_records("Order Costs", filtered, key_prefix="order_cost_page", summary_field="cost_type", preview_columns=["order_no", "project_id", "order_item_code", "cost_type", "cost_amount", "currency", "paid_by", "charge_to_client", "cost_date", "archive_status"])
