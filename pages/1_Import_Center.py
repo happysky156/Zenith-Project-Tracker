@@ -17,6 +17,11 @@ from services.import_service import (
     list_archived_import_files,
     read_uploaded_excel,
 )
+from services.template_service import (
+    available_template_names,
+    build_import_template,
+    template_file_name,
+)
 from services.validation_service import require_required_columns
 from services.upgrade_service import (
     MODULES as V18_MODULES,
@@ -62,6 +67,31 @@ render_page_header("Import Center", "Import Sales projects or Operation orders w
 
 def _html(markup: str) -> str:
     return dedent(markup).strip()
+
+
+
+def _render_template_downloads() -> None:
+    with st.expander("Download Excel import templates", expanded=True):
+        st.caption(
+            "Download controlled Excel templates for system import. These downloads are read-only and do not touch the database. "
+            "Keep the technical field names in row 1 unchanged when importing back into the system."
+        )
+        names = available_template_names()
+        cols = st.columns(3)
+        for idx, name in enumerate(names):
+            with cols[idx % 3]:
+                try:
+                    template_bytes = build_import_template(name).getvalue()
+                    st.download_button(
+                        label=f"Download {name}",
+                        data=template_bytes,
+                        file_name=template_file_name(name),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"download_template_{idx}_{name}",
+                        use_container_width=True,
+                    )
+                except Exception as exc:
+                    st.error(f"Could not generate {name}: {exc}")
 
 
 def _render_import_css() -> None:
@@ -349,6 +379,7 @@ def _render_import_file_archive() -> None:
                     except Exception as exc:
                         st.warning(f"Could not prepare download: {exc}")
 _render_import_css()
+_render_template_downloads()
 _render_import_file_archive()
 
 
