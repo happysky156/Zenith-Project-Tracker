@@ -35,6 +35,27 @@ from utils.excel import guess_default_mapping
 
 apply_theme()
 current_user = require_login()
+
+# Import Center is intentionally restricted because import actions can create or
+# update system records. Keep this as a page-level permission guard so the core
+# business logic, database schema, and import services remain unchanged.
+ALLOWED_IMPORT_CENTER_EMAILS = {"harley@zenith-ecs.com"}
+
+
+def _normalise_email(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+current_user_email = _normalise_email(current_user.get("email"))
+if current_user_email not in ALLOWED_IMPORT_CENTER_EMAILS:
+    render_page_header("Import Center", "Restricted import access for system data protection.")
+    st.error("Import Center is restricted to the authorised system owner.")
+    st.info(
+        "This page can create or update records through Excel import, so it is currently only available to "
+        "harley@zenith-ecs.com. You can still use the normal viewing, dashboard, meeting, and export pages."
+    )
+    st.stop()
+
 operator = current_user["display_name"]
 render_page_header("Import Center", "Import Sales projects or Operation orders with clean validation and automatic linking.")
 
