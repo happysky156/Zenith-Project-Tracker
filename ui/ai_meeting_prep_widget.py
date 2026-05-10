@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from database.ai_repository import mark_ai_draft_status, save_ai_update_draft
+from database.repositories import get_operation_order, get_sales_project
 from services.ai_apply_service import apply_ai_meeting_draft
 from services.ai_client import AIConfigError, AIResponseError
 from services.ai_meeting_service import (
@@ -140,6 +141,87 @@ def _render_selected_project(project: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
+
+
+def _fresh_project_snapshot(project: dict[str, Any]) -> dict[str, Any]:
+    """Return the latest saved database values in the AI Meeting Assistant format.
+
+    Meeting Board can pass a display-row snapshot into the right-side assistant.
+    After earlier edits or cache refresh timing, that snapshot can be stale even
+    when the database already has newer Meeting Prep values.  The review table
+    and confirm action must compare against the latest saved record, not only
+    the visual card snapshot.
+    """
+    if not project:
+        return {}
+
+    entity_type = clean_text(project.get("record_type"))
+    entity_id = clean_text(project.get("entity_id"))
+    if not entity_id:
+        entity_id = clean_text(project.get("project_id")) if entity_type == "Sales" else clean_text(project.get("order_no"))
+
+    row: dict[str, Any] | None = None
+    try:
+        if entity_type == "Sales" and entity_id:
+            row = get_sales_project(entity_id)
+        elif entity_type == "Operation" and entity_id:
+            row = get_operation_order(entity_id)
+    except Exception:
+        row = None
+
+    if not row:
+        return dict(project)
+
+    if entity_type == "Sales":
+        return {
+            "record_type": "Sales",
+            "entity_id": clean_text(row.get("project_id")),
+            "project_id": clean_text(row.get("project_id")),
+            "project_name": clean_text(row.get("project_name")),
+            "client_code": clean_text(row.get("client_code")),
+            "order_no": clean_text(row.get("linked_orders")),
+            "current_owner": clean_text(row.get("current_owner")),
+            "phase": clean_text(row.get("phase")),
+            "health_status": clean_text(row.get("health_status")),
+            "result_status": clean_text(row.get("result_status")),
+            "review_this_week": bool(row.get("review_this_week")),
+            "current_progress": clean_text(row.get("progress_summary")),
+            "main_issue": clean_text(row.get("main_issue")),
+            "blocked_at": clean_text(row.get("block_point")),
+            "waiting_for_what": clean_text(row.get("waiting_for_text")),
+            "need_from_meeting": clean_text(row.get("need_from_meeting")),
+            "next_step": clean_text(row.get("next_step_summary")),
+            "next_step_owner": clean_text(row.get("next_step_owner")),
+            "target_date": clean_text(row.get("target_date")),
+            "meeting_note": clean_text(row.get("meeting_note")),
+            "last_event": clean_text(row.get("last_event")),
+            "raw": row,
+        }
+
+    return {
+        "record_type": "Operation",
+        "entity_id": clean_text(row.get("order_no")),
+        "project_id": clean_text(row.get("project_id")),
+        "project_name": clean_text(row.get("linked_project_name") or row.get("project_name")),
+        "client_code": clean_text(row.get("client_code")),
+        "order_no": clean_text(row.get("order_no")),
+        "current_owner": clean_text(row.get("current_owner")),
+        "phase": clean_text(row.get("phase")),
+        "health_status": clean_text(row.get("health_status")),
+        "result_status": clean_text(row.get("result_status")),
+        "review_this_week": bool(row.get("review_this_week")),
+        "current_progress": clean_text(row.get("progress_summary")),
+        "main_issue": clean_text(row.get("main_issue")),
+        "blocked_at": clean_text(row.get("block_point")),
+        "waiting_for_what": clean_text(row.get("waiting_for_text")),
+        "need_from_meeting": clean_text(row.get("need_from_meeting")),
+        "next_step": clean_text(row.get("next_step_summary")),
+        "next_step_owner": clean_text(row.get("next_step_owner")),
+        "target_date": clean_text(row.get("target_date")),
+        "meeting_note": clean_text(row.get("meeting_note")),
+        "last_event": clean_text(row.get("last_event")),
+        "raw": row,
+    }
 
 def _default_apply(field: str, existing_value: str, ai_value: str) -> bool:
     existing = clean_text(existing_value)
@@ -323,6 +405,16 @@ def render_ai_meeting_prep_assistant(
     """
     _render_css()
     acting_user = str(current_user.get("display_name") or current_user.get("email") or "AI User") if isinstance(current_user, dict) else str(current_user)
+    post_apply_message = st.session_state.pop(f"{key_prefix}_post_apply_message", None)
+    if post_apply_message:
+        level = post_apply_message.get("level", "info")
+        message = post_apply_message.get("message", "")
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        else:
+            st.info(message)
 
     st.markdown(
         _html(
@@ -391,6 +483,12 @@ def render_ai_meeting_prep_assistant(
     if not selected_project:
         st.info("Search and select one project/order first.")
         return
+
+    # Always compare and apply against the latest saved database values.
+    # This avoids the confusing case where the Meeting Board card is still showing
+    # an older display-row snapshot while the database has already changed.
+    selected_project = _fresh_project_snapshot(selected_project)
+    st.session_state[f"{key_prefix}_selected_project"] = selected_project
 
     _render_selected_project(selected_project)
     if not context_candidates:
@@ -517,20 +615,36 @@ def render_ai_meeting_prep_assistant(
                 st.session_state[f"{key_prefix}_saved_draft_id"] = draft_id
                 st.session_state[f"{key_prefix}_apply_result"] = apply_result
                 if apply_result.get("updated"):
-                    st.success(f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}.")
-                    st.info("Refresh the Meeting Board or change the filter/search to see the latest saved values in the project card.")
+                    try:
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
+                    fresh_after_apply = _fresh_project_snapshot(selected_project)
+                    st.session_state[f"{key_prefix}_selected_project"] = fresh_after_apply
+                    st.session_state[f"{key_prefix}_post_apply_message"] = {
+                        "level": "success",
+                        "message": f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}. Meeting Board has been refreshed with the latest saved values.",
+                    }
+                    st.rerun()
                 else:
-                    st.warning(
-                        f"AI draft confirmed, but no saved field changed. Draft ID: {draft_id}. "
-                        "This usually means the selected AI values were already the same as the current system record."
-                    )
+                    fresh_after_no_change = _fresh_project_snapshot(selected_project)
+                    st.session_state[f"{key_prefix}_selected_project"] = fresh_after_no_change
+                    st.session_state[f"{key_prefix}_post_apply_message"] = {
+                        "level": "warning",
+                        "message": (
+                            f"AI draft confirmed, but no saved field changed. Draft ID: {draft_id}. "
+                            "The latest database record already matches the selected AI value(s), or another linked record was selected. "
+                            "The assistant has refreshed its saved-record snapshot for review."
+                        ),
+                    }
+                    st.rerun()
             except Exception as exc:
                 mark_ai_draft_status(draft_id=draft_id, status="apply_failed", current_user=current_user)
                 st.error(f"Saved draft, but applying selected fields failed: {exc}")
 
     apply_result = st.session_state.get(f"{key_prefix}_apply_result")
     if apply_result:
-        updated_fields = apply_result.get("updated_fields") or []
+        updated_fields = apply_result.get("updated_fields") or apply_result.get("changed_fields") or []
         skipped_fields = apply_result.get("skipped_fields") or []
         if updated_fields:
             st.write("Updated fields:", ", ".join(updated_fields))
