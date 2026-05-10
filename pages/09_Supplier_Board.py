@@ -8,6 +8,7 @@ import streamlit as st
 
 from core.auth import require_login
 from services.upgrade_service import field_display_map, list_module_records, upsert_module_record, MODULES
+from services.export_service import render_standard_export_panel
 from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_page_header
 from ui.upgrade_ui import render_metric_grid, render_upgrade_css, render_upgrade_intro, render_simple_filter_bar
@@ -228,6 +229,13 @@ with st.expander("Add new supplier", expanded=False):
                 st.rerun()
 
 filtered = render_simple_filter_bar(MODULE_NAME, rows)
+render_standard_export_panel(
+    board_name="Supplier Board",
+    current_rows=rows,
+    filtered_rows=filtered,
+    template_names=["Supplier Details Template", "SV-01 Supplier Management Template"],
+    key_prefix="supplier_board",
+)
 with st.expander("Supplier summary table", expanded=True):
     render_project_table(
         filtered,

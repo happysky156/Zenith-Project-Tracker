@@ -4,6 +4,7 @@ import streamlit as st
 
 from core.auth import require_login
 from services.upgrade_service import list_module_records, upsert_module_record
+from services.export_service import render_standard_export_panel
 from ui.theme import apply_theme, render_page_header
 from ui.upgrade_ui import render_upgrade_css, render_upgrade_intro, render_metric_grid, render_layered_records, render_simple_filter_bar
 
@@ -68,4 +69,11 @@ with st.expander("Add sample tracking record", expanded=False):
                 st.rerun()
 
 filtered = render_simple_filter_bar(MODULE_NAME, rows)
+render_standard_export_panel(
+    board_name="Sample Board",
+    current_rows=rows,
+    filtered_rows=filtered,
+    template_names=["Sample Tracking Template", "QP-02 Sample Control Template"],
+    key_prefix="sample_board",
+)
 render_layered_records(MODULE_NAME, filtered, key_prefix="sample_page", summary_field="sample_status", preview_columns=["project_id", "rfq_item_ref", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"])

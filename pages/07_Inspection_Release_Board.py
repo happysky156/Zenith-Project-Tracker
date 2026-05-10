@@ -5,6 +5,7 @@ import streamlit as st
 
 from core.auth import require_login
 from services.upgrade_service import list_module_records
+from services.export_service import render_standard_export_panel
 from ui.theme import apply_theme, render_page_header
 
 apply_theme()
@@ -20,6 +21,14 @@ m1, m2, m3 = st.columns(3)
 m1.metric("Order Detail Lines", len(order_details))
 m2.metric("With Shipment Date", sum(1 for r in order_details if r.get("shipment_date")))
 m3.metric("With Target Delivery", sum(1 for r in order_details if r.get("target_delivery_date")))
+
+render_standard_export_panel(
+    board_name="Inspection & Release Board",
+    current_rows=order_details,
+    filtered_rows=order_details,
+    template_names=["Order Details Template", "QP-04 Inspection & Shipment Release Template"],
+    key_prefix="inspection_release_board",
+)
 
 tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Inspection Required", "Shipment Release", "History"])
 with tab1:
