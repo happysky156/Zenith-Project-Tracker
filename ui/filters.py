@@ -3,6 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from core.dictionaries import HEALTH_STATUSES, PEOPLE, PRIORITIES, OPERATION_PHASES, SALES_PHASES
+from utils.options import sorted_dropdown_options
 
 
 def render_common_filters(prefix: str, record_type: str) -> dict[str, object]:
@@ -20,10 +21,10 @@ def render_common_filters(prefix: str, record_type: str) -> dict[str, object]:
     )
 
     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-    owner = r1c1.selectbox("Current Owner", options=[""] + PEOPLE, key=f"{prefix}_owner")
-    phase = r1c2.selectbox("Phase", options=[""] + phase_options, key=f"{prefix}_phase")
-    health = r1c3.selectbox("Health", options=[""] + HEALTH_STATUSES, key=f"{prefix}_health")
-    priority = r1c4.selectbox("Priority", options=[""] + PRIORITIES, key=f"{prefix}_priority")
+    owner = r1c1.selectbox("Current Owner", options=sorted_dropdown_options([""] + PEOPLE), key=f"{prefix}_owner")
+    phase = r1c2.selectbox("Phase", options=sorted_dropdown_options([""] + phase_options), key=f"{prefix}_phase")
+    health = r1c3.selectbox("Health", options=sorted_dropdown_options([""] + HEALTH_STATUSES), key=f"{prefix}_health")
+    priority = r1c4.selectbox("Priority", options=sorted_dropdown_options([""] + PRIORITIES), key=f"{prefix}_priority")
 
     r2c1, r2c2, r2c3, r2c4 = st.columns([2.2, 1, 1, 1])
     search = r2c1.text_input(

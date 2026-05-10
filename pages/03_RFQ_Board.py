@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Any
 
 import pandas as pd
@@ -7,7 +8,6 @@ import streamlit as st
 
 from core.auth import require_login
 from services.upgrade_service import list_module_records
-from services.export_service import render_standard_export_panel
 from ui.index_center_view import render_market_index_reference
 from ui.theme import apply_theme, render_page_header
 
@@ -21,6 +21,12 @@ def _df(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows or [])
 
 
+def _export_button(rows: list[dict[str, Any]], file_name: str, label: str) -> None:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        _df(rows).to_excel(writer, sheet_name="Records", index=False)
+    st.download_button(label, output.getvalue(), file_name=file_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
 
 rfq_records = list_module_records("RFQ Requirement Control", limit=1000)
 supplier_quotes = list_module_records("Supplier Price Comparison", limit=2000)
@@ -32,14 +38,6 @@ m1.metric("RFQ Records", len(rfq_records))
 m2.metric("Supplier Quotes", len(supplier_quotes))
 m3.metric("Client Quote Versions", len(client_headers))
 m4.metric("Open RFQ", sum(1 for r in rfq_records if str(r.get("rfq_gate_status") or "").lower() not in {"closed", "lost"}))
-
-render_standard_export_panel(
-    board_name="RFQ Board",
-    current_rows=rfq_records,
-    filtered_rows=rfq_records,
-    template_names=["QP-01 RFQ Requirement Control Template", "Price Comparison Template"],
-    key_prefix="rfq_board",
-)
 
 tabs = st.tabs([
     "RFQ Overview",
@@ -63,6 +61,7 @@ with tabs[0]:
         df = _df(rfq_records)
         cols = [c for c in ["rfq_id", "project_id", "customer", "product_description", "rfq_gate_status", "risk_level", "current_owner", "next_step", "due_date", "last_updated_at"] if c in df.columns]
         st.dataframe(df[cols], width="stretch", hide_index=True)
+        _export_button(rfq_records, "rfq_requirement_control_records.xlsx", "Export RFQ records")
 
 with tabs[1]:
     st.markdown("### RFQ Working File")
@@ -101,6 +100,7 @@ with tabs[4]:
         df = _df(supplier_quotes)
         cols = [c for c in ["supplier_quote_id", "project_id", "rfq_item_ref", "item_option", "supplier_code", "supplier_name", "supplier_unit_cost", "currency", "moq", "lead_time", "quote_date", "selected_supplier", "recommended_supplier"] if c in df.columns]
         st.dataframe(df[cols], width="stretch", hide_index=True)
+        _export_button(supplier_quotes, "supplier_quotes_for_rfq.xlsx", "Export supplier quotes")
 
 with tabs[5]:
     st.markdown("### Price Comparison")

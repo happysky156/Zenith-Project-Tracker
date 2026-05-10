@@ -7,7 +7,6 @@ import streamlit as st
 
 from core.auth import require_login
 from services.project_service import apply_board_filters, list_board_projects
-from services.export_service import render_standard_export_panel
 from ui.filters import render_common_filters
 from ui.project_table import render_board_cards, render_project_table
 from ui.theme import apply_theme, render_page_header
@@ -108,14 +107,6 @@ st.markdown(
         """
     ),
     unsafe_allow_html=True,
-)
-
-render_standard_export_panel(
-    board_name="Order Board",
-    current_rows=base_rows,
-    filtered_rows=rows,
-    template_names=["Operation Import Template", "Order Details Template"],
-    key_prefix="order_board",
 )
 
 if unlinked_project:

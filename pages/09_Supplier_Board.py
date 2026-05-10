@@ -8,10 +8,10 @@ import streamlit as st
 
 from core.auth import require_login
 from services.upgrade_service import field_display_map, list_module_records, upsert_module_record, MODULES
-from services.export_service import render_standard_export_panel
 from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_page_header
 from ui.upgrade_ui import render_metric_grid, render_upgrade_css, render_upgrade_intro, render_simple_filter_bar
+from utils.options import sorted_dropdown_options
 
 apply_theme()
 render_upgrade_css()
@@ -62,8 +62,8 @@ LONG_TEXT_FIELDS = {
     "risk_summary", "active_reason",
 }
 URL_FIELDS = {"website_primary", "nda_file", "audit_file", "catalogue_file"}
-RISK_OPTIONS = ["", "Low", "Medium", "High"]
-COMPANY_TYPE_OPTIONS = ["", "Factory", "Trading Company", "Service Provider", "Factory + Trading", "Other"]
+RISK_OPTIONS = sorted_dropdown_options(["", "Low", "Medium", "High"])
+COMPANY_TYPE_OPTIONS = sorted_dropdown_options(["", "Factory", "Trading Company", "Service Provider", "Factory + Trading", "Other"])
 
 
 def _label(field: str) -> str:
@@ -87,12 +87,13 @@ def _field_input(field: str, record: dict[str, Any], *, key_prefix: str) -> Any:
     value = _value(record, field)
     key = f"{key_prefix}_{field}"
     if field == "company_type":
-        options = COMPANY_TYPE_OPTIONS
+        options = sorted_dropdown_options(COMPANY_TYPE_OPTIONS)
         current = str(value or "")
         return st.selectbox(label, options, index=options.index(current) if current in options else 0, key=key)
     if field in {"quality_risk", "commercial_risk"}:
         current = str(value or "")
-        return st.selectbox(label, RISK_OPTIONS, index=RISK_OPTIONS.index(current) if current in RISK_OPTIONS else 0, key=key)
+        options = sorted_dropdown_options(RISK_OPTIONS)
+        return st.selectbox(label, options, index=options.index(current) if current in options else 0, key=key)
     if field in LONG_TEXT_FIELDS:
         return st.text_area(label, value=str(value or ""), height=90, key=key)
     return st.text_input(label, value=str(value or ""), key=key)
@@ -229,13 +230,6 @@ with st.expander("Add new supplier", expanded=False):
                 st.rerun()
 
 filtered = render_simple_filter_bar(MODULE_NAME, rows)
-render_standard_export_panel(
-    board_name="Supplier Board",
-    current_rows=rows,
-    filtered_rows=filtered,
-    template_names=["Supplier Details Template", "SV-01 Supplier Management Template"],
-    key_prefix="supplier_board",
-)
 with st.expander("Supplier summary table", expanded=True):
     render_project_table(
         filtered,
@@ -262,6 +256,7 @@ for row in filtered:
     labels.append(label)
     label_to_id[label] = supplier_id
 
+labels = sorted_dropdown_options(labels, pinned=())
 selected_label = st.selectbox("Open Supplier Detail", labels, key="supplier_detail_select")
 selected_id = label_to_id.get(selected_label)
 selected = next((row for row in filtered if str(row.get("supplier_id") or "") == selected_id), filtered[0])

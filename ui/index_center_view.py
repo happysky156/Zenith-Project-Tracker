@@ -7,6 +7,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from utils.options import sorted_dropdown_options
+
 from services.market_index_service import (
     BOC_EXCHANGE_RATE_URL,
     latest_daily_indices,
@@ -202,7 +204,7 @@ def render_index_admin_center(operator: str) -> None:
         if not configs:
             st.info("No index config records found.")
         else:
-            labels = [f"{cfg.get('display_name') or cfg.get('index_name')} [{cfg.get('index_code')}]" for cfg in configs]
+            labels = sorted_dropdown_options([f"{cfg.get('display_name') or cfg.get('index_name')} [{cfg.get('index_code')}]" for cfg in configs], pinned=())
             lookup = dict(zip(labels, configs))
             with st.form("manual_index_form_admin"):
                 m1, m2, m3 = st.columns([1, 2.2, 1.2])

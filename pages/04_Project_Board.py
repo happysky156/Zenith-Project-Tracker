@@ -7,7 +7,6 @@ import streamlit as st
 
 from core.auth import require_login
 from services.project_service import apply_board_filters, list_board_projects
-from services.export_service import render_standard_export_panel
 from ui.filters import render_common_filters
 from ui.project_table import render_board_cards, render_project_table
 from ui.theme import apply_theme, render_page_header
@@ -76,8 +75,7 @@ toolbar_col1.text_input("Acting User", value=operator, disabled=True)
 show_table = toolbar_col2.toggle("Also show compact table view", value=False, key="sales_show_table")
 
 filters = render_common_filters("sales", "Sales")
-base_rows = list_board_projects("Sales")
-rows = apply_board_filters(base_rows, filters, "Sales")
+rows = apply_board_filters(list_board_projects("Sales"), filters, "Sales")
 
 need_decision = sum(1 for r in rows if (r.get("health_status") or "") == "Need Decision")
 review_this_week = sum(1 for r in rows if bool(r.get("review_this_week")))
@@ -95,14 +93,6 @@ st.markdown(
         """
     ),
     unsafe_allow_html=True,
-)
-
-render_standard_export_panel(
-    board_name="Project Board",
-    current_rows=base_rows,
-    filtered_rows=rows,
-    template_names=["Sales Import Template"],
-    key_prefix="project_board",
 )
 
 if show_table:

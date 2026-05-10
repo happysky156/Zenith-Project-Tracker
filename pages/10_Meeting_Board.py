@@ -25,6 +25,7 @@ from services.meeting_service import (
     save_meeting_reference_links,
 )
 from ui.theme import apply_theme, render_badges, render_page_header
+from utils.options import sorted_dropdown_options
 
 
 def _html(markup: str) -> str:
@@ -812,7 +813,7 @@ with filter_col1:
     _tooltip_label("Type", "Choose All, Sales or Operation for this meeting section.")
     meeting_type_filter = st.selectbox(
         "Type",
-        options=["All", "Sales", "Operation"],
+        options=sorted_dropdown_options(["All", "Sales", "Operation"]),
         index=0,
         key="meeting_type_filter_v2",
         label_visibility="collapsed",
@@ -828,11 +829,11 @@ else:
         if str(r.get("entity_type") or "").strip().lower() == meeting_type_filter.lower()
     ]
 
-owner_options = [
+owner_options = sorted_dropdown_options([
     "All",
-    *sorted({str(r.get("next_step_owner") or "").strip() for r in all_rows if str(r.get("next_step_owner") or "").strip()}),
-]
-status_options = ["All", "Open", "In Progress", "Done", "Blocked"]
+    *{str(r.get("next_step_owner") or "").strip() for r in all_rows if str(r.get("next_step_owner") or "").strip()},
+])
+status_options = sorted_dropdown_options(["All", "Open", "In Progress", "Done", "Blocked"])
 if st.session_state.get("meeting_next_step_owner_filter") not in owner_options:
     st.session_state["meeting_next_step_owner_filter"] = "All"
 if st.session_state.get("meeting_followup_status_filter") not in status_options:
@@ -941,9 +942,13 @@ if not display_rows:
 
 _section_head("Meeting list", f"Search results ({len(display_rows)} items)")
 
+meeting_result_options = sorted(
+    range(len(display_rows)),
+    key=lambda idx: _meeting_result_label(display_rows[idx]).casefold(),
+)
 selected_index = st.selectbox(
     "Search results",
-    options=list(range(len(display_rows))),
+    options=meeting_result_options,
     index=0,
     format_func=lambda idx: _meeting_result_label(display_rows[idx]),
     key=_meeting_results_key(display_rows, active_filter, meeting_type_filter, owner_filter, status_filter, search_query),
@@ -1061,7 +1066,7 @@ for row in [selected_row]:
 
                     owner_date_cols = st.columns([1.0, 1.2, 1.0, 1.05])
                     with owner_date_cols[0]:
-                        owner_options = [""] + PEOPLE
+                        owner_options = sorted_dropdown_options([""] + PEOPLE)
                         current_owner = row.get("next_step_owner") or ""
                         owner_index = owner_options.index(current_owner) if current_owner in owner_options else 0
                         next_step_owner_value = st.selectbox(
@@ -1073,7 +1078,7 @@ for row in [selected_row]:
                     with owner_date_cols[1]:
                         next_step_support_value = st.multiselect(
                             "Next Step Support From",
-                            options=PEOPLE,
+                            options=sorted_dropdown_options(PEOPLE, pinned=()),
                             default=parse_multi_value(row.get("next_step_support")),
                             key=f"meeting_next_step_support_{row['entity_type']}_{entity_id}",
                         )

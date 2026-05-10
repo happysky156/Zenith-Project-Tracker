@@ -8,6 +8,7 @@ import streamlit as st
 from core.state import set_selected_detail
 from ui.action_buttons import render_board_action_buttons
 from ui.theme import render_badges
+from utils.options import sorted_dropdown_options
 
 
 SALES_DETAIL_FIELDS = [
@@ -253,7 +254,7 @@ def render_project_table(rows: list[dict], columns: list[str], empty_message: st
     jump_options = _jump_records(rows) if enable_jump else []
     if jump_options:
         with st.expander("Open Project / Order Detail from this table"):
-            labels = [label for label, _, _ in jump_options]
+            labels = sorted_dropdown_options([label for label, _, _ in jump_options], pinned=())
             selected_label = st.selectbox(
                 "Jump to Project / Order Detail",
                 options=[""] + labels,

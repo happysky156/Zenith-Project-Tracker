@@ -4,7 +4,6 @@ import streamlit as st
 
 from core.auth import require_login
 from services.upgrade_service import list_module_records, upsert_module_record
-from services.export_service import render_standard_export_panel
 from ui.theme import apply_theme, render_page_header
 from ui.upgrade_ui import render_upgrade_css, render_upgrade_intro, render_metric_grid, render_layered_records, render_simple_filter_bar
 
@@ -29,12 +28,12 @@ with st.expander("Add sample tracking record", expanded=False):
         rfq_item_ref = c2.text_input("RFQ Item Ref")
         supplier_name = c3.text_input("Supplier Name")
         c1, c2, c3 = st.columns(3)
-        sample_type = c1.selectbox("Sample Type", ["", "Initial Sample", "Revised Sample", "Approved Sample", "Testing Sample", "Pre-production Sample", "Mass Production Sample", "Reference Sample"])
+        sample_type = c1.selectbox("Sample Type", sorted_dropdown_options(["", "Initial Sample", "Revised Sample", "Approved Sample", "Testing Sample", "Pre-production Sample", "Mass Production Sample", "Reference Sample"]))
         sample_round = c2.text_input("Sample Round", value="1")
-        sample_status = c3.selectbox("Sample Status", ["Not Started", "In Progress", "Sent", "Approved", "Rejected", "Need Revision"])
+        sample_status = c3.selectbox("Sample Status", sorted_dropdown_options(["Not Started", "In Progress", "Sent", "Approved", "Rejected", "Need Revision"]))
         c1, c2 = st.columns(2)
         target_sample_date = c1.date_input("Target Sample Date", value=None)
-        test_status = c2.selectbox("Test Status", ["Not Required", "Pending", "Sent to Lab", "Testing", "Passed", "Failed", "Need Retest"])
+        test_status = c2.selectbox("Test Status", sorted_dropdown_options(["Not Required", "Pending", "Sent to Lab", "Testing", "Passed", "Failed", "Need Retest"]))
         client_feedback = st.text_area("Client Feedback", height=80)
         next_step = st.text_area("Next Step", height=80)
         c1, c2 = st.columns(2)
@@ -69,11 +68,4 @@ with st.expander("Add sample tracking record", expanded=False):
                 st.rerun()
 
 filtered = render_simple_filter_bar(MODULE_NAME, rows)
-render_standard_export_panel(
-    board_name="Sample Board",
-    current_rows=rows,
-    filtered_rows=filtered,
-    template_names=["Sample Tracking Template", "QP-02 Sample Control Template"],
-    key_prefix="sample_board",
-)
 render_layered_records(MODULE_NAME, filtered, key_prefix="sample_page", summary_field="sample_status", preview_columns=["project_id", "rfq_item_ref", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"])

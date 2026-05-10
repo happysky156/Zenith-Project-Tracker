@@ -75,6 +75,26 @@ def _html(markup: str) -> str:
 
 
 
+
+
+def _alpha_sort_options(values: list[object], keep_first: tuple[str, ...] = ("", "All")) -> list[object]:
+    leading: list[object] = []
+    others: list[object] = []
+    keep_norm = {str(x).strip().lower() for x in keep_first}
+    for value in values:
+        norm = str(value or "").strip().lower()
+        if norm in keep_norm and value not in leading:
+            leading.append(value)
+        else:
+            others.append(value)
+    others = sorted(others, key=lambda x: str(x or "").strip().lower())
+    return leading + others
+
+
+def _mapping_options(columns: list[object]) -> list[object]:
+    ordered = _alpha_sort_options(columns)
+    return [None] + ordered
+
 def _render_template_downloads() -> None:
     st.markdown("### Template Center")
     st.caption("Download controlled Excel templates from one place. Keep row 1 technical field names unchanged before importing back into the system.")
@@ -514,7 +534,7 @@ if import_mode == "Extension Import":
 
     meta_col1, meta_col2, meta_col3 = st.columns([1.15, 1, 1.25])
     with meta_col1:
-        v18_module = st.selectbox("Module", options=list(V18_MODULES.keys()))
+        v18_module = st.selectbox("Module", options=_alpha_sort_options(list(V18_MODULES.keys())))
     with meta_col2:
         st.text_input("Imported by", value=operator, disabled=True, key="v18_imported_by")
     with meta_col3:
@@ -542,7 +562,7 @@ if import_mode == "Extension Import":
         st.error(f"Failed to read the Excel file: {exc}")
         st.stop()
 
-    v18_sheet_options = list(v18_sheets.keys())
+    v18_sheet_options = _alpha_sort_options(list(v18_sheets.keys()))
     v18_default_sheet_index = v18_sheet_options.index("Template") if "Template" in v18_sheet_options else 0
     v18_sheet_name = st.selectbox("Select sheet", v18_sheet_options, index=v18_default_sheet_index, key="v18_sheet")
     v18_raw_df = v18_sheets[v18_sheet_name]
@@ -554,7 +574,7 @@ if import_mode == "Extension Import":
         _section_head("Field mapping", "Map only what you have. Required fields must be mapped.")
         columns = list(v18_raw_df.columns)
         defaults = v18_guess_mapping(columns, v18_module)
-        options = [None] + columns
+        options = _mapping_options(columns)
         mapping: dict[str, str | None] = {}
         display_map = v18_field_display_map(v18_module)
         fields = v18_field_names(v18_module)
@@ -661,7 +681,7 @@ except Exception as exc:
     st.error(f"Failed to read the Excel file: {exc}")
     st.stop()
 
-sheet_name = st.selectbox("Select sheet", list(sheets.keys()))
+sheet_name = st.selectbox("Select sheet", _alpha_sort_options(list(sheets.keys())))
 raw_df = sheets[sheet_name]
 
 preview_col, mapping_col = st.columns([1.1, 1])
@@ -673,7 +693,7 @@ with mapping_col:
     _section_head("Field mapping", "Only required key fields must be mapped. Optional fields can be left blank.")
     columns = list(raw_df.columns)
     defaults = guess_default_mapping(columns, import_type)
-    options = [None] + columns
+    options = _mapping_options(columns)
     mapping: dict[str, str | None] = {}
     cols = st.columns(2)
     for idx, target in enumerate(ALL_IMPORT_FIELDS[import_type]):

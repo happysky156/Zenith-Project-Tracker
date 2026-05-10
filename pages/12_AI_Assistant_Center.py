@@ -22,6 +22,7 @@ from services.ai_project_service import (
     records_to_dataframe,
 )
 from ui.theme import apply_theme, render_page_header
+from utils.options import sorted_dropdown_options
 
 
 st.set_page_config(
@@ -263,8 +264,8 @@ with left_col:
 
     output_language = st.selectbox(
         "AI output language",
-        SUPPORTED_OUTPUT_LANGUAGES,
-        index=0,
+        sorted_dropdown_options(SUPPORTED_OUTPUT_LANGUAGES, pinned=()),
+        index=sorted_dropdown_options(SUPPORTED_OUTPUT_LANGUAGES, pinned=()).index(SUPPORTED_OUTPUT_LANGUAGES[0]) if SUPPORTED_OUTPUT_LANGUAGES[0] in sorted_dropdown_options(SUPPORTED_OUTPUT_LANGUAGES, pinned=()) else 0,
         key="ai_project_output_language",
     )
 
@@ -289,7 +290,7 @@ with left_col:
     with filter_col1:
         scope = st.selectbox(
             "Search Scope",
-            SUPPORTED_SCOPES,
+            sorted_dropdown_options(SUPPORTED_SCOPES),
             index=0,
             key="ai_project_scope",
             help="Choose All for normal use. Use a specific module if you want to limit the search area.",
@@ -297,14 +298,14 @@ with left_col:
     with filter_col2:
         record_type = st.selectbox(
             "Record Type",
-            SUPPORTED_RECORD_TYPES,
+            sorted_dropdown_options(SUPPORTED_RECORD_TYPES),
             index=0,
             key="ai_project_record_type",
         )
 
     result_limit = st.selectbox(
         "Result Limit",
-        [10, 20, 50],
+        sorted_dropdown_options([10, 20, 50], pinned=()),
         index=1,
         key="ai_project_result_limit",
     )
