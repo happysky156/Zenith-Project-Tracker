@@ -22,6 +22,11 @@ from services.template_service import (
     build_import_template,
     template_file_name,
 )
+from services.process_management_service import (
+    available_quality_process_template_names,
+    build_quality_process_template,
+    quality_template_file_name,
+)
 from services.validation_service import require_required_columns
 from services.upgrade_service import (
     MODULES as V18_MODULES,
@@ -73,9 +78,11 @@ def _html(markup: str) -> str:
 def _render_template_downloads() -> None:
     with st.expander("Download Excel import templates", expanded=True):
         st.caption(
-            "Download controlled Excel templates for system import. These downloads are read-only and do not touch the database. "
+            "Download controlled Excel templates. These downloads are read-only and do not touch the database. "
             "Keep the technical field names in row 1 unchanged when importing back into the system."
         )
+
+        st.markdown("**Current system import templates**")
         names = available_template_names()
         cols = st.columns(3)
         for idx, name in enumerate(names):
@@ -88,6 +95,29 @@ def _render_template_downloads() -> None:
                         file_name=template_file_name(name),
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key=f"download_template_{idx}_{name}",
+                        use_container_width=True,
+                    )
+                except Exception as exc:
+                    st.error(f"Could not generate {name}: {exc}")
+
+        st.divider()
+        st.markdown("**Quality process templates - Phase 1 read-only design**")
+        st.caption(
+            "These templates use the same central process-template definitions as the Quality Process Management page. "
+            "They prepare the later ISO-style process extensions without changing current import logic."
+        )
+        process_names = available_quality_process_template_names()
+        process_cols = st.columns(3)
+        for idx, name in enumerate(process_names):
+            with process_cols[idx % 3]:
+                try:
+                    template_bytes = build_quality_process_template(name).getvalue()
+                    st.download_button(
+                        label=f"Download {name}",
+                        data=template_bytes,
+                        file_name=quality_template_file_name(name),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"download_quality_process_template_{idx}_{name}",
                         use_container_width=True,
                     )
                 except Exception as exc:
