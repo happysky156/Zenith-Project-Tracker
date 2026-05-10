@@ -451,7 +451,53 @@ SAMPLE_TRACKING_FIELDS = (
     FieldSpec("last_updated_by", "Last Updated By", "System updated by."),
 )
 
+
+RFQ_REQUIREMENT_CONTROL_FIELDS = (
+    FieldSpec("rfq_id", "RFQ ID", "System-generated RFQ requirement control record ID. Leave blank to let system generate it."),
+    FieldSpec("process_code", "Process Code", "Process code. System default: QP-01."),
+    FieldSpec("process_version", "Process Version", "Process version. System default: V1.0."),
+    FieldSpec("project_id", "Project ID", "Linked Sales Project ID. Recommended for connecting RFQ control with Sales Board."),
+    FieldSpec("customer", "Customer", "Customer or client code/name.", True),
+    FieldSpec("product_description", "Product Description", "Product description or RFQ item summary.", True),
+    FieldSpec("rfq_working_file_link", "RFQ Working File Link", "Main RFQ working file / WeCom document link."),
+    FieldSpec("customer_original_request_link", "Customer Original Request Link", "Customer original RFQ/email/source file link."),
+    FieldSpec("sourcing_link", "Sourcing Link", "Supplier sourcing or quotation folder link."),
+    FieldSpec("sampling_link", "Sampling Link", "Sampling folder or sample record link."),
+    FieldSpec("design_file_link", "Design File Link", "Drawing or design file link."),
+    FieldSpec("quotation_to_client_link", "Quotation to Client Link", "Client quotation file link."),
+    FieldSpec("original_requirement_notes", "Original Requirement Notes", "Free text customer requirement notes copied from the working file."),
+    FieldSpec("rfq_received_date", "RFQ Received Date", "Date RFQ was received."),
+    FieldSpec("rfq_received_by", "RFQ Received By", "Person who received RFQ."),
+    FieldSpec("drawing_received", "Drawing Received", "Yes / No / By Case."),
+    FieldSpec("specification_received", "Specification Received", "Yes / No / By Case."),
+    FieldSpec("quantity_confirmed", "Quantity Confirmed", "Yes / No / By Case."),
+    FieldSpec("target_price_received", "Target Price Received", "Whether target price exists."),
+    FieldSpec("delivery_requirement", "Delivery Requirement", "Customer delivery requirement."),
+    FieldSpec("packaging_requirement", "Packaging Requirement", "Packaging requirement."),
+    FieldSpec("testing_requirement", "Testing Requirement", "Testing requirement."),
+    FieldSpec("compliance_requirement", "Compliance Requirement", "Compliance requirement."),
+    FieldSpec("sample_required", "Sample Required", "Whether sample is required."),
+    FieldSpec("inspection_required", "Inspection Required", "Whether inspection is required."),
+    FieldSpec("missing_information", "Missing Information", "Missing RFQ information."),
+    FieldSpec("quality_compliance_risk", "Quality / Compliance Risk", "Quality and compliance risk identified by Harley."),
+    FieldSpec("commercial_business_risk", "Commercial / Business Risk", "Commercial and business risk identified by Maria."),
+    FieldSpec("harley_review_status", "Harley Review Status", "Quality/compliance review status."),
+    FieldSpec("maria_review_status", "Maria Review Status", "Business review status."),
+    FieldSpec("current_owner", "Current Owner", "Current follow-up owner for this RFQ."),
+    FieldSpec("next_step", "Next Step", "Next action for RFQ progress."),
+    FieldSpec("due_date", "Due Date", "Due date for the next action."),
+    FieldSpec("risk_level", "Risk Level", "Low / Medium / High / Critical."),
+    FieldSpec("ehab_final_decision", "Ehab Final Decision", "Final risk action decision."),
+    FieldSpec("rfq_gate_status", "RFQ Gate Status", "Open / Pending Information / Ready / Hold / Closed."),
+    FieldSpec("source_file", "Source File", "Imported source file name."),
+    FieldSpec("created_at", "Created At", "System created timestamp."),
+    FieldSpec("created_by", "Created By", "System created by."),
+    FieldSpec("last_updated_at", "Last Updated At", "System updated timestamp."),
+    FieldSpec("last_updated_by", "Last Updated By", "System updated by."),
+)
+
 MODULES: dict[str, ModuleSpec] = {
+    "RFQ Requirement Control": ModuleSpec("RFQ Requirement Control", "rfq_requirement_control", "rfq_id", ("project_id", "customer", "product_description"), RFQ_REQUIREMENT_CONTROL_FIELDS, "RFQ Requirement Control", "QP-01 RFQ Working File + RFQ Control Layer records."),
     "Supplier Details": ModuleSpec("Supplier Details", "supplier_details", "supplier_id", ("supplier_id",), SUPPLIER_FIELDS, "Supplier Details", "Supplier master data shared by Sales and Operation."),
     "Project Items": ModuleSpec("Project Items", "project_items", None, ("project_id", "rfq_item_ref"), PROJECT_ITEM_FIELDS, "Project Items", "Products/items under one Project ID."),
     "Supplier Price Comparison": ModuleSpec("Supplier Price Comparison", "supplier_price_comparisons", "supplier_quote_id", ("supplier_quote_id",), SUPPLIER_PRICE_FIELDS, "Supplier Price Comparison", "Supplier-side cost quotations."),
@@ -524,6 +570,14 @@ def required_fields(module_name: str) -> list[str]:
 
 
 IMPORT_EXCLUDED_FIELDS: dict[str, set[str]] = {
+    "RFQ Requirement Control": {
+        "process_code",
+        "process_version",
+        "created_at",
+        "created_by",
+        "last_updated_at",
+        "last_updated_by",
+    },
     "Supplier Details": {
         "supplier_id",
         "active_status",
@@ -546,6 +600,19 @@ IMPORT_EXCLUDED_FIELDS: dict[str, set[str]] = {
 # ambiguity: "Item Code" maps to RFQ Item Ref in quote-stage modules, and to
 # Order Item Code in order-stage modules.
 IMPORT_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "RFQ Requirement Control": {
+        "rfq_id": ("RFQ ID", "RFQ No", "RFQ No.", "RFQ Number"),
+        "project_id": ("Project ID", "Project No", "Project No."),
+        "customer": ("Customer", "Client", "Client Code", "Customer Code"),
+        "product_description": ("Product Description", "Product", "Item Description", "RFQ Item", "Description"),
+        "rfq_working_file_link": ("RFQ Working File Link", "Working File Link", "Project Summary Link"),
+        "customer_original_request_link": ("Customer Original Request Link", "Original Request Link", "Customer RFQ Link"),
+        "rfq_gate_status": ("RFQ Gate Status", "RFQ Status", "Status"),
+        "current_owner": ("Current Owner", "Owner", "Operator"),
+        "next_step": ("Next Step", "Action", "Next Action"),
+        "due_date": ("Due Date", "Target Date", "Deadline"),
+        "risk_level": ("Risk Level", "Final Risk Level", "Overall Risk Level"),
+    },
     "Project Items": {
         "rfq_item_ref": ("RFQ Item Ref", "RFQ Item Reference", "Quote Item Ref", "Item Code"),
     },
@@ -781,7 +848,10 @@ def _insert_or_update(table: str, id_field: str | None, key_fields: tuple[str, .
     if id_field and record.get(id_field):
         execute(cur, f"SELECT * FROM {table} WHERE {id_field} = ?", (record[id_field],))
         existing = _fetchone_dict(cur)
-    elif key_fields:
+    # If an imported row has no stable system ID yet, or a new system ID was
+    # generated locally, still try the natural key before inserting. This keeps
+    # template re-imports from creating duplicate extension records.
+    if existing is None and key_fields:
         where = " AND ".join(f"{field} = ?" for field in key_fields)
         values = tuple(record.get(field) for field in key_fields)
         if all(values):
@@ -916,7 +986,19 @@ def _prepare_record(module_name: str, raw: dict[str, Any], operator: str | None 
     record = {field.name: _normalize_for_module(module_name, field.name, raw.get(field.name)) for field in spec.fields}
     now = now_iso()
 
-    if module_name == "Supplier Details":
+    if module_name == "RFQ Requirement Control":
+        if not record.get("rfq_id"):
+            record["rfq_id"] = _new_id("RFQ")
+        record["process_code"] = record.get("process_code") or "QP-01"
+        record["process_version"] = record.get("process_version") or "V1.0"
+        record["rfq_gate_status"] = record.get("rfq_gate_status") or "Open"
+        record["risk_level"] = record.get("risk_level") or "Not Reviewed"
+        record["created_at"] = record.get("created_at") or now
+        record["created_by"] = record.get("created_by") or operator
+        record["last_updated_at"] = now
+        record["last_updated_by"] = operator
+
+    elif module_name == "Supplier Details":
         existing = None
         if not record.get("supplier_id"):
             existing = get_supplier_by_code_or_name(record.get("supplier_code"), record.get("supplier_name"))

@@ -469,7 +469,7 @@ if import_mode == "Extension Import":
                 <div class='zi-workflow-title'>Import new module data without touching core Sales / Operation logic</div>
                 <div class='zi-workflow-text'>
                     This import writes only to extension tables such as Supplier Details, Project Items,
-                    Price Comparison, Client Quotation, Index Center, Order Details, Order Costs and Sample Tracking.
+                    RFQ Requirement Control, Supplier Details, Project Items, Price Comparison, Client Quotation, Index Center, Order Details, Order Costs and Sample Tracking.
                 </div>
             </div>
             """
@@ -527,7 +527,9 @@ if import_mode == "Extension Import":
         st.error(f"Failed to read the Excel file: {exc}")
         st.stop()
 
-    v18_sheet_name = st.selectbox("Select sheet", list(v18_sheets.keys()), key="v18_sheet")
+    v18_sheet_options = list(v18_sheets.keys())
+    v18_default_sheet_index = v18_sheet_options.index("Template") if "Template" in v18_sheet_options else 0
+    v18_sheet_name = st.selectbox("Select sheet", v18_sheet_options, index=v18_default_sheet_index, key="v18_sheet")
     v18_raw_df = v18_sheets[v18_sheet_name]
     preview_col, mapping_col = st.columns([1.1, 1])
     with preview_col:

@@ -16,7 +16,7 @@ PROCESS_DEFINITIONS: dict[str, dict[str, Any]] = {
         "short_name": "RFQ Requirement Control",
         "process_type": "Formal Quality Process",
         "version": "V1.0",
-        "status": "Draft / Phase 1 Read-only",
+        "status": "Active / QP-01 Import Enabled",
         "owner": "Harley",
         "quality_owner": "Harley",
         "business_owner": "Maria",
@@ -26,7 +26,7 @@ PROCESS_DEFINITIONS: dict[str, dict[str, Any]] = {
         "purpose": "Upgrade the existing RFQ Working File into an RFQ Control Layer: keep free notes and file links, while adding RFQ status, missing information, risk level, owner, next step, due date and requirement checklist.",
         "trigger": "A customer RFQ or confirmed quotation requirement is received and a project working file is opened.",
         "existing_sources": "Existing RFQ Working File, Sales Board, Project Details, Supplier Details, Price Comparison, Meeting Mode",
-        "extension_needed": "rfq_requirement_control + RFQ Working File mapping",
+        "extension_needed": "rfq_requirement_control extension table + RFQ Working File mapping",
     },
     "QP-02": {
         "process_code": "QP-02",
@@ -177,7 +177,7 @@ CONTROL_POINTS: dict[str, list[dict[str, str]]] = {
 
 QUALITY_TEMPLATE_FIELDS: dict[str, list[dict[str, str]]] = {
     "QP-01": [
-        ("rfq_id", "RFQ ID", "Yes", "Text", "No", "Extension", "Unique RFQ requirement control record."),
+        ("rfq_id", "RFQ ID", "Optional", "Text", "No", "Extension", "Unique RFQ requirement control record. Leave blank to let the system generate one."),
         ("project_id", "Project ID", "Recommended", "Text", "Controlled", "Sales Project", "Linked project ID."),
         ("customer", "Customer", "Yes", "Text", "Controlled", "Sales Project", "Customer or client code."),
         ("product_description", "Product Description", "Yes", "Text", "Yes", "Sales / Extension", "Product description or RFQ item summary."),
@@ -188,29 +188,29 @@ QUALITY_TEMPLATE_FIELDS: dict[str, list[dict[str, str]]] = {
         ("design_file_link", "Design File Link", "Recommended", "Link", "Yes", "Existing RFQ Working File", "Drawing / design file link."),
         ("quotation_to_client_link", "Quotation to Client Link", "No", "Link", "Yes", "Existing RFQ Working File", "Client quotation file link."),
         ("original_requirement_notes", "Original Requirement Notes", "Recommended", "Long Text", "Yes", "Existing RFQ Working File", "Free-text customer requirement notes copied from the working file."),
-        ("rfq_received_date", "RFQ Received Date", "Yes", "Date", "Yes", "Extension", "Date RFQ was received."),
-        ("rfq_received_by", "RFQ Received By", "Yes", "Text", "Yes", "Extension", "Person who received RFQ."),
-        ("drawing_received", "Drawing Received", "Yes", "Yes/No", "Yes", "Extension", "Whether drawing was received."),
-        ("specification_received", "Specification Received", "Yes", "Yes/No", "Yes", "Extension", "Whether specification was received."),
-        ("quantity_confirmed", "Quantity Confirmed", "Yes", "Yes/No", "Yes", "Extension", "Whether quantity is confirmed."),
+        ("rfq_received_date", "RFQ Received Date", "Recommended", "Date", "Yes", "Extension", "Date RFQ was received."),
+        ("rfq_received_by", "RFQ Received By", "Recommended", "Text", "Yes", "Extension", "Person who received RFQ."),
+        ("drawing_received", "Drawing Received", "Recommended", "Yes/No", "Yes", "Extension", "Whether drawing was received."),
+        ("specification_received", "Specification Received", "Recommended", "Yes/No", "Yes", "Extension", "Whether specification was received."),
+        ("quantity_confirmed", "Quantity Confirmed", "Recommended", "Yes/No", "Yes", "Extension", "Whether quantity is confirmed."),
         ("target_price_received", "Target Price Received", "No", "Yes/No", "Yes", "Extension", "Whether target price exists."),
         ("delivery_requirement", "Delivery Requirement", "No", "Text / Date", "Yes", "Extension", "Customer delivery requirement."),
         ("packaging_requirement", "Packaging Requirement", "No", "Text", "Yes", "Extension", "Packaging requirement."),
         ("testing_requirement", "Testing Requirement", "No", "Text", "Yes", "Extension", "Testing requirement."),
         ("compliance_requirement", "Compliance Requirement", "No", "Text", "Yes", "Extension", "Compliance requirement."),
-        ("sample_required", "Sample Required", "Yes", "Yes/No", "Yes", "Extension", "Whether sample is required."),
-        ("inspection_required", "Inspection Required", "Yes", "Yes/No/By Case", "Yes", "Extension", "Whether inspection is required."),
+        ("sample_required", "Sample Required", "Recommended", "Yes/No", "Yes", "Extension", "Whether sample is required."),
+        ("inspection_required", "Inspection Required", "Recommended", "Yes/No/By Case", "Yes", "Extension", "Whether inspection is required."),
         ("missing_information", "Missing Information", "No", "Text", "Yes", "Extension", "Missing RFQ information."),
         ("quality_compliance_risk", "Quality / Compliance Risk", "No", "Text", "Yes", "Extension", "Quality and compliance risk identified by Harley."),
         ("commercial_business_risk", "Commercial / Business Risk", "No", "Text", "Yes", "Extension", "Commercial risk identified by Maria."),
-        ("harley_review_status", "Harley Review Status", "Yes", "Status", "Yes", "Extension", "Quality/compliance review status."),
-        ("maria_review_status", "Maria Review Status", "Yes", "Status", "Yes", "Extension", "Business review status."),
+        ("harley_review_status", "Harley Review Status", "Recommended", "Status", "Yes", "Extension", "Quality/compliance review status."),
+        ("maria_review_status", "Maria Review Status", "Recommended", "Status", "Yes", "Extension", "Business review status."),
         ("current_owner", "Current Owner", "Recommended", "Text", "Yes", "Extension", "Current follow-up owner for this RFQ."),
         ("next_step", "Next Step", "Recommended", "Text", "Yes", "Extension", "Next action for RFQ progress."),
         ("due_date", "Due Date", "Recommended", "Date", "Yes", "Extension", "Due date for the next action."),
         ("risk_level", "Risk Level", "Recommended", "Status", "Yes", "Extension", "Low / Medium / High / Critical."),
         ("ehab_final_decision", "Ehab Final Decision", "No", "Text", "Yes", "Extension", "Final risk action decision."),
-        ("rfq_gate_status", "RFQ Gate Status", "Yes", "Status", "Yes", "Extension", "Open / Pending Information / Ready / Hold / Closed."),
+        ("rfq_gate_status", "RFQ Gate Status", "Recommended", "Status", "Yes", "Extension", "Open / Pending Information / Ready / Hold / Closed."),
     ],
     "QP-02": [
         ("sample_id", "Sample ID", "Yes", "Text", "No", "Extension", "Unique sample control record."),
@@ -787,7 +787,7 @@ def _build_rfq_working_file_template(template_name: str) -> BytesIO:
         ("How to use", "Keep the familiar RFQ Working File. Add RFQ Control Summary, Requirement Checklist, Risk Review and Action Log."),
         ("Source of truth", "The system remains the source of truth after Harley imports or records key fields. Excel is the working file and backup."),
         ("Do not change", "Do not rename technical field names in the Template sheet."),
-        ("Phase 1 note", "This download is read-only template support. It does not change database, import logic or core business logic."),
+        ("QP-01 import note", "The Template sheet can be uploaded through Import Center > Extension Import > RFQ Requirement Control. Import is restricted to Harley."),
     ]
     instructions.append(["Item", "Note"])
     for row_data in instructions_data:
@@ -833,7 +833,7 @@ def build_quality_process_template(template_name: str) -> BytesIO:
             {"Item": "Important", "Note": "Keep technical field names in row 1 unchanged."},
             {"Item": "Example row", "Note": "Row 2 is an example. Delete it before importing real data."},
             {"Item": "Source of truth", "Note": "The system remains the source of truth. Excel is a working template and backup format."},
-            {"Item": "Phase 1 note", "Note": "This template is for read-only process management design. Import support will be connected by process extension in a later phase."},
+            {"Item": "Current note", "Note": "QP-01 RFQ Requirement Control import is enabled. Other process imports will be connected later."},
         ]
     )
     output = BytesIO()
