@@ -35,7 +35,8 @@ render_page_header(
 
 st.caption(
     "Phase 1 is read-only: no database schema changes, no import logic changes, and no core Sales / Operation business logic changes. "
-    "This page maps existing system data into quality-process views and provides controlled template downloads."
+    "This page maps existing system data into quality-process views and provides controlled template downloads. "
+    "QP-01 specifically keeps the existing RFQ Working File approach and adds a light RFQ Control Layer."
 )
 
 
@@ -124,6 +125,57 @@ def _render_control_points(process_code: str) -> None:
     st.dataframe(pd.DataFrame(points), use_container_width=True, hide_index=True)
 
 
+def _render_rfq_positioning() -> None:
+    st.markdown("### RFQ Working File + RFQ Control Layer")
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        st.markdown(
+            """
+            <div style="border:1px solid #E5E7EB; border-radius:14px; padding:14px; background:#FAFAFA; min-height:155px;">
+              <div style="font-weight:700; color:#111827; margin-bottom:6px;">Old flow: RFQ Working File</div>
+              <div style="color:#4B5563; font-size:0.92rem;">Used for free notes, customer original requirements, pictures, and WeCom file links such as sourcing, sampling, design file and quotation to client.</div>
+              <div style="margin-top:10px; color:#047857; font-weight:600;">Keep this strength. Do not force the team to abandon the familiar document.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            """
+            <div style="border:1px solid #E5E7EB; border-radius:14px; padding:14px; background:#F8FAFC; min-height:155px;">
+              <div style="font-weight:700; color:#111827; margin-bottom:6px;">New flow: RFQ Control Layer</div>
+              <div style="color:#4B5563; font-size:0.92rem;">Adds RFQ status, missing information, risk level, owner, next step, due date, requirement checklist and risk review for system tracking.</div>
+              <div style="margin-top:10px; color:#B45309; font-weight:600;">Use it to control risk and create system records.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    upgrade_rows = [
+        {
+            "Old RFQ Working File strength": "Project file link hub",
+            "How it is kept": "Template keeps sourcing / sampling / design / quotation links",
+            "New control added": "Each link has mapped field, owner, last checked date and remarks",
+        },
+        {
+            "Old RFQ Working File strength": "Free notes and customer original requirements",
+            "How it is kept": "Original Requirement Notes section remains flexible",
+            "New control added": "Requirement Checklist converts key items into trackable fields",
+        },
+        {
+            "Old RFQ Working File strength": "Task area",
+            "How it is kept": "Task section remains familiar",
+            "New control added": "Action Log adds owner, due date, status and result link",
+        },
+        {
+            "Old RFQ Working File strength": "Easy for team meeting",
+            "How it is kept": "Excel is still the working file",
+            "New control added": "System records RFQ status, risk level and next step after Harley updates/imports",
+        },
+    ]
+    st.dataframe(pd.DataFrame(upgrade_rows), use_container_width=True, hide_index=True)
+
+
 def _render_quick_actions(process_code: str, rows: list[dict[str, Any]]) -> None:
     definition = get_process_definition(process_code)
     st.markdown("### Quick Actions")
@@ -195,6 +247,8 @@ def _render_process_tab(process_code: str) -> None:
     with left:
         _render_version_card(definition)
         _render_summary(definition)
+        if process_code == "QP-01":
+            _render_rfq_positioning()
         _render_control_points(process_code)
         rows = _render_records_view(process_code)
     with right:

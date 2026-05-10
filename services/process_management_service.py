@@ -4,6 +4,7 @@ from io import BytesIO
 from typing import Any
 
 import pandas as pd
+from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -22,10 +23,10 @@ PROCESS_DEFINITIONS: dict[str, dict[str, Any]] = {
         "final_approver": "Ehab",
         "effective_date": "To be confirmed",
         "scope": "Normal bulk order process, especially key customers such as EHS / Keter.",
-        "purpose": "Control customer RFQ requirements, quality/compliance risk, commercial risk, missing information and final risk decision before supplier quotation and client quotation.",
-        "trigger": "A customer RFQ or confirmed quotation requirement is received.",
-        "existing_sources": "Sales Board, Project Details, Supplier Details, Price Comparison, Meeting Mode",
-        "extension_needed": "rfq_requirement_control",
+        "purpose": "Upgrade the existing RFQ Working File into an RFQ Control Layer: keep free notes and file links, while adding RFQ status, missing information, risk level, owner, next step, due date and requirement checklist.",
+        "trigger": "A customer RFQ or confirmed quotation requirement is received and a project working file is opened.",
+        "existing_sources": "Existing RFQ Working File, Sales Board, Project Details, Supplier Details, Price Comparison, Meeting Mode",
+        "extension_needed": "rfq_requirement_control + RFQ Working File mapping",
     },
     "QP-02": {
         "process_code": "QP-02",
@@ -123,12 +124,13 @@ PROCESS_ORDER = ["QP-01", "QP-02", "QP-03", "QP-04", "QP-05", "SV-01"]
 
 CONTROL_POINTS: dict[str, list[dict[str, str]]] = {
     "QP-01": [
-        {"step": "1", "control_point": "Receive RFQ", "owner": "Ehab & Maria", "required_record": "RFQ ID / customer / product", "risk_controlled": "RFQ not captured or unclear entry point"},
-        {"step": "2", "control_point": "Clarify customer requirements", "owner": "Maria", "required_record": "Missing information list", "risk_controlled": "Quotation based on incomplete requirements"},
-        {"step": "3", "control_point": "Collect supplier quotation", "owner": "Sandy", "required_record": "Supplier quote status", "risk_controlled": "Supplier cost / lead time not clear"},
-        {"step": "4", "control_point": "Quality & compliance risk review", "owner": "Harley", "required_record": "Quality/compliance risk level", "risk_controlled": "Compliance, testing, inspection or quality requirement missed"},
-        {"step": "5", "control_point": "Commercial & business risk review", "owner": "Maria", "required_record": "Commercial risk level", "risk_controlled": "Hidden cost, delivery, margin or customer responsibility risk"},
-        {"step": "6", "control_point": "Final risk decision", "owner": "Ehab", "required_record": "Final risk level and action", "risk_controlled": "High-risk RFQ continues without management decision"},
+        {"step": "1", "control_point": "Receive RFQ and open RFQ Working File", "owner": "Ehab & Maria / Operator", "required_record": "RFQ ID / RFQ Working File link / customer / product", "risk_controlled": "RFQ not captured or project file entry point is unclear"},
+        {"step": "2", "control_point": "Record original requirement notes and project file links", "owner": "Operator / Sandy", "required_record": "Original notes + sourcing / sampling / design / quotation links", "risk_controlled": "Project information and documents are scattered"},
+        {"step": "3", "control_point": "Complete RFQ Control Summary and requirement checklist", "owner": "Harley + Maria + Sandy", "required_record": "RFQ status / missing information / checklist / owner / next step / due date", "risk_controlled": "Working file is readable but not controllable"},
+        {"step": "4", "control_point": "Collect supplier quotation", "owner": "Sandy", "required_record": "Supplier quote status", "risk_controlled": "Supplier cost / lead time not clear"},
+        {"step": "5", "control_point": "Quality & compliance risk review", "owner": "Harley", "required_record": "Quality/compliance risk level", "risk_controlled": "Compliance, testing, inspection or quality requirement missed"},
+        {"step": "6", "control_point": "Commercial & business risk review", "owner": "Maria", "required_record": "Commercial risk level", "risk_controlled": "Hidden cost, delivery, margin or customer responsibility risk"},
+        {"step": "7", "control_point": "Final gate decision", "owner": "Ehab", "required_record": "Final risk level and action", "risk_controlled": "High-risk RFQ continues without management decision"},
     ],
     "QP-02": [
         {"step": "1", "control_point": "Decide whether sample is required", "owner": "Harley + Sandy", "required_record": "Sample required?", "risk_controlled": "New product proceeds without sample control"},
@@ -179,6 +181,13 @@ QUALITY_TEMPLATE_FIELDS: dict[str, list[dict[str, str]]] = {
         ("project_id", "Project ID", "Recommended", "Text", "Controlled", "Sales Project", "Linked project ID."),
         ("customer", "Customer", "Yes", "Text", "Controlled", "Sales Project", "Customer or client code."),
         ("product_description", "Product Description", "Yes", "Text", "Yes", "Sales / Extension", "Product description or RFQ item summary."),
+        ("rfq_working_file_link", "RFQ Working File Link", "Recommended", "Link", "Yes", "Existing RFQ Working File", "Main project working file link used by the team."),
+        ("customer_original_request_link", "Customer Original Request Link", "Recommended", "Link", "Yes", "Existing RFQ Working File", "Customer email / original RFQ / source file link."),
+        ("sourcing_link", "Sourcing Link", "Recommended", "Link", "Yes", "Existing RFQ Working File", "Supplier sourcing / quotation folder link."),
+        ("sampling_link", "Sampling Link", "No", "Link", "Yes", "Existing RFQ Working File", "Sampling folder or sample record link."),
+        ("design_file_link", "Design File Link", "Recommended", "Link", "Yes", "Existing RFQ Working File", "Drawing / design file link."),
+        ("quotation_to_client_link", "Quotation to Client Link", "No", "Link", "Yes", "Existing RFQ Working File", "Client quotation file link."),
+        ("original_requirement_notes", "Original Requirement Notes", "Recommended", "Long Text", "Yes", "Existing RFQ Working File", "Free-text customer requirement notes copied from the working file."),
         ("rfq_received_date", "RFQ Received Date", "Yes", "Date", "Yes", "Extension", "Date RFQ was received."),
         ("rfq_received_by", "RFQ Received By", "Yes", "Text", "Yes", "Extension", "Person who received RFQ."),
         ("drawing_received", "Drawing Received", "Yes", "Yes/No", "Yes", "Extension", "Whether drawing was received."),
@@ -196,6 +205,10 @@ QUALITY_TEMPLATE_FIELDS: dict[str, list[dict[str, str]]] = {
         ("commercial_business_risk", "Commercial / Business Risk", "No", "Text", "Yes", "Extension", "Commercial risk identified by Maria."),
         ("harley_review_status", "Harley Review Status", "Yes", "Status", "Yes", "Extension", "Quality/compliance review status."),
         ("maria_review_status", "Maria Review Status", "Yes", "Status", "Yes", "Extension", "Business review status."),
+        ("current_owner", "Current Owner", "Recommended", "Text", "Yes", "Extension", "Current follow-up owner for this RFQ."),
+        ("next_step", "Next Step", "Recommended", "Text", "Yes", "Extension", "Next action for RFQ progress."),
+        ("due_date", "Due Date", "Recommended", "Date", "Yes", "Extension", "Due date for the next action."),
+        ("risk_level", "Risk Level", "Recommended", "Status", "Yes", "Extension", "Low / Medium / High / Critical."),
         ("ehab_final_decision", "Ehab Final Decision", "No", "Text", "Yes", "Extension", "Final risk action decision."),
         ("rfq_gate_status", "RFQ Gate Status", "Yes", "Status", "Yes", "Extension", "Open / Pending Information / Ready / Hold / Closed."),
     ],
@@ -432,6 +445,13 @@ def _example_for_field(field_name: str) -> Any:
         "supplier_code": "SUP-001",
         "supplier_name": "Example Supplier Co., Ltd.",
         "product_description": "Dolly wheel set",
+        "rfq_working_file_link": "https://example.com/rfq-working-file",
+        "customer_original_request_link": "https://example.com/customer-original-request",
+        "sourcing_link": "https://example.com/sourcing-folder",
+        "sampling_link": "https://example.com/sampling-folder",
+        "design_file_link": "https://example.com/design-file",
+        "quotation_to_client_link": "https://example.com/quotation-to-client",
+        "original_requirement_notes": "URGENT project from EHS. Wheel diameter 40-50 mm, black preferred, loading capacity 30 kg, zinc coating, SST 72 hours.",
         "rfq_received_date": "2026-05-08",
         "rfq_received_by": "Maria",
         "drawing_received": "Yes",
@@ -447,6 +467,9 @@ def _example_for_field(field_name: str) -> Any:
         "harley_review_status": "Pending",
         "maria_review_status": "Pending",
         "rfq_gate_status": "Open",
+        "current_owner": "Sandy",
+        "due_date": "2026-05-12",
+        "risk_level": "Medium",
         "sample_type": "Customer Sample",
         "customer_sample_qty": 2,
         "testing_sample_qty": 2,
@@ -547,10 +570,256 @@ def _style_workbook(writer: pd.ExcelWriter) -> None:
             cell.font = Font(color="374151")
 
 
+
+def _add_sheet_title(ws, title: str, subtitle: str | None = None) -> None:
+    ws.merge_cells("A1:H1")
+    ws["A1"] = title
+    ws["A1"].font = Font(bold=True, size=18, color="B91C1C")
+    ws["A1"].alignment = Alignment(vertical="center")
+    ws.row_dimensions[1].height = 30
+    if subtitle:
+        ws.merge_cells("A2:H2")
+        ws["A2"] = subtitle
+        ws["A2"].font = Font(italic=True, color="4B5563")
+        ws["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+        ws.row_dimensions[2].height = 28
+
+
+def _style_range(ws, cell_range: str, *, fill: str | None = None, font_color: str = "111827", bold: bool = False) -> None:
+    thin = Side(style="thin", color="D1D5DB")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for row in ws[cell_range]:
+        for cell in row:
+            if fill:
+                cell.fill = PatternFill("solid", fgColor=fill)
+            cell.font = Font(color=font_color, bold=bold)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border = border
+
+
+def _build_rfq_working_file_template(template_name: str) -> BytesIO:
+    """RFQ template that keeps the old RFQ Working File strengths and adds the new RFQ Control Layer."""
+    fields = _field_rows("QP-01")
+    field_names = [row["field_name"] for row in fields]
+    example = {field: _example_for_field(field) for field in field_names}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RFQ Working File"
+    _add_sheet_title(
+        ws,
+        "RFQ Working File + Control Layer",
+        "Use this sheet as the familiar project working file: free notes and WeCom file links stay here. The control sections below add RFQ status, owner, next step and requirement tracking.",
+    )
+    widths = {"A": 22, "B": 34, "C": 22, "D": 22, "E": 20, "F": 20, "G": 20, "H": 24}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    # Link hub
+    ws["A4"] = "Project File Links"
+    ws["A4"].font = Font(bold=True, size=13, color="111827")
+    link_rows = [
+        ("Customer original request", "Paste customer RFQ/email/source link here", "customer_original_request_link"),
+        ("Sourcing", "Paste sourcing/quotation folder link here", "sourcing_link"),
+        ("Sampling", "Paste sampling folder link here", "sampling_link"),
+        ("Design File", "Paste drawing/design file link here", "design_file_link"),
+        ("Quotation to Client", "Paste client quotation file link here", "quotation_to_client_link"),
+        ("System Project Link", "Optional system project link", "system_project_link"),
+    ]
+    ws.append([])
+    start = 5
+    ws.append(["Link Type", "Link / Description", "Mapped Field", "Owner", "Last Checked", "Remarks"])
+    for item in link_rows:
+        ws.append([item[0], item[1], item[2], "", "", ""])
+    _style_range(ws, f"A{start}:F{start}", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(ws, f"A{start+1}:F{start+len(link_rows)}")
+
+    # Basic info
+    row = start + len(link_rows) + 3
+    ws[f"A{row}"] = "Project Basic Information"
+    ws[f"A{row}"].font = Font(bold=True, size=13, color="111827")
+    row += 1
+    headers = ["Client information", "Code", "QC/QA Level", "Exchange Rate", "Commission", "Date", "Operator"]
+    for idx, header in enumerate(headers, start=1):
+        ws.cell(row, idx).value = header
+    ws.append(["", "EHS", "", "", "", "", "Sandy"])
+    _style_range(ws, f"A{row}:G{row}", fill="D9EAD3", bold=True)
+    _style_range(ws, f"A{row+1}:G{row+1}")
+
+    # RFQ Control Summary
+    row += 4
+    ws[f"A{row}"] = "RFQ Control Summary"
+    ws[f"A{row}"].font = Font(bold=True, size=13, color="B91C1C")
+    row += 1
+    summary = [
+        ("RFQ ID", "RFQ-202605-001", "Harley/System"),
+        ("Project ID", "SDG-26-001", "System / Sales Board"),
+        ("RFQ Gate Status", "Open / Pending Information / Ready / Hold / Closed", "Harley"),
+        ("Risk Level", "Low / Medium / High / Critical", "Harley + Maria / Ehab final"),
+        ("Current Owner", "Sandy / Maria / Harley", "Process owner"),
+        ("Next Step", "Confirm missing requirement / request supplier quote", "Owner"),
+        ("Due Date", "YYYY-MM-DD", "Owner"),
+    ]
+    ws.append(["Control Field", "Value", "Responsible / Source", "Remarks"])
+    for item in summary:
+        ws.append([item[0], item[1], item[2], ""])
+    _style_range(ws, f"A{row}:D{row}", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(ws, f"A{row+1}:D{row+len(summary)}")
+
+    # Original notes
+    row += len(summary) + 3
+    ws[f"A{row}"] = "Original Requirement Notes"
+    ws[f"A{row}"].font = Font(bold=True, size=13, color="B91C1C")
+    row += 1
+    ws.merge_cells(start_row=row, start_column=1, end_row=row+5, end_column=8)
+    ws.cell(row, 1).value = "Paste original customer RFQ notes, product description, pictures reference, dimensions, quantities and special comments here. Keep this area flexible."
+    ws.cell(row, 1).alignment = Alignment(vertical="top", wrap_text=True)
+    ws.cell(row, 1).fill = PatternFill("solid", fgColor="FFF7ED")
+    _style_range(ws, f"A{row}:H{row+5}")
+
+    # Task/action log
+    row += 8
+    ws[f"A{row}"] = "Task / Action Log"
+    ws[f"A{row}"].font = Font(bold=True, size=13, color="B91C1C")
+    row += 1
+    action_headers = ["No.", "Action", "Owner", "Due Date", "Status", "Result / Link", "Remarks"]
+    for idx, header in enumerate(action_headers, start=1):
+        ws.cell(row, idx).value = header
+    for i in range(1, 6):
+        ws.append([i, "", "", "", "Open / In Progress / Done", "", ""])
+    _style_range(ws, f"A{row}:G{row}", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(ws, f"A{row+1}:G{row+5}")
+
+    # Dedicated control summary sheet for structured RFQ gate management
+    control = wb.create_sheet("RFQ Control Summary")
+    _add_sheet_title(control, "RFQ Control Summary", "Standardised control area. Use this sheet to convert the free RFQ Working File into trackable system fields.")
+    control_headers = ["Control Field", "Value", "Owner / Source", "System Field", "Remarks"]
+    for idx, header in enumerate(control_headers, start=1):
+        control.cell(4, idx).value = header
+    control_rows = [
+        ("RFQ ID", "RFQ-202605-001", "Harley / System", "rfq_id", "Unique RFQ control record"),
+        ("Project ID", "SDG-26-001", "Sales Board", "project_id", "Linked project"),
+        ("RFQ Working File Link", "https://example.com/rfq-working-file", "Operator", "rfq_working_file_link", "Main Excel / WeCom working file"),
+        ("Customer", "EHS", "Sales Board", "customer", "Customer code/name"),
+        ("Product Description", "1.5-2 inch casters", "RFQ Working File", "product_description", "Short RFQ item description"),
+        ("RFQ Gate Status", "Open / Pending Information / Ready / Hold / Closed", "Harley", "rfq_gate_status", "Current gate status"),
+        ("Missing Information", "", "Maria / Harley / Sandy", "missing_information", "Information required before supplier quotation or client quotation"),
+        ("Risk Level", "Low / Medium / High / Critical", "Harley + Maria / Ehab final", "risk_level", "Overall risk level"),
+        ("Current Owner", "Sandy", "Process owner", "current_owner", "Current follow-up owner"),
+        ("Next Step", "Confirm missing information", "Owner", "next_step", "Next action"),
+        ("Due Date", "YYYY-MM-DD", "Owner", "due_date", "Action due date"),
+    ]
+    for row_data in control_rows:
+        control.append(row_data)
+    _style_range(control, "A4:E4", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(control, f"A5:E{4+len(control_rows)}")
+    for col in "ABCDE":
+        control.column_dimensions[col].width = 30
+
+    # Requirement checklist sheet
+    req = wb.create_sheet("Requirement Checklist")
+    _add_sheet_title(req, "RFQ Requirement Checklist", "Structured checklist added on top of the RFQ Working File. This is the main control layer for missing information and risk visibility.")
+    req_headers = ["Requirement", "Confirmed?", "Source / Link", "Owner", "Risk / Remark"]
+    for idx, header in enumerate(req_headers, start=1):
+        req.cell(4, idx).value = header
+    requirements = [
+        "Drawing / design file", "Specification", "Quantity", "Target price", "Delivery requirement", "Packaging requirement", "Testing requirement", "Compliance requirement", "Sample requirement", "Inspection requirement", "Special customer requirement", "Missing information"
+    ]
+    for i, item in enumerate(requirements, start=5):
+        req.cell(i, 1).value = item
+        req.cell(i, 2).value = "Yes / No / By Case"
+        req.cell(i, 4).value = "Maria / Harley / Sandy"
+    _style_range(req, "A4:E4", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(req, f"A5:E{4+len(requirements)}")
+    for col in "ABCDE":
+        req.column_dimensions[col].width = 26
+
+    # Risk review sheet
+    risk = wb.create_sheet("Risk Review")
+    _add_sheet_title(risk, "RFQ Risk Review", "Harley owns quality/compliance risk, Maria owns commercial/business risk, and Ehab confirms final risk level and action for major cases.")
+    risk_headers = ["Risk Area", "Primary Owner", "Risk Level", "Risk Description", "Suggested Action", "Final Decision / Approval"]
+    for idx, header in enumerate(risk_headers, start=1):
+        risk.cell(4, idx).value = header
+    risk_rows = [
+        ("Quality risk", "Harley", "Low / Medium / High / Critical", "", "", ""),
+        ("Regulatory / compliance risk", "Harley", "Low / Medium / High / Critical", "", "", ""),
+        ("Customer contract / key-account requirement", "Harley", "Low / Medium / High / Critical", "", "", ""),
+        ("New product / supplier / process risk", "Harley", "Low / Medium / High / Critical", "", "", ""),
+        ("Specification deviation / non-conformance", "Harley", "Low / Medium / High / Critical", "", "", ""),
+        ("Price / margin / hidden cost", "Maria", "Low / Medium / High / Critical", "", "", ""),
+        ("Delivery / supply capability", "Maria", "Low / Medium / High / Critical", "", "", ""),
+        ("Customer relationship / strategic customer", "Maria", "Low / Medium / High / Critical", "", "", ""),
+        ("Unclear responsibility boundary", "Maria", "Low / Medium / High / Critical", "", "", ""),
+        ("Final risk level and action", "Ehab", "Low / Medium / High / Critical", "", "", ""),
+    ]
+    for row_data in risk_rows:
+        risk.append(row_data)
+    _style_range(risk, "A4:F4", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(risk, f"A5:F{4+len(risk_rows)}")
+    for col in "ABCDEF":
+        risk.column_dimensions[col].width = 28
+
+    # Import template, field guide and instructions
+    template = wb.create_sheet("Template")
+    for idx, name in enumerate(field_names, start=1):
+        template.cell(1, idx).value = name
+        template.cell(2, idx).value = example.get(name, "")
+    _style_range(template, f"A1:{get_column_letter(len(field_names))}1", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(template, f"A2:{get_column_letter(len(field_names))}2", fill="F3F4F6")
+    template.freeze_panes = "A2"
+    template.auto_filter.ref = template.dimensions
+
+    guide = wb.create_sheet("Field Guide")
+    guide_headers = ["field_name", "display_name", "required", "data_type", "editable_in_excel", "source", "description"]
+    for idx, header in enumerate(guide_headers, start=1):
+        guide.cell(1, idx).value = header
+    for r, row in enumerate(fields, start=2):
+        for c, header in enumerate(guide_headers, start=1):
+            guide.cell(r, c).value = row.get(header, "")
+    _style_range(guide, f"A1:G1", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(guide, f"A2:G{len(fields)+1}")
+    guide.freeze_panes = "A2"
+    guide.auto_filter.ref = guide.dimensions
+
+    instructions = wb.create_sheet("Instructions")
+    instructions_data = [
+        ("Positioning", "Old flow = RFQ Working File for free notes and file links. New flow = RFQ Control Layer for risk control, responsibility tracking and system records."),
+        ("How to use", "Keep the familiar RFQ Working File. Add RFQ Control Summary, Requirement Checklist, Risk Review and Action Log."),
+        ("Source of truth", "The system remains the source of truth after Harley imports or records key fields. Excel is the working file and backup."),
+        ("Do not change", "Do not rename technical field names in the Template sheet."),
+        ("Phase 1 note", "This download is read-only template support. It does not change database, import logic or core business logic."),
+    ]
+    instructions.append(["Item", "Note"])
+    for row_data in instructions_data:
+        instructions.append(row_data)
+    _style_range(instructions, "A1:B1", fill="111827", font_color="FFFFFF", bold=True)
+    _style_range(instructions, f"A2:B{len(instructions_data)+1}")
+    instructions.column_dimensions["A"].width = 22
+    instructions.column_dimensions["B"].width = 90
+
+    for sheet in wb.worksheets:
+        sheet.freeze_panes = sheet.freeze_panes or "A2"
+        for row in sheet.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+        for col_idx, col_cells in enumerate(sheet.columns, start=1):
+            max_len = 10
+            for cell in col_cells[:80]:
+                value = "" if cell.value is None else str(cell.value)
+                max_len = max(max_len, min(len(value), 48))
+            sheet.column_dimensions[get_column_letter(col_idx)].width = max(sheet.column_dimensions[get_column_letter(col_idx)].width or 0, min(max_len + 2, 38))
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
 def build_quality_process_template(template_name: str) -> BytesIO:
     if template_name not in QUALITY_TEMPLATE_NAMES:
         raise ValueError(f"Unsupported quality process template: {template_name}")
     process_code = QUALITY_TEMPLATE_NAMES[template_name]
+    if process_code == "QP-01":
+        return _build_rfq_working_file_template(template_name)
     definition = PROCESS_DEFINITIONS.get(process_code, {"process_code": "HISTORY", "process_name": "Process History"})
     fields = _field_rows(process_code)
     field_names = [row["field_name"] for row in fields]
