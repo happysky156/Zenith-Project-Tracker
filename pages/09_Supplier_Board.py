@@ -205,7 +205,7 @@ with st.expander("Add new supplier", expanded=False):
                 st.error("Supplier Name is required.")
             else:
                 upsert_module_record(
-                    "Supplier Board",
+                    MODULE_NAME,
                     {
                         "supplier_code": supplier_code,
                         "supplier_name": supplier_name,
