@@ -26,6 +26,7 @@ from services.meeting_service import (
     save_meeting_reference_links,
 )
 from ui.ai_review_ui import render_ai_review
+from ui.ai_meeting_prep_widget import render_ai_meeting_prep_assistant
 from ui.theme import apply_theme, render_badges, render_page_header
 from utils.options import sorted_dropdown_options
 
@@ -940,6 +941,9 @@ if ai_meeting_pack:
         if st.button("Clear AI Meeting Control Pack", use_container_width=True):
             st.session_state.pop("ai_meeting_control_pack", None)
             st.rerun()
+
+with st.expander("AI Meeting Prep Assistant · Structure one project/order update", expanded=False):
+    render_ai_meeting_prep_assistant(current_user, key_prefix="meeting_board_ai_prep")
 
 summary_output = st.session_state.get("meeting_summary_output")
 if summary_output:

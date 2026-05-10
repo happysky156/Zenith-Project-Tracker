@@ -116,7 +116,7 @@ def apply_ai_meeting_draft(
         entity_id,
         updates,
         operator=operator,
-        source_page="AI Meeting Assistant",
+        source_page="Meeting Board AI Meeting Prep Assistant",
         event_type="AI Meeting Prep Applied",
     )
     result["entity_type"] = entity_type

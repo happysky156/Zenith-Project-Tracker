@@ -240,6 +240,32 @@ def _render_records_view(process_code: str) -> None:
     return rows
 
 
+def _render_process_ai_summary_panel(process_code: str, rows: list[dict[str, Any]] | None = None, *, expanded: bool = False, key_prefix: str = "tab") -> None:
+    definition = get_process_definition(process_code)
+    if rows is None:
+        rows, _ = _safe_records(process_code)
+    with st.expander("AI Process Risk Summary", expanded=expanded):
+        st.caption(
+            "Read-only process review embedded in the Process & Risk Control workflow. "
+            "AI does not change process status, does not write change impact assessment, and does not update mapped records."
+        )
+        state_key = f"ai_process_risk_{key_prefix}_{process_code}"
+        if st.button("Generate AI Process Risk Summary", key=f"{state_key}_button", use_container_width=True):
+            with st.spinner("Generating process risk summary from control points and mapped records..."):
+                st.session_state[state_key] = generate_ai_process_risk_summary(
+                    process_code=process_code,
+                    definition=definition,
+                    control_points=get_control_points(process_code),
+                    rows=rows,
+                )
+        if st.session_state.get(state_key):
+            render_ai_review(
+                st.session_state[state_key],
+                title="AI Process Risk Summary",
+                export_file_prefix=f"ai_process_risk_{process_code.lower()}",
+            )
+
+
 def _render_process_tab(process_code: str) -> None:
     definition = get_process_definition(process_code)
     st.subheader(f"{process_code} · {definition['short_name']}")
@@ -251,18 +277,7 @@ def _render_process_tab(process_code: str) -> None:
             _render_rfq_positioning()
         _render_control_points(process_code)
         rows = _render_records_view(process_code)
-        with st.expander("AI Process Risk Summary", expanded=False):
-            st.caption("Read-only process review. AI does not change process status or write change impact assessment unless a future confirmed save workflow is added.")
-            if st.button("Generate AI Process Risk Summary", key=f"ai_process_risk_{process_code}", use_container_width=True):
-                with st.spinner("Generating process risk summary from control points and mapped records..."):
-                    st.session_state[f"ai_process_risk_{process_code}"] = generate_ai_process_risk_summary(
-                        process_code=process_code,
-                        definition=definition,
-                        control_points=get_control_points(process_code),
-                        rows=rows,
-                    )
-            if st.session_state.get(f"ai_process_risk_{process_code}"):
-                render_ai_review(st.session_state[f"ai_process_risk_{process_code}"], title="AI Process Risk Summary", export_file_prefix=f"ai_process_risk_{process_code.lower()}")
+        _render_process_ai_summary_panel(process_code, rows, expanded=False, key_prefix="process_tab")
     with right:
         _render_quick_actions(process_code, rows)
 
@@ -286,6 +301,17 @@ def _render_overview() -> None:
         "- Other process records are mapped from existing modules where possible.\n"
         "- AI-assisted summaries and impact assessments should only run after a user clicks a generation button and confirms the output."
     )
+
+    st.markdown("### AI Process Risk Summary")
+    st.caption("Select a process code and generate a read-only risk summary directly from this control center.")
+    process_options = PROCESS_ORDER
+    selected_process = st.selectbox(
+        "Process code",
+        process_options,
+        format_func=lambda code: f"{code} · {get_process_definition(code)['short_name']}",
+        key="overview_ai_process_code",
+    )
+    _render_process_ai_summary_panel(selected_process, expanded=True, key_prefix="overview")
 
     st.markdown("### Download all quality process templates")
     names = available_quality_process_template_names()
