@@ -16,6 +16,7 @@ apply_theme()
 render_upgrade_css()
 current_user = require_login()
 operator = current_user["display_name"]
+MODULE_NAME = "Supplier Details"
 
 render_page_header("Supplier Board", "Supplier master data, capability, compliance, quotation history and quality performance.")
 render_upgrade_intro(
@@ -23,7 +24,7 @@ render_upgrade_intro(
     "Supplier ID is the system key. Supplier Code is optional and can stay blank for expo or uncontacted suppliers. Active status, recent order, recent project, quotation count and risk summary are automatically calculated.",
 )
 
-DISPLAY = field_display_map("Supplier Board")
+DISPLAY = field_display_map(MODULE_NAME)
 
 OVERVIEW_FIELDS = [
     "supplier_id", "supplier_code", "supplier_name", "supplier_short_name",
@@ -118,7 +119,7 @@ def _save_tab_form(title: str, fields: list[str], record: dict[str, Any], *, key
             if not str(payload.get("supplier_name") or "").strip():
                 st.error("Supplier Name is required.")
             else:
-                upsert_module_record("Supplier Board", payload, operator=operator)
+                upsert_module_record(MODULE_NAME, payload, operator=operator)
                 st.success(f"{title} saved.")
                 st.rerun()
 
@@ -163,7 +164,7 @@ def _render_link_buttons(record: dict[str, Any], fields: list[str]) -> None:
             st.link_button(_label(field), str(url))
 
 
-rows = list_module_records("Supplier Board", limit=2000)
+rows = list_module_records(MODULE_NAME, limit=2000)
 active_count = sum(1 for r in rows if str(r.get("active_status") or "").lower() == "active")
 missing_code = sum(1 for r in rows if not r.get("supplier_code"))
 high_risk = sum(
@@ -226,7 +227,7 @@ with st.expander("Add new supplier", expanded=False):
                 st.success("Supplier created.")
                 st.rerun()
 
-filtered = render_simple_filter_bar("Supplier Board", rows)
+filtered = render_simple_filter_bar(MODULE_NAME, rows)
 with st.expander("Supplier summary table", expanded=True):
     render_project_table(
         filtered,
@@ -307,6 +308,6 @@ with tabs[7]:
     with st.expander("Field guide", expanded=False):
         guide = [
             {"field_name": f.name, "display_name": f.display, "description": f.description}
-            for f in MODULES["Supplier Board"].fields
+            for f in MODULES[MODULE_NAME].fields
         ]
         render_project_table(guide, ["field_name", "display_name", "description"], empty_message="No fields.", enable_jump=False)

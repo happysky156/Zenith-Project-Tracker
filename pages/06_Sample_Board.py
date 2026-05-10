@@ -11,13 +11,14 @@ apply_theme()
 render_upgrade_css()
 current_user = require_login()
 operator = current_user["display_name"]
+MODULE_NAME = "Sample Tracking"
 render_page_header("Sample Board", "Customer samples, testing samples, retained samples and sample follow-up.")
 render_upgrade_intro(
     "Sample Board",
     "Sample images are stored as links in Phase 1 to keep the system fast. Testing follow-up is kept inside sample tracking for the first version.",
 )
 
-rows = list_module_records("Sample Board", limit=1000)
+rows = list_module_records(MODULE_NAME, limit=1000)
 render_metric_grid({"Sample Records": len(rows), "In Progress": sum(1 for r in rows if str(r.get('sample_status') or '').lower() == 'in progress'), "Testing": sum(1 for r in rows if str(r.get('test_status') or '').lower() in {'testing', 'sent to lab'}), "Need Revision": sum(1 for r in rows if str(r.get('sample_status') or '').lower() == 'need revision')})
 
 with st.expander("Add sample tracking record", expanded=False):
@@ -45,7 +46,7 @@ with st.expander("Add sample tracking record", expanded=False):
                 st.error("Project ID is required.")
             else:
                 upsert_module_record(
-                    "Sample Board",
+                    MODULE_NAME,
                     {
                         "project_id": project_id,
                         "rfq_item_ref": rfq_item_ref,
@@ -66,5 +67,5 @@ with st.expander("Add sample tracking record", expanded=False):
                 st.success("Sample tracking record saved.")
                 st.rerun()
 
-filtered = render_simple_filter_bar("Sample Board", rows)
-render_layered_records("Sample Board", filtered, key_prefix="sample_page", summary_field="sample_status", preview_columns=["project_id", "rfq_item_ref", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"])
+filtered = render_simple_filter_bar(MODULE_NAME, rows)
+render_layered_records(MODULE_NAME, filtered, key_prefix="sample_page", summary_field="sample_status", preview_columns=["project_id", "rfq_item_ref", "supplier_name", "sample_type", "sample_round", "sample_status", "target_sample_date", "test_status", "next_step_owner", "sample_folder_link"])
