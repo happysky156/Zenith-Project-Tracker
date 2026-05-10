@@ -7,7 +7,10 @@ import pandas as pd
 import streamlit as st
 
 from core.auth import require_login
+from services.ai_quotation_review_service import generate_ai_quotation_review
+from services.ai_rfq_review_service import generate_ai_rfq_review
 from services.upgrade_service import list_module_records
+from ui.ai_review_ui import render_ai_review
 from ui.index_center_view import render_market_index_reference
 from ui.theme import apply_theme, render_page_header
 
@@ -82,6 +85,20 @@ with tabs[2]:
         cols = [c for c in ["rfq_id", "drawing_received", "specification_received", "quantity_confirmed", "packaging_requirement", "testing_requirement", "compliance_requirement", "sample_required", "inspection_required", "missing_information"] if c in df.columns]
         st.dataframe(df[cols], width="stretch", hide_index=True)
 
+        with st.expander("AI RFQ Completeness Check", expanded=False):
+            st.caption("Read-only RFQ requirement review. AI does not change RFQ status, risk level, or final decision fields.")
+            rfq_options = ["All RFQ records"] + sorted([str(x) for x in df.get("rfq_id", pd.Series(dtype=str)).dropna().astype(str).unique() if str(x).strip()])
+            selected_rfq_for_ai = st.selectbox("RFQ scope", rfq_options, key="ai_rfq_review_scope")
+            if st.button("AI RFQ Completeness Check", use_container_width=True, disabled=not rfq_records):
+                with st.spinner("Reviewing RFQ completeness from current system records..."):
+                    st.session_state["ai_rfq_review"] = generate_ai_rfq_review(
+                        rfq_records,
+                        supplier_quotes,
+                        rfq_id=None if selected_rfq_for_ai == "All RFQ records" else selected_rfq_for_ai,
+                    )
+            if st.session_state.get("ai_rfq_review"):
+                render_ai_review(st.session_state["ai_rfq_review"], title="AI RFQ Completeness Check", export_file_prefix="ai_rfq_completeness_check")
+
 with tabs[3]:
     st.markdown("### Supplier Sourcing")
     st.caption("Supplier sourcing uses Supplier Board data and supplier quotation records linked by Project ID / RFQ Item Ref.")
@@ -111,6 +128,25 @@ with tabs[5]:
         df = _df(supplier_quotes)
         cols = [c for c in ["project_id", "rfq_item_ref", "item_option", "supplier_code", "supplier_name", "supplier_unit_cost", "currency", "sample_cost", "tooling_cost", "packing_cost", "lead_time", "selected_supplier", "recommended_supplier", "quotation_risk"] if c in df.columns]
         st.dataframe(df[cols], width="stretch", hide_index=True)
+
+        with st.expander("AI Quotation Review", expanded=False):
+            st.caption("Read-only decision support. AI does not select suppliers or generate final customer quotation.")
+            project_options = ["All projects"] + sorted([str(x) for x in df.get("project_id", pd.Series(dtype=str)).dropna().astype(str).unique() if str(x).strip()])
+            selected_project_for_quote_ai = st.selectbox("Project scope", project_options, key="ai_quote_project_scope")
+            scoped_df = df if selected_project_for_quote_ai == "All projects" or "project_id" not in df.columns else df[df["project_id"].astype(str) == selected_project_for_quote_ai]
+            rfq_item_options = ["All items"] + sorted([str(x) for x in scoped_df.get("rfq_item_ref", pd.Series(dtype=str)).dropna().astype(str).unique() if str(x).strip()])
+            selected_item_for_quote_ai = st.selectbox("RFQ item scope", rfq_item_options, key="ai_quote_item_scope")
+            if st.button("AI Quotation Review", use_container_width=True, disabled=not supplier_quotes):
+                with st.spinner("Reviewing quotation completeness and commercial risks..."):
+                    st.session_state["ai_quotation_review"] = generate_ai_quotation_review(
+                        supplier_quotes,
+                        client_headers,
+                        client_lines,
+                        project_id=None if selected_project_for_quote_ai == "All projects" else selected_project_for_quote_ai,
+                        rfq_item_ref=None if selected_item_for_quote_ai == "All items" else selected_item_for_quote_ai,
+                    )
+            if st.session_state.get("ai_quotation_review"):
+                render_ai_review(st.session_state["ai_quotation_review"], title="AI Quotation Review", export_file_prefix="ai_quotation_review")
 
 with tabs[6]:
     render_market_index_reference()

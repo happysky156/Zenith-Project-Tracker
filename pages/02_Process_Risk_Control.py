@@ -8,6 +8,7 @@ import streamlit as st
 
 from core.auth import require_login
 from database.repositories import list_operation_orders, list_sales_projects
+from services.ai_process_risk_service import generate_ai_process_risk_summary
 from services.process_management_service import (
     PROCESS_ORDER,
     available_quality_process_template_names,
@@ -22,6 +23,7 @@ from services.process_management_service import (
     quality_template_file_name,
 )
 from services.upgrade_service import list_module_records, list_order_module_records_by_archive_view
+from ui.ai_review_ui import render_ai_review
 from ui.theme import apply_theme, render_page_header
 
 apply_theme()
@@ -249,6 +251,18 @@ def _render_process_tab(process_code: str) -> None:
             _render_rfq_positioning()
         _render_control_points(process_code)
         rows = _render_records_view(process_code)
+        with st.expander("AI Process Risk Summary", expanded=False):
+            st.caption("Read-only process review. AI does not change process status or write change impact assessment unless a future confirmed save workflow is added.")
+            if st.button("Generate AI Process Risk Summary", key=f"ai_process_risk_{process_code}", use_container_width=True):
+                with st.spinner("Generating process risk summary from control points and mapped records..."):
+                    st.session_state[f"ai_process_risk_{process_code}"] = generate_ai_process_risk_summary(
+                        process_code=process_code,
+                        definition=definition,
+                        control_points=get_control_points(process_code),
+                        rows=rows,
+                    )
+            if st.session_state.get(f"ai_process_risk_{process_code}"):
+                render_ai_review(st.session_state[f"ai_process_risk_{process_code}"], title="AI Process Risk Summary", export_file_prefix=f"ai_process_risk_{process_code.lower()}")
     with right:
         _render_quick_actions(process_code, rows)
 

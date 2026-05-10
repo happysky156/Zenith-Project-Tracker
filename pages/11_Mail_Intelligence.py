@@ -4,6 +4,8 @@ import pandas as pd
 import streamlit as st
 
 from core.auth import require_login
+from services.ai_mail_summary_service import generate_ai_mail_summary
+from ui.ai_review_ui import render_ai_review
 from ui.theme import apply_theme, render_page_header
 
 apply_theme()
@@ -20,6 +22,16 @@ try:
 except Exception as exc:
     st.error(f"Could not read workbook: {type(exc).__name__}: {exc}")
     st.stop()
+
+
+st.markdown("### AI Mail Summary")
+st.caption("This summary only uses the uploaded mail tracker workbook. It does not create Project IDs or update Sales / Operation / Meeting records.")
+if st.button("Generate AI Mail Summary", use_container_width=True):
+    with st.spinner("Summarising uploaded mail workbook..."):
+        st.session_state["ai_mail_summary"] = generate_ai_mail_summary(workbook)
+if st.session_state.get("ai_mail_summary"):
+    with st.expander("AI Mail Summary Output", expanded=True):
+        render_ai_review(st.session_state["ai_mail_summary"], title="AI Mail Summary", export_file_prefix="ai_mail_summary")
 
 sheet_names = list(workbook.keys())
 tabs = st.tabs(sheet_names)

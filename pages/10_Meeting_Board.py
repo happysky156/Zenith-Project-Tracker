@@ -10,6 +10,7 @@ import streamlit as st
 from core.auth import require_login
 from core.dictionaries import PEOPLE
 from services.detail_service import parse_multi_value
+from services.ai_meeting_pack_service import generate_ai_meeting_control_pack, meeting_pack_to_dataframe, meeting_pack_to_markdown
 from services.meeting_service import (
     MEETING_ACTIONS,
     MeetingActionError,
@@ -24,6 +25,7 @@ from services.meeting_service import (
     save_meeting_followup,
     save_meeting_reference_links,
 )
+from ui.ai_review_ui import render_ai_review
 from ui.theme import apply_theme, render_badges, render_page_header
 from utils.options import sorted_dropdown_options
 
@@ -890,7 +892,7 @@ followup_df = build_followup_export_dataframe(export_rows)
 st.session_state.pop("meeting_flash_message", None)
 
 st.markdown("<span class='zt-meeting-tools-marker'></span>", unsafe_allow_html=True)
-tool_cols = st.columns(5)
+tool_cols = st.columns(6)
 with tool_cols[0]:
     if st.button("Save Weekly Snapshot", use_container_width=True, disabled=not all_rows, help="Save a weekly snapshot for the current meeting view."):
         created = generate_weekly_snapshot(all_rows)
@@ -921,6 +923,23 @@ with tool_cols[4]:
         disabled=followup_df.empty,
         help="Download the follow-up list as CSV for the currently visible items.",
     )
+with tool_cols[5]:
+    if st.button(
+        "Generate AI Meeting Control Pack",
+        use_container_width=True,
+        disabled=not display_rows,
+        help="Generate a read-only AI management pack from the currently visible Meeting Board rows.",
+    ):
+        with st.spinner("Generating AI Meeting Control Pack from current visible rows..."):
+            st.session_state["ai_meeting_control_pack"] = generate_ai_meeting_control_pack(display_rows, output_language="English")
+
+ai_meeting_pack = st.session_state.get("ai_meeting_control_pack")
+if ai_meeting_pack:
+    with st.expander("AI Meeting Control Pack", expanded=True):
+        render_ai_review(ai_meeting_pack, title="AI Meeting Control Pack", export_file_prefix="ai_meeting_control_pack")
+        if st.button("Clear AI Meeting Control Pack", use_container_width=True):
+            st.session_state.pop("ai_meeting_control_pack", None)
+            st.rerun()
 
 summary_output = st.session_state.get("meeting_summary_output")
 if summary_output:

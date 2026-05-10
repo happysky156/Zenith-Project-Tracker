@@ -6,6 +6,7 @@ from textwrap import dedent
 import streamlit as st
 
 from core.auth import require_login
+from services.ai_import_review_service import generate_ai_import_review
 from services.import_service import (
     ALL_IMPORT_FIELDS,
     archive_uploaded_import_file,
@@ -39,6 +40,7 @@ from services.upgrade_service import (
     import_required_fields as v18_required_fields,
     validate_import_dataframe as v18_validate_import_dataframe,
 )
+from ui.ai_review_ui import render_ai_review
 from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_page_header
 from utils.excel import guess_default_mapping
@@ -622,6 +624,22 @@ if import_mode == "Extension Import":
     preview_columns = list(dict.fromkeys(preview_columns + ["source_file", "_source_row_number"]))
     render_project_table(v18_mapped_df.to_dict(orient="records"), preview_columns, empty_message="Nothing to preview.", enable_jump=False)
 
+    with st.expander("AI Import Review", expanded=False):
+        st.caption("Read-only check before Confirm Extension Import. AI does not execute import or change database records.")
+        if st.button("AI Check Import File", key=f"ai_v18_import_review_{v18_module}", use_container_width=True):
+            with st.spinner("Checking import file with rule checks and optional AI summary..."):
+                st.session_state["ai_v18_import_review"] = generate_ai_import_review(
+                    raw_df=v18_raw_df,
+                    mapped_df=v18_mapped_df,
+                    module_name=v18_module,
+                    mapping=mapping,
+                    required_fields=list(v18_required_fields(v18_module)),
+                    validation_errors=list(v18_validation.get("errors") or []),
+                    validation_info=v18_validation,
+                )
+        if st.session_state.get("ai_v18_import_review"):
+            render_ai_review(st.session_state["ai_v18_import_review"], title="AI Extension Import Review", export_file_prefix="ai_extension_import_review")
+
     if not v18_validation.get("ready"):
         st.error("Please fix the listed errors before importing.")
         st.stop()
@@ -726,6 +744,29 @@ render_project_table(
     empty_message="Nothing to preview.",
     enable_jump=False,
 )
+
+with st.expander("AI Import Review", expanded=False):
+    st.caption("Read-only check before Confirm Import. AI does not execute import or change database records.")
+    if st.button("AI Check Import File", key=f"ai_core_import_review_{import_type}", use_container_width=True):
+        with st.spinner("Checking import file with rule checks and optional AI summary..."):
+            st.session_state["ai_core_import_review"] = generate_ai_import_review(
+                raw_df=raw_df,
+                mapped_df=preview.dataframe,
+                module_name=f"{import_type} Import",
+                mapping=mapping,
+                required_fields=list(IMPORT_FIELDS[import_type]),
+                validation_errors=list(preview.errors or []),
+                validation_info={
+                    "ready": preview.ready,
+                    "new_count": preview.new_count,
+                    "update_count": preview.update_count,
+                    "missing_required_rows": preview.missing_required_rows,
+                    "duplicate_key_rows": preview.duplicate_key_rows,
+                    "ignored_blank_rows": preview.ignored_blank_rows,
+                },
+            )
+    if st.session_state.get("ai_core_import_review"):
+        render_ai_review(st.session_state["ai_core_import_review"], title="AI Import Review", export_file_prefix="ai_import_review")
 
 if not preview.ready:
     st.error("Please fix the listed errors before importing.")

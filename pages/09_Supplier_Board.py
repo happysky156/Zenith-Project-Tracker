@@ -7,7 +7,9 @@ import pandas as pd
 import streamlit as st
 
 from core.auth import require_login
+from services.ai_supplier_risk_service import generate_ai_supplier_risk_summary
 from services.upgrade_service import field_display_map, list_module_records, upsert_module_record, MODULES
+from ui.ai_review_ui import render_ai_review
 from ui.project_table import render_project_table
 from ui.theme import apply_theme, render_page_header
 from ui.upgrade_ui import render_metric_grid, render_upgrade_css, render_upgrade_intro, render_simple_filter_bar
@@ -281,6 +283,7 @@ tabs = st.tabs([
     "Capability",
     "Commercial & Risk",
     "Activity & System Records",
+    "AI Risk Summary",
 ])
 
 with tabs[0]:
@@ -314,3 +317,14 @@ with tabs[7]:
             for f in MODULES[MODULE_NAME].fields
         ]
         render_project_table(guide, ["field_name", "display_name", "description"], empty_message="No fields.", enable_jump=False)
+
+
+with tabs[8]:
+    st.markdown("#### AI Supplier Risk Summary")
+    st.caption("Read-only supplier risk review. AI does not approve, reject, or change supplier level/data.")
+    supplier_ai_key = f"ai_supplier_risk_summary_{selected_id}"
+    if st.button("Generate AI Supplier Risk Summary", use_container_width=True, key=f"ai_supplier_risk_{selected_id}"):
+        with st.spinner("Generating supplier risk summary from Supplier Details, quotation and order records..."):
+            st.session_state[supplier_ai_key] = generate_ai_supplier_risk_summary(selected)
+    if st.session_state.get(supplier_ai_key):
+        render_ai_review(st.session_state[supplier_ai_key], title="AI Supplier Risk Summary", export_file_prefix=f"ai_supplier_risk_summary_{selected_id}")
