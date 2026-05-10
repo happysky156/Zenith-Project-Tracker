@@ -216,7 +216,48 @@ def _render_review_editor(project: dict[str, Any], draft: dict[str, Any], *, key
     )
 
 
-def render_ai_meeting_prep_assistant(current_user: Any, *, key_prefix: str = "meeting_board_ai_prep") -> None:
+
+def _project_key(project: dict[str, Any] | None) -> str:
+    if not project:
+        return ""
+    return "|".join(
+        [
+            str(project.get("record_type") or ""),
+            str(project.get("entity_id") or ""),
+            str(project.get("project_id") or ""),
+            str(project.get("order_no") or ""),
+        ]
+    )
+
+
+def _project_label(project: dict[str, Any]) -> str:
+    project_id = clean_text(project.get("project_id")) or clean_text(project.get("entity_id")) or "-"
+    project_name = clean_text(project.get("project_name")) or "-"
+    order_no = clean_text(project.get("order_no")) or "-"
+    owner = clean_text(project.get("next_step_owner")) or clean_text(project.get("current_owner")) or "-"
+    status = clean_text(project.get("health_status")) or "-"
+    return f"{project_id} · {project_name} | Order: {order_no} | Owner: {owner} | {status}"
+
+
+def _set_selected_project(project: dict[str, Any], *, key_prefix: str) -> None:
+    new_key = _project_key(project)
+    old_key = st.session_state.get(f"{key_prefix}_selected_project_key")
+    if new_key != old_key:
+        st.session_state[f"{key_prefix}_selected_project"] = project
+        st.session_state[f"{key_prefix}_selected_project_key"] = new_key
+        st.session_state.pop(f"{key_prefix}_generated_draft", None)
+        st.session_state.pop(f"{key_prefix}_saved_draft_id", None)
+        st.session_state.pop(f"{key_prefix}_apply_result", None)
+
+
+def render_ai_meeting_prep_assistant(
+    current_user: Any,
+    *,
+    key_prefix: str = "meeting_board_ai_prep",
+    meeting_context_candidates: list[dict[str, Any]] | None = None,
+    selected_project_context: dict[str, Any] | None = None,
+    compact: bool = False,
+) -> None:
     """Render the AI Meeting Prep Assistant inside Meeting Board.
 
     This widget keeps the previous safety workflow:
@@ -230,175 +271,198 @@ def render_ai_meeting_prep_assistant(current_user: Any, *, key_prefix: str = "me
         _html(
             """
             <div class="zai-note">
-                This assistant is embedded in Meeting Board. AI only prepares structured Meeting Prep suggestions.
-                It does not update Meeting Note. Selected fields are written only after human confirmation.
+                AI Meeting Assistant is embedded in Meeting Board. It prepares structured Meeting Prep suggestions only.
+                Meeting Note is not updated by AI. Selected fields are written only after human confirmation.
             </div>
             """
         ),
         unsafe_allow_html=True,
     )
 
-    left_col, right_col = st.columns([0.95, 1.55], gap="large")
-    with left_col:
-        st.subheader("1 · Find Project / Order")
-        search_query = st.text_input(
-            "Search by Project ID, Project Name, Order No, or Client Code",
-            placeholder="Example: SDG-26-014, GLG180326-1, client code, product name",
-            key=f"{key_prefix}_search_query",
+    context_candidates = list(meeting_context_candidates or [])
+    if selected_project_context and not context_candidates:
+        context_candidates = [selected_project_context]
+
+    if context_candidates:
+        st.subheader("AI Meeting Assistant")
+        st.caption("Target is linked to the current Meeting Board search results. Select one item, then generate a Meeting Prep draft while reviewing the project card beside it.")
+        candidate_keys = [_project_key(item) for item in context_candidates]
+        default_key = _project_key(selected_project_context) if selected_project_context else candidate_keys[0]
+        default_index = candidate_keys.index(default_key) if default_key in candidate_keys else 0
+        selected_context_index = st.selectbox(
+            "Target project / order from current Meeting Board results",
+            options=list(range(len(context_candidates))),
+            index=default_index,
+            format_func=lambda idx: _project_label(context_candidates[int(idx)]),
+            key=f"{key_prefix}_context_target_select",
         )
-        f1, f2 = st.columns(2)
-        with f1:
-            record_type_filter = st.selectbox(
-                "Record Type",
-                ["All", "Sales", "Operation"],
-                index=0,
-                key=f"{key_prefix}_record_type_filter",
+        _set_selected_project(context_candidates[int(selected_context_index)], key_prefix=key_prefix)
+    else:
+        left_col, right_col = st.columns([0.95, 1.55], gap="large")
+        with left_col:
+            st.subheader("1 · Find Project / Order")
+            search_query = st.text_input(
+                "Search by Project ID, Project Name, Order No, or Client Code",
+                placeholder="Example: SDG-26-014, GLG180326-1, client code, product name",
+                key=f"{key_prefix}_search_query",
             )
-        with f2:
-            review_only = st.checkbox("Review This Week only", value=False, key=f"{key_prefix}_review_only")
+            f1, f2 = st.columns(2)
+            with f1:
+                record_type_filter = st.selectbox(
+                    "Record Type",
+                    ["All", "Sales", "Operation"],
+                    index=0,
+                    key=f"{key_prefix}_record_type_filter",
+                )
+            with f2:
+                review_only = st.checkbox("Review This Week only", value=False, key=f"{key_prefix}_review_only")
 
-        if search_query:
-            candidates = search_project_candidates(search_query, record_type_filter=record_type_filter, review_only=review_only)
-            if not candidates:
-                st.info("No confirmed project found. Try another keyword, Project Name, Order No, or Client Code.")
-            else:
-                st.caption(f"Found {len(candidates)} possible record(s). Please select one before AI processing.")
-                for index, candidate in enumerate(candidates):
-                    _candidate_card(candidate, index, key_prefix=key_prefix)
+            if search_query:
+                candidates = search_project_candidates(search_query, record_type_filter=record_type_filter, review_only=review_only)
+                if not candidates:
+                    st.info("No confirmed project found. Try another keyword, Project Name, Order No, or Client Code.")
+                else:
+                    st.caption(f"Found {len(candidates)} possible record(s). Please select one before AI processing.")
+                    for index, candidate in enumerate(candidates):
+                        _candidate_card(candidate, index, key_prefix=key_prefix)
 
-    with right_col:
-        st.subheader("2 · Generate Meeting Prep Draft")
-        selected_project = st.session_state.get(f"{key_prefix}_selected_project")
-        if not selected_project:
-            st.info("Search and select one project/order first.")
-            return
+        with right_col:
+            st.subheader("2 · Generate Meeting Prep Draft")
+    if context_candidates:
+        st.subheader("Generate Meeting Prep Draft")
+    selected_project = st.session_state.get(f"{key_prefix}_selected_project")
+    if not selected_project:
+        st.info("Search and select one project/order first.")
+        return
 
-        _render_selected_project(selected_project)
+    _render_selected_project(selected_project)
+    if not context_candidates:
         if st.button("Clear selected project", use_container_width=True, key=f"{key_prefix}_clear_selected"):
             st.session_state.pop(f"{key_prefix}_selected_project", None)
+            st.session_state.pop(f"{key_prefix}_selected_project_key", None)
             st.session_state.pop(f"{key_prefix}_generated_draft", None)
             st.session_state.pop(f"{key_prefix}_saved_draft_id", None)
             st.session_state.pop(f"{key_prefix}_apply_result", None)
             st.rerun()
 
-        output_language = st.selectbox(
-            "AI output language",
-            ["English", "Chinese", "Bilingual Chinese and English"],
-            index=0,
-            key=f"{key_prefix}_output_language",
-        )
-        meeting_notes = st.text_area(
-            "Colleague input / pre-meeting information",
-            height=160,
-            placeholder="Paste meeting notes, colleague update, client request, supplier feedback, or boss decision point here.",
-            key=f"{key_prefix}_meeting_notes",
-        )
-        generate_disabled = not bool(selected_project.get("project_id")) or not meeting_notes.strip()
+    output_language = st.selectbox(
+        "AI output language",
+        ["English", "Chinese", "Bilingual Chinese and English"],
+        index=0,
+        key=f"{key_prefix}_output_language",
+    )
+    meeting_notes = st.text_area(
+        "Colleague input / pre-meeting information",
+        height=160,
+        placeholder="Paste meeting notes, colleague update, client request, supplier feedback, or boss decision point here.",
+        key=f"{key_prefix}_meeting_notes",
+    )
+    generate_disabled = not bool(selected_project.get("project_id")) or not meeting_notes.strip()
+    if st.button(
+        "Generate AI Meeting Prep Draft",
+        disabled=generate_disabled,
+        type="primary",
+        use_container_width=True,
+        key=f"{key_prefix}_generate",
+    ):
+        try:
+            with st.spinner("AI is preparing Meeting Prep fields..."):
+                draft = extract_meeting_fields_with_ai(
+                    selected_project=selected_project,
+                    meeting_notes=meeting_notes,
+                    output_language=output_language,
+                )
+            st.session_state[f"{key_prefix}_generated_draft"] = draft
+            st.session_state.pop(f"{key_prefix}_saved_draft_id", None)
+            st.session_state.pop(f"{key_prefix}_apply_result", None)
+            st.rerun()
+        except (AIConfigError, AIResponseError) as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"AI processing failed: {exc}")
+
+    draft = st.session_state.get(f"{key_prefix}_generated_draft")
+    if not draft:
+        return
+
+    st.divider()
+    st.subheader("3 · Review AI Suggested Update")
+    st.markdown(
+        _html(
+            f"""
+            <div class="zai-card">
+                <div class="zai-kicker">AI Review Summary</div>
+                <div class="zai-meta">
+                    AI Summary for Review: <b>{_safe(draft.get('ai_summary_for_review'))}</b><br>
+                    Difference Summary: <b>{_safe(draft.get('difference_summary'))}</b><br>
+                    Confidence: <b>{_safe(draft.get('confidence'))}</b><br>
+                    Needs Human Attention: <b>{_safe(draft.get('needs_human_attention'))}</b>
+                </div>
+            </div>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
+    edited_review_frame = _render_review_editor(selected_project, draft, key_prefix=key_prefix)
+    st.warning(
+        "Confirm will apply only the selected fields into Sales / Operation Meeting Prep fields. "
+        "Empty AI fields will not clear existing data. Existing non-empty fields are not selected by default. "
+        "Meeting Note will not be changed."
+    )
+    selected_draft = _draft_from_review_table(edited_review_frame, draft)
+    selected_count = len(selected_draft.get("applied_fields") or [])
+    st.caption(f"Selected fields to apply: {selected_count}")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Save as Pending AI Draft", use_container_width=True, key=f"{key_prefix}_save_pending"):
+            draft_id = save_ai_update_draft(
+                selected_project=selected_project,
+                meeting_notes=meeting_notes,
+                draft_json={"raw_ai_draft": draft, "review_table": edited_review_frame.to_dict("records")},
+                current_user=current_user,
+                status="pending",
+            )
+            st.session_state[f"{key_prefix}_saved_draft_id"] = draft_id
+            st.session_state[f"{key_prefix}_apply_result"] = None
+            st.success(f"AI draft saved. Draft ID: {draft_id}")
+    with c2:
         if st.button(
-            "Generate AI Meeting Prep Draft",
-            disabled=generate_disabled,
+            "Confirm Selected Fields + Update System",
             type="primary",
             use_container_width=True,
-            key=f"{key_prefix}_generate",
+            disabled=selected_count == 0,
+            key=f"{key_prefix}_confirm_apply",
         ):
+            draft_id = save_ai_update_draft(
+                selected_project=selected_project,
+                meeting_notes=meeting_notes,
+                draft_json=selected_draft,
+                current_user=current_user,
+                status="confirmed",
+            )
             try:
-                with st.spinner("AI is preparing Meeting Prep fields..."):
-                    draft = extract_meeting_fields_with_ai(
-                        selected_project=selected_project,
-                        meeting_notes=meeting_notes,
-                        output_language=output_language,
-                    )
-                st.session_state[f"{key_prefix}_generated_draft"] = draft
-                st.session_state.pop(f"{key_prefix}_saved_draft_id", None)
-                st.session_state.pop(f"{key_prefix}_apply_result", None)
-                st.rerun()
-            except (AIConfigError, AIResponseError) as exc:
-                st.error(str(exc))
-            except Exception as exc:
-                st.error(f"AI processing failed: {exc}")
-
-        draft = st.session_state.get(f"{key_prefix}_generated_draft")
-        if not draft:
-            return
-
-        st.divider()
-        st.subheader("3 · Review AI Suggested Update")
-        st.markdown(
-            _html(
-                f"""
-                <div class="zai-card">
-                    <div class="zai-kicker">AI Review Summary</div>
-                    <div class="zai-meta">
-                        AI Summary for Review: <b>{_safe(draft.get('ai_summary_for_review'))}</b><br>
-                        Difference Summary: <b>{_safe(draft.get('difference_summary'))}</b><br>
-                        Confidence: <b>{_safe(draft.get('confidence'))}</b><br>
-                        Needs Human Attention: <b>{_safe(draft.get('needs_human_attention'))}</b>
-                    </div>
-                </div>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
-        edited_review_frame = _render_review_editor(selected_project, draft, key_prefix=key_prefix)
-        st.warning(
-            "Confirm will apply only the selected fields into Sales / Operation Meeting Prep fields. "
-            "Empty AI fields will not clear existing data. Existing non-empty fields are not selected by default. "
-            "Meeting Note will not be changed."
-        )
-        selected_draft = _draft_from_review_table(edited_review_frame, draft)
-        selected_count = len(selected_draft.get("applied_fields") or [])
-        st.caption(f"Selected fields to apply: {selected_count}")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Save as Pending AI Draft", use_container_width=True, key=f"{key_prefix}_save_pending"):
-                draft_id = save_ai_update_draft(
+                apply_result = apply_ai_meeting_draft(
                     selected_project=selected_project,
-                    meeting_notes=meeting_notes,
-                    draft_json={"raw_ai_draft": draft, "review_table": edited_review_frame.to_dict("records")},
-                    current_user=current_user,
-                    status="pending",
+                    draft=selected_draft,
+                    operator=acting_user,
                 )
+                final_status = "confirmed_applied" if apply_result.get("updated") else "confirmed_no_change"
+                mark_ai_draft_status(draft_id=draft_id, status=final_status, current_user=current_user)
                 st.session_state[f"{key_prefix}_saved_draft_id"] = draft_id
-                st.session_state[f"{key_prefix}_apply_result"] = None
-                st.success(f"AI draft saved. Draft ID: {draft_id}")
-        with c2:
-            if st.button(
-                "Confirm Selected Fields + Update System",
-                type="primary",
-                use_container_width=True,
-                disabled=selected_count == 0,
-                key=f"{key_prefix}_confirm_apply",
-            ):
-                draft_id = save_ai_update_draft(
-                    selected_project=selected_project,
-                    meeting_notes=meeting_notes,
-                    draft_json=selected_draft,
-                    current_user=current_user,
-                    status="confirmed",
-                )
-                try:
-                    apply_result = apply_ai_meeting_draft(
-                        selected_project=selected_project,
-                        draft=selected_draft,
-                        operator=acting_user,
-                    )
-                    final_status = "confirmed_applied" if apply_result.get("updated") else "confirmed_no_change"
-                    mark_ai_draft_status(draft_id=draft_id, status=final_status, current_user=current_user)
-                    st.session_state[f"{key_prefix}_saved_draft_id"] = draft_id
-                    st.session_state[f"{key_prefix}_apply_result"] = apply_result
-                    if apply_result.get("updated"):
-                        st.success(f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}.")
-                    else:
-                        st.info(f"AI draft confirmed, but no field changed. Draft ID: {draft_id}.")
-                except Exception as exc:
-                    mark_ai_draft_status(draft_id=draft_id, status="apply_failed", current_user=current_user)
-                    st.error(f"Saved draft, but applying selected fields failed: {exc}")
+                st.session_state[f"{key_prefix}_apply_result"] = apply_result
+                if apply_result.get("updated"):
+                    st.success(f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}.")
+                else:
+                    st.info(f"AI draft confirmed, but no field changed. Draft ID: {draft_id}.")
+            except Exception as exc:
+                mark_ai_draft_status(draft_id=draft_id, status="apply_failed", current_user=current_user)
+                st.error(f"Saved draft, but applying selected fields failed: {exc}")
 
-        apply_result = st.session_state.get(f"{key_prefix}_apply_result")
-        if apply_result:
-            updated_fields = apply_result.get("updated_fields") or []
-            skipped_fields = apply_result.get("skipped_fields") or []
-            if updated_fields:
-                st.write("Updated fields:", ", ".join(updated_fields))
-            if skipped_fields:
-                st.write("Skipped fields:", ", ".join(skipped_fields))
+    apply_result = st.session_state.get(f"{key_prefix}_apply_result")
+    if apply_result:
+        updated_fields = apply_result.get("updated_fields") or []
+        skipped_fields = apply_result.get("skipped_fields") or []
+        if updated_fields:
+            st.write("Updated fields:", ", ".join(updated_fields))
+        if skipped_fields:
+            st.write("Skipped fields:", ", ".join(skipped_fields))

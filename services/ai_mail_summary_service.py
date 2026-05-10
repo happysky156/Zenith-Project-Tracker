@@ -30,7 +30,11 @@ def generate_ai_mail_summary(
     project_context: dict[str, Any] | None = None,
     matched_record_count: int | None = None,
 ) -> dict[str, Any]:
-    """Summarise uploaded Mail Tracker workbook data without writing to the project database."""
+    """Summarise uploaded Mail Tracker workbook data.
+
+Mail Tracker data may be stored in isolated Mail Tracker tables, but this
+summary must not update formal Sales / Operation / Meeting records.
+"""
     workbook = workbook or {}
     keywords = [clean_text(k) for k in (keywords or []) if clean_text(k)]
     project_context = project_context or {}
@@ -63,9 +67,9 @@ def generate_ai_mail_summary(
 
     no_match = total_rows == 0
     direct_summary = (
-        "No mail rows matched the current keyword / date / project filters. No project database records were changed."
+        "No mail rows matched the current keyword / date / project filters. No formal project/order records were changed."
         if no_match
-        else f"AI Mail Summary generated from {total_rows} matched mail row(s) across {len(sheet_rows)} sheet(s). This is read-only and does not write to the project database."
+        else f"AI Mail Summary generated from {total_rows} matched mail row(s) across {len(sheet_rows)} sheet(s). This summary does not update formal Sales / Operation / Meeting records."
     )
 
     fallback = default_review(
@@ -73,7 +77,7 @@ def generate_ai_mail_summary(
         direct_summary=direct_summary,
         key_findings=findings,
         risks=[
-            "Mail Tracker is import-and-view only in this system. This AI summary must not create Project IDs or update Sales / Operation / Meeting records.",
+            "Mail Tracker can be stored in isolated Mail Tracker tables, but this AI summary must not create Project IDs or update Sales / Operation / Meeting records automatically.",
             "Matched emails should be checked against formal system records before any manual project update.",
         ],
         missing_information=[] if mentions else ["No obvious Project ID / Order No / attachment mentions detected in sampled matched rows."],
@@ -96,7 +100,7 @@ def generate_ai_mail_summary(
             "date_filter": date_filter or "All uploaded mails",
             "project_context": project_context,
             "matched_record_count": matched_record_count if matched_record_count is not None else total_rows,
-            "read_only_boundary": "Mail Tracker can only import and view uploaded workbook data. It cannot write into the project database.",
+            "mail_tracker_boundary": "Mail Tracker may save uploaded mail data into isolated Mail Tracker tables. It does not automatically write into Sales / Operation / Meeting records.",
         },
     )
     if not use_ai or no_match:
@@ -117,7 +121,7 @@ def generate_ai_mail_summary(
             "Inconsistency with System Records if project_context is provided",
             "Suggested Follow-up",
         ],
-        "hard_boundary": "Do not write to the project database. Do not create Project ID. Do not update Sales, Operation, or Meeting fields.",
+        "hard_boundary": "Do not create Project ID. Do not update Sales, Operation, or Meeting fields. Mail Tracker database storage is isolated from formal business records.",
         "deterministic_review": fallback,
     }
     result = run_ai_review_or_fallback(review_name="AI Mail Search & Summary", context=context, fallback=fallback, output_language=output_language)
@@ -125,7 +129,7 @@ def generate_ai_mail_summary(
     result.setdefault("keywords", keywords)
     result.setdefault("date_filter", date_filter or "All uploaded mails")
     result.setdefault("project_context", project_context)
-    result.setdefault("read_only_boundary", "Mail Tracker can only import and view uploaded workbook data. It cannot write into the project database.")
+    result.setdefault("mail_tracker_boundary", "Mail Tracker may save uploaded mail data into isolated Mail Tracker tables. It does not automatically write into Sales / Operation / Meeting records.")
     return result
 
 

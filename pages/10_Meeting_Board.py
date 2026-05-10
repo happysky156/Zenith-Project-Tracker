@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import date
+from io import BytesIO
 import hashlib
 from html import escape
 from textwrap import dedent
 
+import pandas as pd
 import streamlit as st
 
 from core.auth import require_login
@@ -774,6 +776,185 @@ def _apply_meeting_mode_css() -> None:
     )
 
 
+def _meeting_row_to_ai_candidate(row: dict) -> dict:
+    entity_type = _plain(row.get("entity_type"), empty="Sales") or "Sales"
+    entity_id = _plain(row.get("entity_id") or row.get("display_id") or row.get("order_no") or row.get("project_id"), empty="")
+    return {
+        "record_type": entity_type,
+        "entity_id": entity_id,
+        "project_id": _plain(row.get("project_id") or row.get("display_id") or row.get("entity_id")),
+        "project_name": _plain(row.get("project_name") or row.get("display_title") or row.get("linked_project_name")),
+        "client_code": _plain(row.get("client_code")),
+        "order_no": _plain(row.get("order_no")),
+        "current_owner": _plain(row.get("current_owner")),
+        "phase": _plain(row.get("phase")),
+        "health_status": _plain(row.get("health_status")),
+        "result_status": _plain(row.get("result_status")),
+        "review_this_week": bool(row.get("review_this_week")),
+        "current_progress": _plain(row.get("progress_summary")),
+        "main_issue": _plain(row.get("main_issue")),
+        "blocked_at": _plain(row.get("block_point") or row.get("blocked_at")),
+        "waiting_for_what": _plain(row.get("waiting_for_text")),
+        "need_from_meeting": _plain(row.get("need_from_meeting")),
+        "next_step": _plain(row.get("next_step_summary")),
+        "next_step_owner": _plain(row.get("next_step_owner")),
+        "target_date": _plain(row.get("target_date")),
+        "meeting_note": _plain(row.get("meeting_note")),
+        "last_event": _plain(row.get("last_event")),
+        "raw": row,
+    }
+
+
+def _as_list(value: object) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [value]
+
+
+def _structured_table(items: object) -> pd.DataFrame:
+    rows = []
+    for item in _as_list(items):
+        if isinstance(item, dict):
+            rows.append({str(k): v for k, v in item.items()})
+        else:
+            rows.append({"Item": str(item)})
+    return pd.DataFrame(rows)
+
+
+def _meeting_pack_summary_markdown(review: dict) -> str:
+    lines = [
+        "# AI Meeting Control Pack",
+        "",
+        "## Executive Summary",
+        f"- Readiness: {review.get('readiness') or '-'}",
+        f"- Confidence: {review.get('confidence') or '-'}",
+        f"- Needs Human Attention: {review.get('needs_human_attention') or '-'}",
+        f"- Summary: {review.get('direct_summary') or '-'}",
+    ]
+    section_map = [
+        ("Boss Focus", review.get("boss_focus") or review.get("key_findings")),
+        ("Need Decision", review.get("need_decision")),
+        ("Blocked or Delayed", review.get("blocked_or_delayed")),
+        ("Owner Action List", review.get("owner_action_list")),
+        ("Client Follow-up", review.get("client_follow_up")),
+        ("Data Gaps", review.get("data_gaps") or review.get("missing_information")),
+        ("Suggested Actions", review.get("suggested_actions")),
+    ]
+    for title, items in section_map:
+        lines.extend(["", f"## {title}"])
+        item_list = _as_list(items)
+        if not item_list:
+            lines.append("- No item found in current Meeting Board records.")
+            continue
+        for item in item_list:
+            if isinstance(item, dict):
+                compact = "; ".join(f"{k}: {v}" for k, v in item.items() if str(v or "").strip())
+                lines.append(f"- {compact or '-'}")
+            else:
+                lines.append(f"- {item}")
+    lines.extend(["", "---", "AI output is a draft/review based on current Meeting Board records. Please review before taking action."])
+    return "\n".join(lines)
+
+
+def _meeting_pack_excel_bytes(review: dict) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary_df = pd.DataFrame(
+            [
+                {"Item": "Readiness", "Value": review.get("readiness") or "-"},
+                {"Item": "Confidence", "Value": review.get("confidence") or "-"},
+                {"Item": "Needs Human Attention", "Value": review.get("needs_human_attention") or "-"},
+                {"Item": "Direct Summary", "Value": review.get("direct_summary") or "-"},
+            ]
+        )
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        sheet_map = [
+            ("Boss Focus", review.get("boss_focus") or review.get("key_findings")),
+            ("Need Decision", review.get("need_decision")),
+            ("Blocked Delayed", review.get("blocked_or_delayed")),
+            ("Owner Actions", review.get("owner_action_list")),
+            ("Client Follow-up", review.get("client_follow_up")),
+            ("Data Gaps", review.get("data_gaps") or review.get("missing_information")),
+            ("Source Records", review.get("source_records")),
+        ]
+        for sheet_name, items in sheet_map:
+            df = _structured_table(items)
+            if df.empty:
+                df = pd.DataFrame([{"Item": "No item found in current Meeting Board records."}])
+            df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+        for ws in writer.book.worksheets:
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                max_len = 10
+                col_letter = col[0].column_letter
+                for cell in col[:80]:
+                    try:
+                        max_len = max(max_len, min(len(str(cell.value or "")), 60))
+                    except Exception:
+                        pass
+                ws.column_dimensions[col_letter].width = max_len + 2
+    return output.getvalue()
+
+
+def _render_business_meeting_control_pack(review: dict) -> None:
+    st.caption("AI output is a draft/review based on current Meeting Board records. Please review before taking action.")
+    if review.get("ai_error"):
+        st.warning("AI API summary was not available, so this section shows a safe rule-based review. " + str(review.get("ai_error")))
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Readiness", str(review.get("readiness") or "Need Review"))
+    c2.metric("Confidence", str(review.get("confidence") or "Medium"))
+    c3.metric("Human Attention", str(review.get("needs_human_attention") or "Yes"))
+    st.markdown("#### Executive Summary")
+    st.write(review.get("direct_summary") or "-")
+
+    boss_df = _structured_table(review.get("boss_focus") or review.get("key_findings"))
+    decision_df = _structured_table(review.get("need_decision"))
+    owner_df = _structured_table(review.get("owner_action_list"))
+    client_df = _structured_table(review.get("client_follow_up"))
+    gaps_df = _structured_table(review.get("data_gaps") or review.get("missing_information"))
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Boss Focus", "Need Decision", "Owner Actions", "Client Follow-up", "Data Gaps"])
+    with tab1:
+        if boss_df.empty:
+            st.info("No boss focus item found in current Meeting Board records.")
+        else:
+            st.dataframe(boss_df, use_container_width=True, hide_index=True)
+    with tab2:
+        if decision_df.empty:
+            st.info("No decision item found in current Meeting Board records.")
+        else:
+            st.dataframe(decision_df, use_container_width=True, hide_index=True)
+    with tab3:
+        if owner_df.empty:
+            st.info("No owner action item found in current Meeting Board records.")
+        else:
+            st.dataframe(owner_df, use_container_width=True, hide_index=True)
+    with tab4:
+        if client_df.empty:
+            st.info("No client follow-up item found in current Meeting Board records.")
+        else:
+            st.dataframe(client_df, use_container_width=True, hide_index=True)
+    with tab5:
+        if gaps_df.empty:
+            st.info("No data gap found in current Meeting Board records.")
+        else:
+            st.dataframe(gaps_df, use_container_width=True, hide_index=True)
+
+    with st.expander("Source Records", expanded=False):
+        src_df = _structured_table(review.get("source_records"))
+        if src_df.empty:
+            st.caption("No source records attached.")
+        else:
+            st.dataframe(src_df, use_container_width=True, hide_index=True)
+
+
+
 ACTION_HELP = {
     "Reviewed No Change": "Mark the item as reviewed this week without changing the business status.",
     "Discussed / Follow up": "Mark the item as discussed and keep it for normal follow-up.",
@@ -933,17 +1114,51 @@ with tool_cols[5]:
     ):
         with st.spinner("Generating AI Meeting Control Pack from current visible rows..."):
             st.session_state["ai_meeting_control_pack"] = generate_ai_meeting_control_pack(display_rows, output_language="English")
+            st.session_state["ai_meeting_control_pack_hidden"] = False
 
 ai_meeting_pack = st.session_state.get("ai_meeting_control_pack")
-if ai_meeting_pack:
+if ai_meeting_pack and not st.session_state.get("ai_meeting_control_pack_hidden", False):
     with st.expander("AI Meeting Control Pack", expanded=True):
-        render_ai_review(ai_meeting_pack, title="AI Meeting Control Pack", export_file_prefix="ai_meeting_control_pack")
-        if st.button("Clear AI Meeting Control Pack", use_container_width=True):
-            st.session_state.pop("ai_meeting_control_pack", None)
+        _render_business_meeting_control_pack(ai_meeting_pack)
+        md_text = _meeting_pack_summary_markdown(ai_meeting_pack)
+        xlsx_bytes = _meeting_pack_excel_bytes(ai_meeting_pack)
+        p1, p2, p3, p4 = st.columns([1.2, 1.2, 0.8, 0.8])
+        with p1:
+            st.download_button(
+                "Download Meeting Pack Summary (.md)",
+                data=md_text.encode("utf-8-sig"),
+                file_name="ai_meeting_control_pack_summary.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with p2:
+            st.download_button(
+                "Download Follow-up Action List (.xlsx)",
+                data=xlsx_bytes,
+                file_name="ai_meeting_control_pack_action_list.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with p3:
+            if st.button("Hide", use_container_width=True, help="Hide the generated pack without clearing it."):
+                st.session_state["ai_meeting_control_pack_hidden"] = True
+                st.rerun()
+        with p4:
+            if st.button("Clear", use_container_width=True, help="Clear the generated AI Meeting Control Pack."):
+                st.session_state.pop("ai_meeting_control_pack", None)
+                st.session_state.pop("ai_meeting_control_pack_hidden", None)
+                st.rerun()
+elif ai_meeting_pack and st.session_state.get("ai_meeting_control_pack_hidden", False):
+    h1, h2 = st.columns([1, 1])
+    with h1:
+        if st.button("Show AI Meeting Control Pack", use_container_width=True):
+            st.session_state["ai_meeting_control_pack_hidden"] = False
             st.rerun()
-
-with st.expander("AI Meeting Prep Assistant · Structure one project/order update", expanded=False):
-    render_ai_meeting_prep_assistant(current_user, key_prefix="meeting_board_ai_prep")
+    with h2:
+        if st.button("Clear Hidden AI Meeting Control Pack", use_container_width=True):
+            st.session_state.pop("ai_meeting_control_pack", None)
+            st.session_state.pop("ai_meeting_control_pack_hidden", None)
+            st.rerun()
 
 summary_output = st.session_state.get("meeting_summary_output")
 if summary_output:
@@ -979,202 +1194,215 @@ selected_index = st.selectbox(
 )
 st.caption("Selected record opens automatically below. This does not change any project data.")
 selected_row = display_rows[int(selected_index)]
+meeting_ai_candidates = [_meeting_row_to_ai_candidate(item) for item in display_rows]
+selected_ai_context = _meeting_row_to_ai_candidate(selected_row)
 
-for row in [selected_row]:
-    entity_id = row.get("entity_id") or row.get("display_id")
-    if not entity_id:
-        continue
+project_col, ai_col = st.columns([1.35, 0.95], gap="large")
+with project_col:
+    for row in [selected_row]:
+        entity_id = row.get("entity_id") or row.get("display_id")
+        if not entity_id:
+            continue
 
-    with st.container(border=True):
-        st.markdown(_card_header_html(row), unsafe_allow_html=True)
-        render_badges(
-            phase=row.get("phase"),
-            health=row.get("health_status"),
-            result=row.get("result_status"),
-            pattern=bool(row.get("pattern_flag")),
-        )
-        st.markdown(_focus_note_html(row), unsafe_allow_html=True)
-        st.markdown(_main_summary_html(row), unsafe_allow_html=True)
-        st.markdown(_status_strip_html(row), unsafe_allow_html=True)
-
-        with st.expander("More Details / Secondary Info", expanded=False):
-            st.markdown(_secondary_detail_grid_html(row), unsafe_allow_html=True)
-
-        followup_open_key = f"meeting_followup_open_{row['entity_type']}_{entity_id}"
-        is_followup_open = bool(st.session_state.get(followup_open_key, False))
-        toggle_label = "Hide Meeting Follow-up" if is_followup_open else "Open Meeting Follow-up"
-
-        link_cols = st.columns([1.35, 1.05, 1.05, 1.05, 1.05])
-        with link_cols[0]:
-            if st.button(
-                toggle_label,
-                key=f"toggle_followup_{row['entity_type']}_{entity_id}",
-                use_container_width=True,
-                help="Open or hide the meeting follow-up editor for this item.",
-            ):
-                _toggle_followup(row["entity_type"], str(entity_id))
-                st.rerun()
-        with link_cols[1]:
-            _render_link_or_disabled_button(
-                "Project Link",
-                row.get("reference_link"),
-                key=f"project_link_disabled_{row['entity_type']}_{entity_id}",
-                help_text="Open the Project Details Reference Link. Edit this link in Project Details, not Meeting Board.",
+        with st.container(border=True):
+            st.markdown(_card_header_html(row), unsafe_allow_html=True)
+            render_badges(
+                phase=row.get("phase"),
+                health=row.get("health_status"),
+                result=row.get("result_status"),
+                pattern=bool(row.get("pattern_flag")),
             )
-        for idx, col in enumerate(link_cols[2:], start=1):
-            with col:
+            st.markdown(_focus_note_html(row), unsafe_allow_html=True)
+            st.markdown(_main_summary_html(row), unsafe_allow_html=True)
+            st.markdown(_status_strip_html(row), unsafe_allow_html=True)
+
+            with st.expander("More Details / Secondary Info", expanded=False):
+                st.markdown(_secondary_detail_grid_html(row), unsafe_allow_html=True)
+
+            followup_open_key = f"meeting_followup_open_{row['entity_type']}_{entity_id}"
+            is_followup_open = bool(st.session_state.get(followup_open_key, False))
+            toggle_label = "Hide Meeting Follow-up" if is_followup_open else "Open Meeting Follow-up"
+
+            link_cols = st.columns([1.35, 1.05, 1.05, 1.05, 1.05])
+            with link_cols[0]:
+                if st.button(
+                    toggle_label,
+                    key=f"toggle_followup_{row['entity_type']}_{entity_id}",
+                    use_container_width=True,
+                    help="Open or hide the meeting follow-up editor for this item.",
+                ):
+                    _toggle_followup(row["entity_type"], str(entity_id))
+                    st.rerun()
+            with link_cols[1]:
                 _render_link_or_disabled_button(
-                    _meeting_reference_button_label(row, idx),
-                    row.get(f"meeting_reference_link_{idx}_url"),
-                    key=f"meeting_ref_disabled_{idx}_{row['entity_type']}_{entity_id}",
-                    help_text=f"Open Meeting Reference Link {idx}. Edit these links in Meeting Board.",
+                    "Project Link",
+                    row.get("reference_link"),
+                    key=f"project_link_disabled_{row['entity_type']}_{entity_id}",
+                    help_text="Open the Project Details Reference Link. Edit this link in Project Details, not Meeting Board.",
                 )
+            for idx, col in enumerate(link_cols[2:], start=1):
+                with col:
+                    _render_link_or_disabled_button(
+                        _meeting_reference_button_label(row, idx),
+                        row.get(f"meeting_reference_link_{idx}_url"),
+                        key=f"meeting_ref_disabled_{idx}_{row['entity_type']}_{entity_id}",
+                        help_text=f"Open Meeting Reference Link {idx}. Edit these links in Meeting Board.",
+                    )
 
-        with st.expander("Edit Meeting Reference Links", expanded=False):
-            st.caption("Up to 3 links can be saved for this Sales / Operation record. Project Link is read from Project Details and is not edited here.")
-            with st.form(key=f"meeting_reference_links_form_{row['entity_type']}_{entity_id}"):
-                meeting_reference_links = []
-                for idx in range(1, 4):
-                    ref_cols = st.columns([0.9, 2.2])
-                    with ref_cols[0]:
-                        ref_label = st.text_input(
-                            f"Link {idx} Label",
-                            value=row.get(f"meeting_reference_link_{idx}_label") or "",
-                            key=f"meeting_ref_label_{idx}_{row['entity_type']}_{entity_id}",
-                            placeholder=f"Meeting Ref {idx}",
-                        )
-                    with ref_cols[1]:
-                        ref_url = st.text_input(
-                            f"Link {idx} URL",
-                            value=row.get(f"meeting_reference_link_{idx}_url") or "",
-                            key=f"meeting_ref_url_{idx}_{row['entity_type']}_{entity_id}",
-                            placeholder="https://...",
-                        )
-                    meeting_reference_links.append({"label": ref_label, "url": ref_url})
-                ref_submitted = st.form_submit_button("Save Meeting Reference Links", use_container_width=True, type="secondary")
+            with st.expander("Edit Meeting Reference Links", expanded=False):
+                st.caption("Up to 3 links can be saved for this Sales / Operation record. Project Link is read from Project Details and is not edited here.")
+                with st.form(key=f"meeting_reference_links_form_{row['entity_type']}_{entity_id}"):
+                    meeting_reference_links = []
+                    for idx in range(1, 4):
+                        ref_cols = st.columns([0.9, 2.2])
+                        with ref_cols[0]:
+                            ref_label = st.text_input(
+                                f"Link {idx} Label",
+                                value=row.get(f"meeting_reference_link_{idx}_label") or "",
+                                key=f"meeting_ref_label_{idx}_{row['entity_type']}_{entity_id}",
+                                placeholder=f"Meeting Ref {idx}",
+                            )
+                        with ref_cols[1]:
+                            ref_url = st.text_input(
+                                f"Link {idx} URL",
+                                value=row.get(f"meeting_reference_link_{idx}_url") or "",
+                                key=f"meeting_ref_url_{idx}_{row['entity_type']}_{entity_id}",
+                                placeholder="https://...",
+                            )
+                        meeting_reference_links.append({"label": ref_label, "url": ref_url})
+                    ref_submitted = st.form_submit_button("Save Meeting Reference Links", use_container_width=True, type="secondary")
 
-            if ref_submitted:
-                result = save_meeting_reference_links(
-                    entity_type=row["entity_type"],
-                    entity_id=str(entity_id),
-                    links=meeting_reference_links,
-                    operator=acting_user,
-                    source_page="Meeting Board",
-                )
-                if result.get("updated"):
-                    _upsert_session_row(meeting_view, result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
-                st.rerun()
-
-        if is_followup_open:
-            with st.container(border=True):
-                st.markdown("<div class='zt-panel-title'>Meeting Follow-up</div>", unsafe_allow_html=True)
-                with st.form(key=f"meeting_followup_form_{row['entity_type']}_{entity_id}"):
-                    note_cols = st.columns(2)
-                    with note_cols[0]:
-                        meeting_note_value = st.text_area(
-                            "Meeting Note",
-                            value=row.get("meeting_note") or "",
-                            key=f"meeting_note_{row['entity_type']}_{entity_id}",
-                            height=90,
-                            placeholder="Short note taken during the meeting...",
-                        )
-                    with note_cols[1]:
-                        next_step_value = st.text_area(
-                            "Next Step",
-                            value=row.get("next_step_summary") or "",
-                            key=f"meeting_next_step_{row['entity_type']}_{entity_id}",
-                            height=90,
-                            placeholder="What should happen next?",
-                        )
-
-                    owner_date_cols = st.columns([1.0, 1.2, 1.0, 1.05])
-                    with owner_date_cols[0]:
-                        owner_options = sorted_dropdown_options([""] + PEOPLE)
-                        current_owner = row.get("next_step_owner") or ""
-                        owner_index = owner_options.index(current_owner) if current_owner in owner_options else 0
-                        next_step_owner_value = st.selectbox(
-                            "Next Step Owner",
-                            options=owner_options,
-                            index=owner_index,
-                            key=f"meeting_next_step_owner_{row['entity_type']}_{entity_id}",
-                        )
-                    with owner_date_cols[1]:
-                        next_step_support_value = st.multiselect(
-                            "Next Step Support From",
-                            options=sorted_dropdown_options(PEOPLE, pinned=()),
-                            default=parse_multi_value(row.get("next_step_support")),
-                            key=f"meeting_next_step_support_{row['entity_type']}_{entity_id}",
-                        )
-                    with owner_date_cols[2]:
-                        parsed_target = _parse_date(row.get("target_date"))
-                        target_date_value = st.date_input(
-                            "Target Date",
-                            value=parsed_target,
-                            key=f"meeting_target_date_{row['entity_type']}_{entity_id}",
-                            format="YYYY-MM-DD",
-                        )
-                    with owner_date_cols[3]:
-                        st.markdown("<div class='zt-followup-save-spacer'></div>", unsafe_allow_html=True)
-                        submitted = st.form_submit_button("**Save Follow-up**", use_container_width=True, type="secondary")
-
-                if submitted:
-                    result = save_meeting_followup(
+                if ref_submitted:
+                    result = save_meeting_reference_links(
                         entity_type=row["entity_type"],
                         entity_id=str(entity_id),
-                        meeting_note=meeting_note_value,
-                        next_step_summary=next_step_value,
-                        next_step_owner=next_step_owner_value,
-                        next_step_support=next_step_support_value,
-                        target_date=target_date_value.isoformat() if target_date_value else None,
+                        links=meeting_reference_links,
                         operator=acting_user,
                         source_page="Meeting Board",
                     )
                     if result.get("updated"):
                         _upsert_session_row(meeting_view, result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
-                    st.session_state[followup_open_key] = False
                     st.rerun()
 
-        st.markdown(
-            "<div class='zt-action-header'><div class='zt-action-header-title'>Meeting Actions</div>"
-            "<div class='zt-action-header-note'>Red buttons show the current recorded meeting status only. White buttons are available actions.</div></div>",
-            unsafe_allow_html=True,
-        )
+            if is_followup_open:
+                with st.container(border=True):
+                    st.markdown("<div class='zt-panel-title'>Meeting Follow-up</div>", unsafe_allow_html=True)
+                    with st.form(key=f"meeting_followup_form_{row['entity_type']}_{entity_id}"):
+                        note_cols = st.columns(2)
+                        with note_cols[0]:
+                            meeting_note_value = st.text_area(
+                                "Meeting Note",
+                                value=row.get("meeting_note") or "",
+                                key=f"meeting_note_{row['entity_type']}_{entity_id}",
+                                height=90,
+                                placeholder="Short note taken during the meeting...",
+                            )
+                        with note_cols[1]:
+                            next_step_value = st.text_area(
+                                "Next Step",
+                                value=row.get("next_step_summary") or "",
+                                key=f"meeting_next_step_{row['entity_type']}_{entity_id}",
+                                height=90,
+                                placeholder="What should happen next?",
+                            )
 
-        action_groups = [
-            ("Primary Actions", "Most common meeting results", ["Discussed / Follow up", "Decision Made / Close", "Review Next Meeting"]),
-            ("Secondary Actions", "Review or completion updates", ["Reviewed No Change", "Mark Follow-up Done"]),
-            ("Risk / Remove Actions", "Use carefully", ["High-Risk Follow-up", "Remove from Meeting"]),
-        ]
-        valid_actions = set(MEETING_ACTIONS)
-        for group_title, group_note, action_names in action_groups:
-            action_names = [a for a in action_names if a in valid_actions]
-            if not action_names:
-                continue
+                        owner_date_cols = st.columns([1.0, 1.2, 1.0, 1.05])
+                        with owner_date_cols[0]:
+                            owner_options = sorted_dropdown_options([""] + PEOPLE)
+                            current_owner = row.get("next_step_owner") or ""
+                            owner_index = owner_options.index(current_owner) if current_owner in owner_options else 0
+                            next_step_owner_value = st.selectbox(
+                                "Next Step Owner",
+                                options=owner_options,
+                                index=owner_index,
+                                key=f"meeting_next_step_owner_{row['entity_type']}_{entity_id}",
+                            )
+                        with owner_date_cols[1]:
+                            next_step_support_value = st.multiselect(
+                                "Next Step Support From",
+                                options=sorted_dropdown_options(PEOPLE, pinned=()),
+                                default=parse_multi_value(row.get("next_step_support")),
+                                key=f"meeting_next_step_support_{row['entity_type']}_{entity_id}",
+                            )
+                        with owner_date_cols[2]:
+                            parsed_target = _parse_date(row.get("target_date"))
+                            target_date_value = st.date_input(
+                                "Target Date",
+                                value=parsed_target,
+                                key=f"meeting_target_date_{row['entity_type']}_{entity_id}",
+                                format="YYYY-MM-DD",
+                            )
+                        with owner_date_cols[3]:
+                            st.markdown("<div class='zt-followup-save-spacer'></div>", unsafe_allow_html=True)
+                            submitted = st.form_submit_button("**Save Follow-up**", use_container_width=True, type="secondary")
+
+                    if submitted:
+                        result = save_meeting_followup(
+                            entity_type=row["entity_type"],
+                            entity_id=str(entity_id),
+                            meeting_note=meeting_note_value,
+                            next_step_summary=next_step_value,
+                            next_step_owner=next_step_owner_value,
+                            next_step_support=next_step_support_value,
+                            target_date=target_date_value.isoformat() if target_date_value else None,
+                            operator=acting_user,
+                            source_page="Meeting Board",
+                        )
+                        if result.get("updated"):
+                            _upsert_session_row(meeting_view, result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
+                        st.session_state[followup_open_key] = False
+                        st.rerun()
+
             st.markdown(
-                f"<div class='zt-action-group-title'>{escape(group_title)} <span>{escape(group_note)}</span></div>",
+                "<div class='zt-action-header'><div class='zt-action-header-title'>Meeting Actions</div>"
+                "<div class='zt-action-header-note'>Red buttons show the current recorded meeting status only. White buttons are available actions.</div></div>",
                 unsafe_allow_html=True,
             )
-            cols = st.columns(len(action_names))
-            for col, action_name in zip(cols, action_names):
-                with col:
-                    is_current_status = _meeting_action_matches_current_state(row, action_name)
-                    if st.button(
-                        action_name,
-                        key=f"meeting_{row['entity_type']}_{entity_id}_{action_name}",
-                        use_container_width=True,
-                        type="primary" if is_current_status else "secondary",
-                        help=ACTION_HELP.get(action_name),
-                    ):
-                        try:
-                            action_result = apply_meeting_action(
-                                entity_type=row["entity_type"],
-                                entity_id=str(entity_id),
-                                action_name=action_name,
-                                operator=acting_user,
-                                source_page="Meeting Board",
-                            )
-                            _upsert_session_row(meeting_view, action_result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
-                            st.success(f"{entity_id}: {action_name}")
-                            st.rerun()
-                        except MeetingActionError as exc:
-                            st.error(str(exc))
+
+            action_groups = [
+                ("Primary Actions", "Most common meeting results", ["Discussed / Follow up", "Decision Made / Close", "Review Next Meeting"]),
+                ("Secondary Actions", "Review or completion updates", ["Reviewed No Change", "Mark Follow-up Done"]),
+                ("Risk / Remove Actions", "Use carefully", ["High-Risk Follow-up", "Remove from Meeting"]),
+            ]
+            valid_actions = set(MEETING_ACTIONS)
+            for group_title, group_note, action_names in action_groups:
+                action_names = [a for a in action_names if a in valid_actions]
+                if not action_names:
+                    continue
+                st.markdown(
+                    f"<div class='zt-action-group-title'>{escape(group_title)} <span>{escape(group_note)}</span></div>",
+                    unsafe_allow_html=True,
+                )
+                cols = st.columns(len(action_names))
+                for col, action_name in zip(cols, action_names):
+                    with col:
+                        is_current_status = _meeting_action_matches_current_state(row, action_name)
+                        if st.button(
+                            action_name,
+                            key=f"meeting_{row['entity_type']}_{entity_id}_{action_name}",
+                            use_container_width=True,
+                            type="primary" if is_current_status else "secondary",
+                            help=ACTION_HELP.get(action_name),
+                        ):
+                            try:
+                                action_result = apply_meeting_action(
+                                    entity_type=row["entity_type"],
+                                    entity_id=str(entity_id),
+                                    action_name=action_name,
+                                    operator=acting_user,
+                                    source_page="Meeting Board",
+                                )
+                                _upsert_session_row(meeting_view, action_result.get("row") or get_meeting_record(row["entity_type"], str(entity_id)))
+                                st.success(f"{entity_id}: {action_name}")
+                                st.rerun()
+                            except MeetingActionError as exc:
+                                st.error(str(exc))
+
+with ai_col:
+    render_ai_meeting_prep_assistant(
+        current_user,
+        key_prefix="meeting_board_ai_prep_inline",
+        meeting_context_candidates=meeting_ai_candidates,
+        selected_project_context=selected_ai_context,
+        compact=True,
+    )

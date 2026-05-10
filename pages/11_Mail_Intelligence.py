@@ -7,21 +7,22 @@ import pandas as pd
 import streamlit as st
 
 from core.auth import require_login
+from database.mail_tracker_repository import list_mail_tracker_batches, save_mail_tracker_workbook
 from services.ai_mail_summary_service import generate_ai_mail_summary
 from services.ai_meeting_service import search_project_candidates
 from ui.ai_review_ui import render_ai_review
 from ui.theme import apply_theme, render_page_header
 
 apply_theme()
-require_login()
+current_user = require_login()
 render_page_header(
     "Mail Intelligence",
-    "Read-only Mail Tracker preview, keyword search and AI follow-up summary from the uploaded mail tracker Excel output.",
+    "Mail Tracker workbook import, isolated database storage, keyword search and AI follow-up summary.",
 )
 
 st.info(
-    "Mail Tracker boundary: this page can only import, preview, filter and summarise the uploaded workbook. "
-    "It does not create Project IDs and does not write to Sales, Operation, Meeting, RFQ or Supplier records."
+    "Mail Tracker boundary: uploaded mail tracker data may be saved into isolated Mail Tracker database tables for later reference. "
+    "It does not automatically update Sales, Operation, Meeting, RFQ or Supplier records unless a future workflow explicitly links records after review."
 )
 
 
@@ -158,7 +159,7 @@ def _filter_workbook(
 uploaded = st.file_uploader(
     "Upload mail_tracker_clean.xlsx",
     type=["xlsx", "xls"],
-    help="Read-only upload. The workbook is previewed and summarised only; no database write is performed.",
+    help="Upload the Mail Tracker workbook. You can preview it, run AI summary, and optionally save it into isolated Mail Tracker tables.",
 )
 if not uploaded:
     st.info("Upload the mail tracker clean workbook to preview Mail Overview, Action Tracker and Attachment Summary.")
@@ -170,10 +171,43 @@ except Exception as exc:
     st.error(f"Could not read workbook: {type(exc).__name__}: {exc}")
     st.stop()
 
+st.markdown("### Mail Tracker Database Storage")
+st.caption("Optional: save this uploaded workbook into isolated Mail Tracker tables. This does not update Sales, Operation, Meeting, RFQ or Supplier records.")
+store_cols = st.columns([1.2, 1.0, 1.0])
+with store_cols[0]:
+    if st.button("Save Uploaded Mail Tracker to Database", use_container_width=True):
+        try:
+            result = save_mail_tracker_workbook(
+                workbook,
+                source_file=getattr(uploaded, "name", "mail_tracker_clean.xlsx"),
+                imported_by=str(current_user.get("display_name") or current_user.get("email") or ""),
+                file_bytes=uploaded.getvalue(),
+                notes="Saved from Mail Intelligence page. Isolated Mail Tracker storage only.",
+            )
+            st.success(f"Saved Mail Tracker batch {result.get('batch_id')} with {result.get('inserted_rows')} row(s).")
+        except Exception as exc:
+            st.error(f"Could not save Mail Tracker workbook: {type(exc).__name__}: {exc}")
+with store_cols[1]:
+    if st.button("Show Recent Mail Tracker Imports", use_container_width=True):
+        st.session_state["show_mail_tracker_imports"] = not st.session_state.get("show_mail_tracker_imports", False)
+with store_cols[2]:
+    st.metric("Uploaded workbook rows", sum(len(df) for df in workbook.values() if isinstance(df, pd.DataFrame)))
+
+if st.session_state.get("show_mail_tracker_imports"):
+    try:
+        batches = list_mail_tracker_batches(limit=10)
+        if batches:
+            st.dataframe(pd.DataFrame(batches), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No saved Mail Tracker import batches found.")
+    except Exception as exc:
+        st.warning(f"Could not load saved Mail Tracker imports: {type(exc).__name__}: {exc}")
+
 st.markdown("### AI Mail Search & Summary")
 st.caption(
     "Search can use keywords, date range, and optional Project Name / Project ID context. "
-    "If no keywords or project context are provided, AI summarises all uploaded mail rows. Read-only only."
+    "If no keywords or project context are provided, AI summarises all uploaded mail rows. "
+    "Saving Mail Tracker data is isolated and does not update formal project/order fields."
 )
 
 with st.container(border=True):
@@ -244,7 +278,7 @@ with st.container(border=True):
     st.metric("Matched mail rows", matched_count)
     st.caption(
         f"Applied filters: keywords={keywords or 'All'}; project terms={project_match_terms or 'None'}; date={date_label}. "
-        "No records are written back to the system."
+        "Mail summary does not update Sales / Operation / Meeting records."
     )
 
     if preview_rows:
