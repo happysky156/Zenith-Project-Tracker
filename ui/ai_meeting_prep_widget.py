@@ -155,6 +155,33 @@ def _default_apply(field: str, existing_value: str, ai_value: str) -> bool:
     return False
 
 
+def _normalise_for_compare(field: str, value: Any) -> str:
+    text = clean_text(value).strip()
+    if field == "review_this_week":
+        low = text.lower()
+        if low in {"yes", "y", "true", "1"}:
+            return "yes"
+        if low in {"no", "n", "false", "0"}:
+            return "no"
+    return " ".join(text.split()).lower()
+
+
+def _field_has_actual_change(field: str, existing_value: Any, ai_value: Any) -> bool:
+    ai_text = clean_text(ai_value)
+    if not ai_text:
+        return False
+    return _normalise_for_compare(field, existing_value) != _normalise_for_compare(field, ai_text)
+
+
+def _change_status(field: str, existing_value: Any, ai_value: Any) -> str:
+    ai_text = clean_text(ai_value)
+    if not ai_text:
+        return "No AI value"
+    if _field_has_actual_change(field, existing_value, ai_text):
+        return "Will change if selected"
+    return "Same as current"
+
+
 def _build_review_dataframe(project: dict[str, Any], draft: dict[str, Any]) -> pd.DataFrame:
     existing = build_existing_field_snapshot(project)
     rows = []
@@ -168,6 +195,7 @@ def _build_review_dataframe(project: dict[str, Any], draft: dict[str, Any]) -> p
                 "Field": FIELD_LABELS.get(field, field),
                 "Existing Record": existing_value,
                 "AI Suggested Update": ai_value,
+                "Change Status": _change_status(field, existing_value, ai_value),
             }
         )
     return pd.DataFrame(rows)
@@ -197,6 +225,34 @@ def _draft_from_review_table(review_frame: pd.DataFrame, original_draft: dict[st
     return selected
 
 
+
+
+def _selected_change_summary(project: dict[str, Any], review_frame: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """Return selected fields that really change saved values, and selected fields that are same-value/no-value.
+
+    This prevents the confusing case where a user ticks fields that already match
+    the database and then sees "confirmed but no field changed".
+    """
+    existing = build_existing_field_snapshot(project)
+    reverse_field_labels = {label: field for field, label in FIELD_LABELS.items()}
+    changed: list[str] = []
+    no_change: list[str] = []
+    for _, row in review_frame.iterrows():
+        apply_flag = bool(row.get("Apply"))
+        if not apply_flag:
+            continue
+        field_key = clean_text(row.get("Field Key")) or reverse_field_labels.get(clean_text(row.get("Field")), "")
+        if field_key not in MEETING_FIELDS:
+            continue
+        label = FIELD_LABELS.get(field_key, field_key)
+        value = clean_text(row.get("AI Suggested Update"))
+        if _field_has_actual_change(field_key, existing.get(field_key, ""), value):
+            changed.append(label)
+        else:
+            no_change.append(label)
+    return changed, no_change
+
+
 def _render_review_editor(project: dict[str, Any], draft: dict[str, Any], *, key_prefix: str) -> pd.DataFrame:
     review_frame = _build_review_dataframe(project, draft)
     return st.data_editor(
@@ -204,13 +260,14 @@ def _render_review_editor(project: dict[str, Any], draft: dict[str, Any], *, key
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
-        column_order=["Apply", "Field", "Existing Record", "AI Suggested Update"],
-        disabled=["Field", "Existing Record"],
+        column_order=["Apply", "Field", "Existing Record", "AI Suggested Update", "Change Status"],
+        disabled=["Field", "Existing Record", "Change Status"],
         column_config={
             "Apply": st.column_config.CheckboxColumn("Apply", help="Tick only the fields you want to write into the system.", width="small"),
             "Field": st.column_config.TextColumn("Field", width="medium"),
             "Existing Record": st.column_config.TextColumn("Existing Record", width="large"),
             "AI Suggested Update": st.column_config.TextColumn("AI Suggested Update", width="large"),
+            "Change Status": st.column_config.TextColumn("Change Status", width="medium"),
         },
         key=f"{key_prefix}_review_editor",
     )
@@ -411,7 +468,16 @@ def render_ai_meeting_prep_assistant(
     )
     selected_draft = _draft_from_review_table(edited_review_frame, draft)
     selected_count = len(selected_draft.get("applied_fields") or [])
-    st.caption(f"Selected fields to apply: {selected_count}")
+    selected_changed_fields, selected_no_change_fields = _selected_change_summary(selected_project, edited_review_frame)
+    changed_count = len(selected_changed_fields)
+    st.caption(f"Selected fields: {selected_count} | Actual changed fields: {changed_count}")
+    if selected_no_change_fields and changed_count == 0:
+        st.warning(
+            "The selected field(s) are already the same as the current saved record, so confirming them would not update the system. "
+            "Please tick at least one row marked 'Will change if selected', or save this as a pending draft for record only."
+        )
+    elif selected_no_change_fields:
+        st.info("Some selected rows are the same as the current record and will be ignored: " + ", ".join(selected_no_change_fields))
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Save as Pending AI Draft", use_container_width=True, key=f"{key_prefix}_save_pending"):
@@ -430,7 +496,7 @@ def render_ai_meeting_prep_assistant(
             "Confirm Selected Fields + Update System",
             type="primary",
             use_container_width=True,
-            disabled=selected_count == 0,
+            disabled=changed_count == 0,
             key=f"{key_prefix}_confirm_apply",
         ):
             draft_id = save_ai_update_draft(
@@ -452,8 +518,12 @@ def render_ai_meeting_prep_assistant(
                 st.session_state[f"{key_prefix}_apply_result"] = apply_result
                 if apply_result.get("updated"):
                     st.success(f"AI Meeting Prep confirmed and applied. Draft ID: {draft_id}.")
+                    st.info("Refresh the Meeting Board or change the filter/search to see the latest saved values in the project card.")
                 else:
-                    st.info(f"AI draft confirmed, but no field changed. Draft ID: {draft_id}.")
+                    st.warning(
+                        f"AI draft confirmed, but no saved field changed. Draft ID: {draft_id}. "
+                        "This usually means the selected AI values were already the same as the current system record."
+                    )
             except Exception as exc:
                 mark_ai_draft_status(draft_id=draft_id, status="apply_failed", current_user=current_user)
                 st.error(f"Saved draft, but applying selected fields failed: {exc}")
